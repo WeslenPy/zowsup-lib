@@ -3,40 +3,52 @@ import os
 import configparser
 from pathlib import Path
 
+
 class SysVar:
-        
-    def assureDir(path):        
+
+    def assureDir(path):
         if not os.path.exists(path):
-            os.makedirs(path)    
-          
-    def loadConfig(path=None): 
+            os.makedirs(path)
+
+    def loadConfig(path=None):
+        """
+        Carrega configuração básica da aplicação.
+
+        Ordem de resolução do arquivo de configuração:
+        1. Parâmetro path, se fornecido explicitamente
+        2. Variável de ambiente ZOWSUP_CONFIG, se definida
+        3. Caminho padrão (conf/config.conf ao lado deste arquivo)
+        """
         if path is None:
-            currentDir = os.path.split(os.path.realpath(__file__))[0]              
-            path = os.path.join(currentDir,"config.conf")                      
+            env_path = os.environ.get("ZOWSUP_CONFIG")
+            if env_path:
+                path = env_path
+            else:
+                currentDir = os.path.split(os.path.realpath(__file__))[0]
+                path = os.path.join(currentDir, "config.conf")
 
-        configFile = Path(path)    
-        if configFile.exists():    
-            conf = configparser.ConfigParser()          
-            conf.read(path)                    
-            SysVar.ACCOUNT_PATH = conf.get("SysVar", "ACCOUNT_PATH",fallback="/data/account/")            
-            SysVar.DOWNLOAD_PATH = conf.get("SysVar", "DOWNLOAD_PATH",fallback="/data/download/")            
-            SysVar.UPLOAD_PATH= conf.get("SysVar", "UPLOAD_PATH",fallback="/data/upload/")
-            SysVar.DEFAULT_ENV = conf.get("SysVar","DEFAULT_ENV",fallback="android")
-            SysVar.LOG_PATH = conf.get("SysVar","LOG_PATH",fallback="/data/log/")
-                        
+        configFile = Path(path)
+        if configFile.exists():
+            conf = configparser.ConfigParser()
+            conf.read(path)
+            SysVar.ACCOUNT_PATH = conf.get("SysVar", "ACCOUNT_PATH", fallback="/data/account/")
+            SysVar.DOWNLOAD_PATH = conf.get("SysVar", "DOWNLOAD_PATH", fallback="/data/download/")
+            SysVar.UPLOAD_PATH = conf.get("SysVar", "UPLOAD_PATH", fallback="/data/upload/")
+            SysVar.DEFAULT_ENV = conf.get("SysVar", "DEFAULT_ENV", fallback="android")
+            SysVar.LOG_PATH = conf.get("SysVar", "LOG_PATH", fallback="/data/log/")
+
             account_dir = Path(SysVar.ACCOUNT_PATH)
-            SysVar.assureDir(account_dir)                                     
+            SysVar.assureDir(account_dir)
 
-            download_dir = Path(SysVar.DOWNLOAD_PATH)   
-            SysVar.assureDir(download_dir)                 
+            download_dir = Path(SysVar.DOWNLOAD_PATH)
+            SysVar.assureDir(download_dir)
 
             upload_dir = Path(SysVar.UPLOAD_PATH)
-            SysVar.assureDir(upload_dir)    
+            SysVar.assureDir(upload_dir)
 
             log_dir = Path(SysVar.LOG_PATH)
             SysVar.assureDir(log_dir)
 
-            
             SysVar.CMD_WAIT = None
 
 class GlobalVar:     

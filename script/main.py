@@ -11,6 +11,7 @@ from conf.constants import SysVar,GlobalVar
 from common.utils import Utils
 from yowsup.profile.profile import YowProfile
 from app.device_env import DeviceEnv
+from app.config import AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,8 @@ class Main(ConsoleMain):
 if __name__ == "__main__":
     
     GlobalVar.WANUMTYPE = 1     
-    SysVar.loadConfig()       
+    # Usa AppConfig para carregar config.conf (respeitando env ZOWSUP_CONFIG)
+    AppConfig.load()
         
     if len(sys.argv)<=1:
         print("USAGE:")
@@ -106,28 +108,6 @@ if __name__ == "__main__":
 
 
     Main().run(params,options)    
-    
-    
-
-
-
-
-
-    
-
-
-
-
-
-
-    
-
-
-    
-    
-
-    
-
     
 
     

@@ -1,19 +1,19 @@
 # zowsup
 
-zowsup is a python whatsapp-protocol project based on [yowsup](https://github.com/tgalal/yowsup/).
+zowsup is a python WhatsApp-protocol project based on [yowsup](https://github.com/tgalal/yowsup/).
 
-Since the original yowsup project has not been maintained for a long time, we forked yowsup and some associated projects(axolotl, consonance) and intergrated into an All-In-One Project and keep updating with latest version of WhatsApp.
+Since the original yowsup project has not been maintained for a long time, we forked yowsup and some associated projects (axolotl, consonance) and integrated them into an All-In-One project, keeping it updated with the latest version of WhatsApp.
 
 ```
 - ZOWSUP VERSION : 0.6.5
 
 - UPDATE TIME : 2025-11-16
 
-- WHATSAPP VERSION : 
-    2.25.29.75(Android) 
-    2.25.32.75(SMB Android) 
-    2.25.32.77(iOS) 
-    2.25.32.77(SMB iOS) 
+- WHATSAPP VERSION :
+    2.25.29.75 (Android)
+    2.25.32.75 (SMB Android)
+    2.25.32.77 (iOS)
+    2.25.32.77 (SMB iOS)
 
 ```
 
@@ -24,11 +24,11 @@ Since the original yowsup project has not been maintained for a long time, we fo
  * new interactive mode
 
 ## What's New 0.6.0
- * new commands mdlink and mdremove
+ * new commands `mdlink` and `mdremove`
  * linkcode for companion device registration
 
 ## What's New 0.5.0
- * Latest version(6.3) of noise-protocol and token-dictionary
+ * Latest version (6.3) of noise-protocol and token-dictionary
  * Multi-Environment support (android,smb_android,ios,smb_ios)
  * Multi-Device protocol support
  * Display a QR to Login as a companion device 
@@ -154,4 +154,161 @@ msg.sendmedia                 | send media message
 
 ```
 
+
+## Technologies
+
+- Python 3
+- WhatsApp multi-device protocol (Web/Mobile compatible)
+- Signal / Axolotl (Double Ratchet, pre-keys) – `axolotl/`
+- Noise protocol / TLS-like – `consonance/`, `dissononce`
+- `pycryptodome` (`Crypto.*`) for AES/HMAC/HKDF
+- `protobuf` – messages defined in `proto/*.proto`
+- `requests`, `websocket-client`, `PySocks`, `gevent`
+- `ffmpeg`, `pillow`, `qrcode`, `apkutils`
+
+
+## Architecture Overview
+
+- `yowsup/`: WhatsApp protocol stack (layers, entities, stacks)
+- `axolotl/`: Signal/Axolotl implementation
+- `consonance/`: Noise handshake and transport
+- `app/`: application and high-level API (bot, envs, `ZowsupClient`)
+- `common/`: utilities and CLI base (`consolemain.py`, `utils.py`)
+- `conf/`: configuration (`config.conf`, `SysVar`, `GlobalVar`)
+- `script/`: CLI entry points (`main.py`, `import6.py`, `export6.py`, `regwithscan.py`, `regwithlinkcode.py`, `reset2fa.py`)
+
+
+## Configuration details
+
+Configuration file (`conf/config.conf` – copy from `conf/config.conf.example`):
+
+```ini
+[SysVar]
+ACCOUNT_PATH=/data/account/   # where account data (profiles, axolotl DB) is stored
+DOWNLOAD_PATH=/data/tmp/      # media download path
+UPLOAD_PATH=/data/tmp/        # media upload path
+LOG_PATH=/data/log/           # log files path
+DEFAULT_ENV=android           # default environment: android / smb_android / ios / smb_ios
+```
+
+- Low-level loader: `SysVar.loadConfig(path=None)`
+  - Uses `path` if given, else env var `ZOWSUP_CONFIG`, else default `conf/config.conf`.
+- High-level wrapper: `AppConfig.load(config_path: Optional[str] = None)` in `app/config.py`
+  - Returns a typed object and can apply values back to `SysVar` via `apply_to_sysvar()`.
+
+
+## High-level Python API (`ZowsupClient`)
+
+`app/api.py` exposes a high-level client to interact with zowsup programmatically.
+
+### Basic usage
+
+```python
+from app.api import ZowsupClient
+
+client = ZowsupClient(
+    account_id="5511999999999",  # phone number / account ID
+    # config_path="C:/my/conf/config.conf",  # optional
+    # env="android",                        # optional, defaults to DEFAULT_ENV
+    # proxy="host:port:user:pass",          # optional, DIRECT if omitted
+)
+
+client.connect()
+client.send_text("5511888888888", "Hello from ZowsupClient!")
+client.disconnect()
+```
+
+### Sending text messages
+
+```python
+from app.api import ZowsupClient, ZowsupError
+
+client = ZowsupClient("5511999999999")
+
+try:
+    # Fire-and-forget (CLI-like behaviour)
+    client.send_text("5511888888888", "Hello!")
+
+    # Returning the WhatsApp message ID
+    resp = client.send_text(
+        "5511888888888",
+        "Message with ID",
+        wait_for_id=True,
+        wait_msg_id_timeout=30,
+    )
+    print("Message ID:", resp.data["message_id"])
+except ZowsupError as e:
+    print("Error:", e.code, str(e))
+finally:
+    client.disconnect()
+```
+
+### Sending media
+
+```python
+client = ZowsupClient("5511999999999")
+
+# Local image
+client.send_media(
+    "5511888888888",
+    "image",
+    "C:/images/photo.jpg",
+    caption="Test image",
+)
+
+# Video from URL
+client.send_media(
+    "5511888888888",
+    "video",
+    "https://example.com/video.mp4",
+    caption="Watch this",
+)
+```
+
+### Groups and contacts
+
+```python
+# Create group
+resp = client.create_group(
+    subject="Test Group",
+    participants="5511888888888@s.whatsapp.net,5511777777777@s.whatsapp.net",
+)
+print("Group info:", resp.data)
+
+# List groups
+resp = client.list_groups()
+print("Groups:", resp.data)
+
+# Sync contacts
+resp = client.sync_contacts("5511888888888,5511777777777")
+print("Sync result:", resp.data)
+```
+
+### Importing a new account from 6-parts data
+
+Besides the CLI `script/import6.py`, you can import a new account programmatically using `ZowsupClient.import_account_from_six_parts`:
+
+```python
+from app.api import ZowsupClient
+
+six_parts = "5511999999999,PK1,SK1,PK2,SK2,SIXTH"  # string generated by export6.py
+
+account_id = ZowsupClient.import_account_from_six_parts(
+    six_parts_data=six_parts,
+    env="android",                # or ios / smb_android / smb_ios
+    # config_path="C:/my/conf/config.conf",  # optional
+)
+
+print("Imported account:", account_id)
+
+client = ZowsupClient(account_id)
+client.send_text("5511888888888", "New account imported successfully!")
+client.disconnect()
+```
+
+
+## Error handling
+
+- The high-level API raises a single exception type: `ZowsupError(code, message)`.
+- Low-level protocol errors and command failures are mapped into this exception for easier handling.
 
