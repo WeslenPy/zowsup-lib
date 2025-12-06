@@ -12,16 +12,14 @@ from pathlib import Path
 from yowsup.config.transforms.dict_json import DictJsonTransform
 from yowsup.config.v1.serialize import ConfigSerialize
 from common.utils import Utils
-import logging
+from loguru import logger
 import names
 from yowsup.common.tools import WATools
 from common.consolemain import ConsoleMain
-
-logger = logging.getLogger(__name__)
     
 class Import6(ConsoleMain):
     def run(self,params,options):
-        Utils.init_log(logging.INFO,"import6.log")    
+        Utils.init_log("INFO", "import6.log")    
 
         self.commonOptionsProcess(options)
         
@@ -60,17 +58,11 @@ class Import6(ConsoleMain):
             id = id
         )    
 
-        account_dir = Path(SysVar.ACCOUNT_PATH+data[0])
-        if not account_dir.exists():
-            account_dir.mkdir()
-
-        profile = YowProfile(SysVar.ACCOUNT_PATH+data[0])   
+        # Persiste configuração de perfil usando apenas o identificador da conta
+        profile = YowProfile(data[0])
         profile.write_config(config)
         
-        db = AxolotlManagerFactory().get_manager(SysVar.ACCOUNT_PATH+data[0],data[0])
-                        
-        q = "UPDATE identities SET public_key=? , private_key=? WHERE recipient_id=-1 AND recipient_type=0"
-        c = db._store.identityKeyStore.dbConn.cursor()
+        db = AxolotlManagerFactory().get_manager(data[0],data[0])
         
         if len(base64.b64decode(data[3]))==32:
             pubKey = b'\x05'+base64.b64decode(data[3])
@@ -80,8 +72,16 @@ class Import6(ConsoleMain):
             pubKey = base64.b64decode(data[3])
         privKey = base64.b64decode(data[4])
 
-        c.execute(q, (pubKey,privKey))
-        db._store.identityKeyStore.dbConn.commit()        
+        # Atualiza identidade local dependendo do backend
+        from yowsup.axolotl.store.sqlaxolotlstore import SqlAxolotlStore
+        store = db._store
+        if isinstance(store, SqlAxolotlStore):
+            store.updateLocalIdentityKeys(db.registration_id, pubKey, privKey, deviceid=0)
+        else:
+            q = "UPDATE identities SET public_key=? , private_key=? WHERE recipient_id=-1 AND recipient_type=0"
+            c = store.identityKeyStore.dbConn.cursor()
+            c.execute(q, (pubKey,privKey))
+            store.identityKeyStore.dbConn.commit()
         jsonstr = DictJsonTransform().transform(ConfigSerialize(config.__class__).serialize(config))
         publicKey = str(base64.b64encode(pubKey),'UTF-8')
         privateKey = str(base64.b64encode(privKey),'UTF-8')   

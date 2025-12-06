@@ -2,9 +2,7 @@ from ..config.manager import ConfigManager
 from ..config.v1.config import Config
 from ..axolotl.manager import AxolotlManager
 from ..axolotl.factory import AxolotlManagerFactory
-import logging
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class YowProfile(object):
@@ -15,7 +13,7 @@ class YowProfile(object):
         :param config: A supplied config will disable loading configs using the Config manager and provide that config
         instead
         """
-        logger.debug("Constructed Profile(profile_name=%s)" % profile_name)
+        logger.debug(f"Constructed Profile(profile_name={profile_name})")
         self._profile_name = profile_name
         self._config = config
         self._config_manager = ConfigManager()
@@ -26,7 +24,7 @@ class YowProfile(object):
 
     def _load_config(self):
         # type: () -> Config
-        logger.debug("load_config for %s" % self._profile_name)
+        logger.debug(f"load_config for {self._profile_name}")
         return self._config_manager.load(self._profile_name)
 
     def _load_axolotl_manager(self):
@@ -35,7 +33,7 @@ class YowProfile(object):
 
     def write_config(self, config):
         # type: (Config) -> None
-        logger.debug("write_config for %s" % self._profile_name)
+        logger.debug(f"write_config for {self._profile_name}")
         self._config_manager.save(self._profile_name, config)
 
     @property

@@ -6,7 +6,7 @@ from ...layers.protocol_receipts.protocolentities import OutgoingReceiptProtocol
 from ...layers.protocol_acks.protocolentities import OutgoingAckProtocolEntity
 
 import logging
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class YowMessagesProtocolLayer(YowProtocolLayer):
@@ -20,12 +20,24 @@ class YowMessagesProtocolLayer(YowProtocolLayer):
         return "Messages Layer"
 
     def sendMessageEntity(self, entity):        
-        if entity.getType() in ["text","poll"]:                              
+        if entity.getType() in ["text","poll","reaction"]:                              
             self.entityToLower(entity)
 
     ###recieved node handlers handlers    
     def recvMessageStanza(self, node):            
+        """
+        Processa mensagens recebidas do AxolotlReceiveLayer.
+        
+        Fluxo:
+        1. Recebe nó com <proto> contendo bytes do protobuf Message (já descriptografado)
+        2. Converte bytes → protobuf Message usando protobytes_to_proto()
+        3. Converte protobuf Message → MessageAttributes usando proto_to_message()
+        4. Cria entidade específica (TextMessageProtocolEntity, ExtendedTextMessageProtocolEntity, etc.)
+        5. Envia para SendLayer.onMessage() via toUpper()
+        """
+        logger.debug(f"[MessagesLayer] recvMessageStanza chamado - from: {node.getAttributeValue('from')}, type: {node.getAttributeValue('type')}")
 
+        # Ignora mensagens de newsletter
         if node.getAttributeValue("from").endswith("@newsletter"):
             self.toLower(OutgoingReceiptProtocolEntity(
                             messageIds=[node["id"]],
@@ -35,16 +47,19 @@ class YowMessagesProtocolLayer(YowProtocolLayer):
                         ).toProtocolTreeNode())    
             return               
          
+        # Extrai o nó <proto> que contém os bytes do protobuf (já descriptografado pelo AxolotlReceiveLayer)
         protoNode = node.getChild("proto")                                
-        if protoNode is None :
+        if protoNode is None:
+            logger.warning(f"[MessagesLayer] recvMessageStanza: nó sem <proto>, ignorando")
             return
         
+        # Processa mensagens de reação
         if node.getAttributeValue("type")=="reaction":
-            #reaction,特殊处理
             converter = AttributesConverter.get()
-            proto = converter.protobytes_to_proto(protoNode.getData())                            
-
-            message = converter.proto_to_message(proto,from_jid=node.getAttributeValue("from"))                                  
+            # Converte bytes → protobuf Message
+            proto = converter.protobytes_to_proto(protoNode.getData())
+            # Converte protobuf Message → MessageAttributes
+            message = converter.proto_to_message(proto,from_jid=node.getAttributeValue("from"))
 
             self.toUpper(
                 ReactionMessageProtocolEntity(
@@ -53,14 +68,13 @@ class YowMessagesProtocolLayer(YowProtocolLayer):
                 )
             )
         
+        # Processa mensagens de poll
         elif node.getAttributeValue("type")=="poll":
-
-            #投票，特殊处理
             converter = AttributesConverter.get()
             message_db = self.getStack().getProp("profile").axolotl_manager  
 
             proto = converter.protobytes_to_proto(protoNode.getData())
-            message = converter.proto_to_message(proto,from_jid=node.getAttributeValue("from"),message_db=message_db)                                  
+            message = converter.proto_to_message(proto,from_jid=node.getAttributeValue("from"),message_db=message_db)
 
             self.toUpper(
                 PollUpdateMessageProtocolEntity(
@@ -69,13 +83,25 @@ class YowMessagesProtocolLayer(YowProtocolLayer):
                 )
             )       
         else:                                 
+            # Processa mensagens normais (text, extended_text, etc.)
             if protoNode and protoNode["mediatype"] is None:
-                #mediatype的统一在其它层处理，这里忽略
+                # mediatype é processado em outras layers (YowMediaProtocolLayer)
                 converter = AttributesConverter.get()
-                proto = converter.protobytes_to_proto(protoNode.getData())                            
-                message = converter.proto_to_message(proto)                
+                
+                # PASSO 1: Converte bytes → protobuf Message
+                # protoNode.getData() retorna os bytes do protobuf (já descriptografado)
+                proto = converter.protobytes_to_proto(protoNode.getData())
+                
+                # PASSO 2: Converte protobuf Message → MessageAttributes
+                # Isso extrai conversation, extended_text, image, etc. do protobuf
+                message = converter.proto_to_message(proto)   
 
+                logger.debug(f"[MessagesLayer] recvMessageStanza: message attributes extraídos - conversation: {message.conversation is not None}, extended_text: {message.extended_text is not None}")
+
+                # PASSO 3: Cria entidade específica baseada no tipo de mensagem
                 if message.conversation:
+                    # Mensagem de texto simples
+                    logger.debug(f"[MessagesLayer] Criando TextMessageProtocolEntity")
                     self.toUpper(
                         TextMessageProtocolEntity(
                             message.conversation, 
@@ -83,7 +109,8 @@ class YowMessagesProtocolLayer(YowProtocolLayer):
                         )
                     )
                 elif message.extended_text:
-                    
+                    # Mensagem de texto estendido (pode ter URL, preview, etc.)
+                    logger.debug(f"[MessagesLayer] Criando ExtendedTextMessageProtocolEntity")
                     self.toUpper(
                         ExtendedTextMessageProtocolEntity(
                             message.extended_text,
@@ -92,10 +119,8 @@ class YowMessagesProtocolLayer(YowProtocolLayer):
                     )                                                                       
                     
                 elif not message.sender_key_distribution_message:
-                    # Will send receipts for unsupported message types to prevent stream errors
-                    logger.warning("Unsupported message type: %s, will send receipts to "
-                                    "prevent stream errors" % message)
-                       
+                    # Tipo de mensagem não suportado
+                    logger.warning(f"[MessagesLayer] Tipo de mensagem não suportado: {message}, enviando receipt")
                     self.toLower(
                         OutgoingReceiptProtocolEntity(
                             messageIds=[node["id"]],

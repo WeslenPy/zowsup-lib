@@ -8,7 +8,7 @@ from consonance.structs.publickey import PublicKey
 import threading
 import logging
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class WANoiseProtocolHandshakeWorker(threading.Thread):

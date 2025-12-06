@@ -5,7 +5,7 @@ from ...layers.protocol_acks.protocolentities import OutgoingAckProtocolEntity
 import logging
 
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class YowNotificationsProtocolLayer(YowProtocolLayer):
@@ -48,6 +48,7 @@ class YowNotificationsProtocolLayer(YowProtocolLayer):
             if node.getChild("verified_name"):                    
                 n = node.getChild("verified_name")
                 #有可能收到别人的，或者自己的
+                logger.info(f"BusinessNameUpdateNotificationProtocolEntity: {node}")
                 if n.getAttributeValue("jid") is not None:
                     self.toUpper(BusinessNameUpdateNotificationProtocolEntity.fromProtocolTreeNode(node))
                 else:
@@ -81,7 +82,7 @@ class YowNotificationsProtocolLayer(YowProtocolLayer):
             pass
             
         elif node["type"] == "privacy_token":        
-            logger.info("receive a privacy_token from %s",node["from"].split("@")[0])                        
+            logger.info(f"receive a privacy_token from {node['from'].split('@')[0]}")                        
             tokens = node.getChild("tokens")
             if tokens:
                 for token in tokens.getAllChildren():
@@ -92,7 +93,7 @@ class YowNotificationsProtocolLayer(YowProtocolLayer):
         elif node["type"] == "psa":            
             logger.info("receive a psa node,ignoring it ")            
         else:                        
-            logger.warning("Unsupported notification type: %s " % node["type"])            
+            logger.warning(f"Unsupported notification type: {node['type']} ")            
             print(node)
 
         ack = OutgoingAckProtocolEntity(node["id"], "notification", node["type"], node["from"], participant=node["participant"])

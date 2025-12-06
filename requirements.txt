@@ -22,3 +22,6 @@ Flask
 gevent
 pyyaml
 pydantic
+loguru
+SQLAlchemy
+PyMySQL

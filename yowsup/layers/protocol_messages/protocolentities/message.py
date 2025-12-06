@@ -1,3 +1,4 @@
+from loguru import logger
 from ....structs import ProtocolEntity
 from ....layers.protocol_receipts.protocolentities  import OutgoingReceiptProtocolEntity
 from ....layers.protocol_messages.protocolentities.attributes.attributes_message_meta import MessageMetaAttributes
@@ -29,6 +30,7 @@ class MessageProtocolEntity(ProtocolEntity):
             self._id = messageMetaAttributes.id
 
         self._from = messageMetaAttributes.sender
+        self._from_pn = messageMetaAttributes.sender_pn or messageMetaAttributes.from_pn
         self.to = messageMetaAttributes.recipient
         self.timestamp = messageMetaAttributes.timestamp or self._getCurrentTimestamp()
         self.notify = messageMetaAttributes.notify
@@ -54,6 +56,11 @@ class MessageProtocolEntity(ProtocolEntity):
 
     def getFrom(self, full = True):
         return self._from if full else self._from.split('@')[0]
+
+    def getFromPn(self, full = True):
+        if self._from_pn is None:
+            return None
+        return self._from_pn if full else self._from_pn.split('@')[0]
 
     def isBroadcast(self):
         return False
@@ -85,6 +92,9 @@ class MessageProtocolEntity(ProtocolEntity):
             "id"        : self._id            
         }
 
+
+        logger.info(f"[MessageProtocolEntity] toProtocolTreeNode chamado - attribs: {attribs}")
+
         if self.category is not None:
             attribs["category"] = self.category
 
@@ -101,6 +111,7 @@ class MessageProtocolEntity(ProtocolEntity):
                 attribs["category"] = self.category
         else:
             attribs["from"] = self._from
+            attribs["from_pn"] = self._from_pn
             attribs["t"] = str(self.timestamp)
             if self.offline is not None:
                attribs["offline"] = "1" if self.offline else "0"
@@ -149,7 +160,14 @@ class MessageProtocolEntity(ProtocolEntity):
 
     @staticmethod
     def fromProtocolTreeNode(node,proto=None):
-        return MessageProtocolEntity(
+
+        gen_message_meta = MessageMetaAttributes.from_message_protocoltreenode(node,proto)
+        logger.info(f"[MessageProtocolEntity] fromProtocolTreeNode chamado - gen_message_meta: {gen_message_meta}")
+
+        node_message= MessageProtocolEntity(
             node["type"],
-            MessageMetaAttributes.from_message_protocoltreenode(node,proto)
+            gen_message_meta
         )
+
+        logger.info(f"[MessageProtocolEntity] fromProtocolTreeNode chamado - node_message: {node_message}")
+        return node_message

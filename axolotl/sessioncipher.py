@@ -17,7 +17,7 @@ from .duplicatemessagexception import DuplicateMessageException
 
 import  logging
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 class SessionCipher:
     def __init__(self, sessionStore, preKeyStore, signedPreKeyStore, identityKeyStore, recepientId, deviceId):

@@ -4,7 +4,7 @@ import axolotl_curve25519 as curve
 import logging
 import time
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class CertMan(object):
@@ -16,8 +16,6 @@ class CertMan(object):
         }
 
     
-    #这里由5.x升级为6.x的CertChain逻辑，暂时相当于没验证签名，后面签名算法完善之后再看
-
     def is_valid(self, rs, certificate_data):
         """
         :param rs:

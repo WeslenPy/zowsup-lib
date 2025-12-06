@@ -6,7 +6,7 @@ from .layer_interface_authentication import YowAuthenticationProtocolLayerInterf
 from .protocolentities import StreamErrorProtocolEntity
 import logging
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class YowAuthenticationProtocolLayer(YowProtocolLayer):

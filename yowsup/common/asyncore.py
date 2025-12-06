@@ -350,7 +350,7 @@ class dispatcher:
             self.addr = address
             self.handle_connect_event()
         else:
-            raise OSError(err, errorcode[err])
+            raise OSError(err, _strerror(err))
 
     def accept(self):
         # XXX can return either an address pair or None
@@ -420,7 +420,7 @@ class dispatcher:
 
     def log_info(self, message, type='info'):
         if type not in self.ignore_log_types:
-            print('%s: %s' % (type, message))
+            print(f'{type}: {message}')
 
     def handle_read_event(self):
         if self.accepting:

@@ -47,6 +47,7 @@ class ResultSyncIqProtocolEntity(SyncIqProtocolEntity):
         self.wait = int(wait) if wait is not None else None
         self.version = version
         self.mode = mode
+        self.invalidUsers = getattr(self, 'invalidUsers', [])  # Inicializa se não existir
 
     def __str__(self):
         out  = super(SyncIqProtocolEntity, self).__str__()
@@ -104,18 +105,26 @@ class ResultSyncIqProtocolEntity(SyncIqProtocolEntity):
         version = resultNode.getChild("contact").getAttributeValue("version")
 
         inUsersDict = {}
-        outUsersDict = {}     
+        outUsersDict = {}
+        invalidUsersList = []
 
 
         users = listNode.getAllChildren() if listNode else []
 
         for user in users:
             contact = user.getChild("contact")
+            if contact is None:
+                continue
             type = contact.getAttributeValue("type")
+            contact_data = contact.data.decode() if contact.data else ""
+            
             if type=="in":                                
-                inUsersDict[contact.data.decode()] = user.getAttributeValue("jid")                
+                inUsersDict[contact_data] = user.getAttributeValue("jid")                
             elif type=="out":
-                outUsersDict[contact.data.decode()] = user.getAttributeValue("jid")                                            
+                outUsersDict[contact_data] = user.getAttributeValue("jid")
+            elif type=="invalid":
+                # Número inválido (não existe no WhatsApp)
+                invalidUsersList.append(contact_data)
                     
         
         entity           = SyncIqProtocolEntity.fromProtocolTreeNode(node)
@@ -128,5 +137,8 @@ class ResultSyncIqProtocolEntity(SyncIqProtocolEntity):
             
             syncNode.getAttributeValue("wait")
         )
+        
+        # Adiciona lista de números inválidos
+        entity.invalidUsers = invalidUsersList
 
         return entity

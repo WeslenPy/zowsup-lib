@@ -10,7 +10,7 @@ import threading
 import logging
 from ...common.tools import MimeTools
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class MediaUploader(WARequest, threading.Thread):

@@ -22,16 +22,17 @@ class Export6(ConsoleMain):
         numarr = params[0].split(",")
         for number in numarr:
             config_manager = ConfigManager()
-            config = config_manager.load(SysVar.ACCOUNT_PATH+number)
+            # Carrega config usando profile_name = número (ProfileConfig / MySQL)
+            config = config_manager.load(number, profile_only=True)
             kp = config.client_static_keypair
             pk1 = str(base64.b64encode(kp.public.data),"UTF-8")
             sk1 = str(base64.b64encode(kp.private.data),"UTF-8")
-            db = AxolotlManagerFactory().get_manager(SysVar.ACCOUNT_PATH+number,number)
+            db = AxolotlManagerFactory().get_manager(number,number)
             pk2 = str(base64.b64encode(db.identity.publicKey.serialize()[1:]),'UTF-8')
             sk2 = str(base64.b64encode(db.identity.privateKey.serialize()),'UTF-8') 
             sixth = str(base64.b64encode(config.phone.encode()+"#".encode()+config.id),"UTF-8")
             
-            print("%s,%s,%s,%s,%s,%s" % (config.phone,pk1,sk1,pk2,sk2,sixth))
+            print(f"{config.phone},{pk1},{sk1},{pk2},{sk2},{sixth}")
 
 if __name__ == "__main__":
 

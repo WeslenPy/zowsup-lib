@@ -2,14 +2,13 @@
 import sys,os
 sys.path.append(os.getcwd())
 
-import logging
+from loguru import logger
 from app.yowbot import YowBot
 from conf.constants import SysVar,GlobalVar
 from common.utils import Utils
 from common.consolemain import ConsoleMain
 
 from app.yowbot_values import YowBotType
-logger = logging.getLogger(__name__)
 
 class RegWithLinkCode(ConsoleMain):    
 
@@ -27,9 +26,9 @@ class RegWithLinkCode(ConsoleMain):
             linkCode = "AAAAAAAA"
 
         if "debug" in options:
-            self.init_log(logging.DEBUG,botId+".log")
+            self.init_log("DEBUG", botId + ".log")
         else:
-            self.init_log(logging.INFO,botId+".log")
+            self.init_log("INFO", botId + ".log")
             
 
         self.commonOptionsProcess(options)   

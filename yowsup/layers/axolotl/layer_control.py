@@ -12,7 +12,7 @@ import logging
 import binascii
 import base64
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 class AxolotlControlLayer(AxolotlBaseLayer):
     def __init__(self):
@@ -74,7 +74,7 @@ class AxolotlControlLayer(AxolotlBaseLayer):
                 ib = CatIbProtocolEntity(catdata=base64.b64decode(profile.config.fcm_cat))
                 self.toLower(ib.toProtocolTreeNode())
 
-            logger.debug("SHOULD FLUSH KEYS %d NOW!!" % len(self._unsent_prekeys))
+            logger.debug(f"SHOULD FLUSH KEYS {len(self._unsent_prekeys)} NOW!!")
             self.flush_keys(
                 self.manager.load_latest_signed_prekey(generate=True),
                 self._unsent_prekeys[:], reboot_connection=True
@@ -86,7 +86,7 @@ class AxolotlControlLayer(AxolotlBaseLayer):
     @EventCallback(YowNetworkLayer.EVENT_STATE_DISCONNECTED)
     def on_disconnected(self, yowLayerEvent):        
         super(AxolotlControlLayer, self).on_disconnected(yowLayerEvent)
-        logger.debug(("Disconnected, reboot_connect? = %s" % self._reboot_connection))
+        logger.debug(f"Disconnected, reboot_connect? = {self._reboot_connection}")
         if self._reboot_connection:
             self._reboot_connection = False         
             self.setProp(YowAuthenticationProtocolLayer.PROP_PASSIVE, False)

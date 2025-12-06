@@ -8,7 +8,7 @@ from ...axolotl import exceptions
 from ...layers.axolotl.props import PROP_IDENTITY_AUTOTRUST
 
 import logging
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class AxolotlBaseLayer(YowProtocolLayer):
@@ -43,7 +43,7 @@ class AxolotlBaseLayer(YowProtocolLayer):
         
 
     def getKeysFor(self, jids, resultClbk, errorClbk = None, reason=None):
-        logger.debug("getKeysFor(jids=%s, resultClbk=[omitted], errorClbk=[omitted], reason=%s)" % (jids, reason))
+        logger.debug(f"getKeysFor(jids={jids}, resultClbk=[omitted], errorClbk=[omitted], reason={reason})")
         def onSuccess(resultNode, getKeysEntity):                        
             entity = ResultGetKeysIqProtocolEntity.fromProtocolTreeNode(resultNode)
                         

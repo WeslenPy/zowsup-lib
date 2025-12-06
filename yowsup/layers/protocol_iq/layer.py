@@ -15,6 +15,7 @@ from .protocolentities import *
 
 from ...layers.protocol_media.protocolentities  import *
 from ...layers.protocol_media.protocolentities.iq_requestmediaconn_result import ResultRequestMediaConnIqProtocolEntity
+from loguru import logger
 
 class YowIqProtocolLayer(YowProtocolLayer):
     
@@ -27,7 +28,7 @@ class YowIqProtocolLayer(YowProtocolLayer):
         self._pingThread = None
         self._pingQueue = {}
         self._pingQueueLock = Lock()
-        self.__logger = logging.getLogger(__name__)
+        self.__logger = logger
         super(YowIqProtocolLayer, self).__init__(handleMap)
 
     def __str__(self):
@@ -114,7 +115,7 @@ class YowIqProtocolLayer(YowProtocolLayer):
         self._pingQueue[id] = None
         pingQueueSize = len(self._pingQueue)
         self._pingQueueLock.release()
-        self.__logger.debug("ping queue size: %d" % pingQueueSize)
+        self.__logger.debug(f"ping queue size: {pingQueueSize}")
         if pingQueueSize >= 3:
             self.getStack().broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_DISCONNECT, reason = "Ping Timeout"))
 
@@ -161,7 +162,7 @@ class YowPingThread(Thread):
             for i in range(0, self._interval):                
                 time.sleep(1)                
                 if self._stop:
-                    self.__logger.debug("%s - ping thread stopped" % self.name)
+                    self.__logger.debug(f"{self.name} - ping thread stopped")
                     return
             ping = PingIqProtocolEntity()
             self._layer.waitPong(ping.getId())

@@ -4,6 +4,10 @@ sys.path.append(os.getcwd())
 # coding=UTF-8
 from yowsup.common import YowConstants
 from yowsup.layers import EventCallback, YowLayerEvent
+from yowsup.layers.noise.layer import YowNoiseLayer
+
+# Constante para detecção de erros de handshake
+HANDSHAKE_FAILED_EVENT = YowNoiseLayer.EVENT_HANDSHAKE_FAILED
 from yowsup.layers.axolotl.protocolentities.iq_keys_get_result import ResultGetKeysIqProtocolEntity
 from yowsup.layers.interface  import YowInterfaceLayer, ProtocolEntityCallback
 from yowsup.layers.network.layer import YowNetworkLayer
@@ -52,7 +56,7 @@ from yowsup.layers.protocol_presence.protocolentities.presence_subscribe import 
 import uuid,traceback
 from app.param_not_enough_exception import ParamsNotEnoughException
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 class YowQrCodeThread(Thread):
     def __init__(self, layer, interval):
@@ -61,7 +65,7 @@ class YowQrCodeThread(Thread):
         self._layer = layer
         self._interval = interval
         self._stop = False
-        self.__logger = logging.getLogger(__name__)
+        self.__logger = logger
         super(YowQrCodeThread, self).__init__()
         self.daemon = True
         self.name = "YowQrCode-%s" % self.name
@@ -75,20 +79,10 @@ class YowQrCodeThread(Thread):
                 keypair = regInfo["keypair"]
                 identity = regInfo["identity"]                
                 advSecretKey = random.randbytes(32)
-                print("%s,%s,%s,%s" % (
-                    str(ref,"utf8"),
-                    str(base64.b64encode(keypair.public.data),"utf8"),
-                    str(base64.b64encode(identity.publicKey.serialize()[1:]),"utf8"),
-                    str(base64.b64encode(advSecretKey),"utf8")
-                ))
+                print(f"{str(ref,'utf8')},{str(base64.b64encode(keypair.public.data),'utf8')},{str(base64.b64encode(identity.publicKey.serialize()[1:]),'utf8')},{str(base64.b64encode(advSecretKey),'utf8')}")
                 qr = qrcode.QRCode()
                 qr.border =1
-                qr.add_data("%s,%s,%s,%s" % (
-                    str(ref,"utf8"),
-                    str(base64.b64encode(keypair.public.data),"utf8"),
-                    str(base64.b64encode(identity.publicKey.serialize()[1:]),"utf8"),
-                    str(base64.b64encode(advSecretKey),"utf8")
-                ))
+                qr.add_data(f"{str(ref,'utf8')},{str(base64.b64encode(keypair.public.data),'utf8')},{str(base64.b64encode(identity.publicKey.serialize()[1:]),'utf8')},{str(base64.b64encode(advSecretKey),'utf8')}")
                 qr.make()
                 qr.print_ascii(out=None,tty=False,invert=False)                                                
                 self._layer.setProp("refs",refs)
@@ -98,7 +92,7 @@ class YowQrCodeThread(Thread):
             for i in range(0, self._interval):                
                 time.sleep(1)                
                 if self._stop:
-                    self.__logger.debug("%s - QrThread stopped" % self.name)
+                    self.__logger.debug(f"{self.name} - QrThread stopped")
                     return
 
     def stop(self):
@@ -118,7 +112,7 @@ class SendLayer(YowInterfaceLayer):
         self.detect503 = False     
         self.userQuit = False
         self.mode = None        
-        self.logger = logging.getLogger(self.bot.botId if self.bot.botId is not None else "unknown")
+        logger = logging.getLogger(self.bot.botId if self.bot.botId is not None else "unknown")
         self.msgMap = {}    
         self.loginEvent = threading.Event()        
         self.cmdEventMap = {} 
@@ -127,6 +121,16 @@ class SendLayer(YowInterfaceLayer):
         self.ctxMap = {}
         self._qrThread=None
         self.pairingStatus = None
+        self.message_callback = None  # Callback customizado para mensagens
+        self.handshake_failed_callback = None  # Callback para erros de handshake
+        
+        # Sistema anti-banimento: rate limiting e controle de envio
+        self._last_message_time = {}  # {recipient: timestamp} para rate limiting por destinatário
+        self._daily_message_count = {}  # {date: count} para controle diário
+        self._last_sync_time = {}  # {jid: timestamp} para controle de sincronização
+        self._invalid_numbers = set()  # Números inválidos conhecidos (evita tentar novamente)
+        self._rate_limit_lock = threading.Lock()  # Lock para thread-safety
+        self._handshake_error_detected = False  # Flag para detectar erros de handshake
                 
     def quit(self):
         self.userQuit = True
@@ -188,9 +192,9 @@ class SendLayer(YowInterfaceLayer):
             client_static_keypair=keypair,
             device_identity=str(base64.b64encode(device_identity.SerializeToString()),'UTF-8')
         )
-        account_dir = Path(SysVar.ACCOUNT_PATH+phone+"_"+str(deviceid))
-        Utils.assureDir(account_dir)        
-        profile = YowProfile(SysVar.ACCOUNT_PATH+phone+"_"+str(deviceid), config)
+        # Usa apenas o identificador lógico de perfil (phone_deviceid), sem ACCOUNT_PATH
+        profile_name = f"{phone}_{deviceid}"
+        profile = YowProfile(profile_name, config)
         profile.write_config(config)
         db = profile.axolotl_manager
 
@@ -209,25 +213,30 @@ class SendLayer(YowInterfaceLayer):
 
     @EventCallback(YowNetworkLayer.EVENT_STATE_DISCONNECTED)
     def onDisconnected(self, yowLayerEvent):             
-        self.logger.info("Disconnect")       
+        logger.info("Disconnect")       
         error = self.getStack().getProp("exception")                
         if self.getProp("jid") is not None:           
             if self._qrThread:
                 self._qrThread.stop()
             waNum,a,deviceid = WATools.jidDecode(self.getProp("jid"))
-            self.logger.info("Companion device register success(%s_%d)" % (waNum,deviceid))        
+            logger.info(f"Companion device register success({waNum}_{deviceid})")        
             self.setProp("jid",None)
-            time.sleep(5)                                       
-            self.getStack().setProfile(SysVar.ACCOUNT_PATH+waNum+"_"+str(deviceid))                       
+            time.sleep(1)                                       
+            # Reaponta o stack para o perfil lógico (sem ACCOUNT_PATH)
+            self.getStack().setProfile(f"{waNum}_{deviceid}")                       
             self.getStack().broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT))
             return        
         if self.getProp("refs") is not None and len(self.getProp("refs"))==0:            
-            time.sleep(5)
+            time.sleep(1)
             self.getStack().broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT))
             return
         
         if self.isConnected:     
             self.eventCallback(wsend_pb2.BotEvent.Event.LOGOUT)
+            # Atualiza status da conta no banco de dados - marca como não logada
+            if self.bot.botId is not None:
+                from app.db import update_account_status
+                update_account_status(self.bot.botId, is_logged_in=False)
 
         self.isConnected = False       
             
@@ -246,17 +255,36 @@ class SendLayer(YowInterfaceLayer):
                     Utils.exit(1)         
             else:                
                 time.sleep(1)    
+    
+    @EventCallback(HANDSHAKE_FAILED_EVENT)
+    def onHandshakeFailed(self, event):
+        """
+        Detecta erros de handshake e marca para rotação de ambiente.
+        """
+        reason = getattr(event, 'reason', None) or str(event)
+        logger.error(f"[{self.bot.botId if self.bot.botId else 'unknown'}] Erro de handshake detectado: {reason}")
+        self._handshake_error_detected = True
+        
+        # Chama callback customizado se configurado
+        if self.handshake_failed_callback:
+            try:
+                self.handshake_failed_callback(reason=reason, bot_id=self.bot.botId)
+            except Exception as e:
+                logger.error(f"Erro ao chamar callback de handshake failed: {e}")
+        
+        # Marca que houve erro de handshake (pode ser usado para rotação de ambiente)
+        logger.warning(f"[{self.bot.botId if self.bot.botId else 'unknown'}] Handshake falhou. Considere tentar outro tipo de ambiente.")    
 
     
     @ProtocolEntityCallback("notification")
     def onNotification(self,entity):        
 
         if isinstance(entity,MexUpdateNotificationProtocolEntity):            
-            self.logger.info("Notification: Received a MexUpdate Notification: %s" % entity.jsonObj)            
+            logger.info(f"Notification: Received a MexUpdate Notification: {entity.jsonObj}")            
             return
         
         if isinstance(entity,AccountSyncNotificationProtocolEntity):
-            self.logger.info("Notification: Received a AccountSync Notification")            
+            logger.info("Notification: Received a AccountSync Notification")            
             companionJid = self.getStack().getProp("pair-companion-jid")
             if companionJid is None :
                 return
@@ -290,7 +318,7 @@ class SendLayer(YowInterfaceLayer):
                 ))        
                 
                 self.toLower(entity)
-                time.sleep(3)           
+                time.sleep(1)           
 
                 def on_get_conn_success(conn_entity, original_iq_entity):   
 
@@ -357,7 +385,7 @@ class SendLayer(YowInterfaceLayer):
             self._sendIq(entity, on_get_encrypt_success, on_get_encrypt_error)                 
 
         if isinstance(entity,LinkCodeCompanionRegNotificationProtocolEntity):
-            self.logger.info("Notification: Received a LinkCodeCompanionReg, stage=%s",entity.stage)
+            logger.info(f"Notification: Received a LinkCodeCompanionReg, stage={entity.stage}")
 
             if entity.stage == "primary_hello":                
                 linkCode = self.bot.pairLinkCode
@@ -407,7 +435,7 @@ class SendLayer(YowInterfaceLayer):
                 linkingSecretKeyMaterial = shareEphemeralSecret+identitySharedKey+linkCodePairingEphemeralRootSecret
                 advSecretPublicKey = Utils.extract_and_expand(linkingSecretKeyMaterial,"adv_secret".encode(),32)                  
                 self.resetSync([],{})
-                time.sleep(3)                
+                time.sleep(1)                
                 profile = self.getProp("profile")
                 ref,pubKey,deviceIdentity,keyIndexList = Utils.generateMultiDeviceParams(ref,companionServerAuthKeyPub,companionIdentityPublic,advSecretPublicKey,profile)                                                
                 entity = MultiDevicePairDeviceIqProtocolEntity(ref=ref,pubKey=pubKey,deviceIdentity=deviceIdentity,keyIndexList=keyIndexList)                
@@ -426,11 +454,11 @@ class SendLayer(YowInterfaceLayer):
                 self._sendIq(entity, on_pair_device_success, on_pair_device_error)                
 
         if isinstance(entity,WaOldCodeNotificationProtocolEntity):
-            self.logger.info("Notification: Received a wa_old registration code: %s in %s" % (entity.code,entity.timestamp))                  
+            logger.info(f"Notification: Received a wa_old registration code: {entity.code} in {entity.timestamp}")                  
             return 
                     
         if isinstance(entity,CreateGroupsNotificationProtocolEntity):
-            self.logger.info("Notification: Group %s created" % entity.groupId)
+            logger.info(f"Notification: Group {entity.groupId} created")
             return 
         
         if isinstance(entity,AddGroupsNotificationProtocolEntity):
@@ -442,7 +470,7 @@ class SendLayer(YowInterfaceLayer):
             n.group_notification.action = wsend_pb2.Notification.GroupNotification.Action.Value("ADD")
             n.group_notification.reason = "invite"            
             n.group_notification.jids.extend(entity.getParticipants())                   
-            self.logger.info("Notification: Group %s add participant %s" % (n.sender,entity.getParticipants()[0]))
+            logger.info(f"Notification: Group {n.sender} add participant {entity.getParticipants()[0]}")
             return
         
         if isinstance(entity,RemoveGroupsNotificationProtocolEntity):
@@ -453,7 +481,7 @@ class SendLayer(YowInterfaceLayer):
             n.type = wsend_pb2.Notification.Type.Value("GROUP")
             n.group_notification.action = wsend_pb2.Notification.GroupNotification.Action.Value("REMOVE")                  
             n.group_notification.jids.extend(entity.getParticipants())                 
-            self.logger.info("Notification: Group %s remove participant %s" % (n.sender,entity.getParticipants()[0]))       
+            logger.info(f"Notification: Group {n.sender} remove participant {entity.getParticipants()[0]}")       
             return    
         
         if isinstance(entity,SetPictureNotificationProtocolEntity):
@@ -569,14 +597,39 @@ class SendLayer(YowInterfaceLayer):
                             
     @ProtocolEntityCallback("failure")
     def onFailure(self, entity):
-        self.logger.info("Login Fail")     
+        logger.info("Login Fail")     
 
         print(entity)
-        if entity.reason=="403" or entity.reason=="401" or entity.reason=="405" or entity.reason=="404":
-            self.eventCallback(wsend_pb2.BotEvent.Event.LOGIN_FAIL,eventDetail=entity.reason)
+        reason = entity.reason if hasattr(entity, 'reason') else str(entity)
+        
+        # Verifica se é erro de handshake (pode aparecer como "handshake" ou outros códigos)
+        is_handshake_error = (
+            "handshake" in reason.lower() or 
+            reason in ["handshake_failed", "HandshakeFailedException"] or
+            (hasattr(entity, 'reason') and entity.reason and "handshake" in str(entity.reason).lower())
+        )
+        
+        if is_handshake_error:
+            logger.error(f"Erro de handshake detectado: {reason}")
+            self._handshake_error_detected = True
+            
+            # Chama callback se configurado
+            if self.handshake_failed_callback:
+                try:
+                    self.handshake_failed_callback(reason=reason, bot_id=self.bot.botId)
+                except Exception as e:
+                    logger.error(f"Erro ao chamar callback de handshake failed: {e}")
+        
+        if reason=="403" or reason=="401" or reason=="405" or reason=="404":
+            self.eventCallback(wsend_pb2.BotEvent.Event.LOGIN_FAIL,eventDetail=reason)
             self.detect40x = True            
 
-            if entity.reason!="405" and self.bot.bot_type!=YowBotType.TYPE_RUN_TEMP:
+            # Atualiza status da conta no banco de dados - marca como não logada e com restrição
+            if self.bot.botId is not None:
+                from app.db import update_account_status
+                update_account_status(self.bot.botId, is_logged_in=False, has_restriction=True)
+
+            if reason!="405" and self.bot.bot_type!=YowBotType.TYPE_RUN_TEMP:
                 pass                
 
             self.loginEvent.set()
@@ -614,20 +667,51 @@ class SendLayer(YowInterfaceLayer):
                     e.contact_update.value = contactUpdate["value"]
 
             e.timestamp = int(time.time())
-            self.bot.callback(event = e,logger =self.logger,caller=self.bot)
+            self.bot.callback(event = e,logger =logger,caller=self.bot)
 
 
+    def setMessageCallback(self, callback):
+        """
+        Define um callback customizado para mensagens recebidas.
+        
+        O callback será chamado com os seguintes argumentos:
+        - message: objeto wsend_pb2.Message com os dados da mensagem
+        - logger: logger para uso no callback
+        - caller: referência ao bot
+        
+        Args:
+            callback: Função ou método que será chamado quando uma mensagem for recebida.
+                     Se None, remove o callback customizado.
+        """
+        self.message_callback = callback
+        logger.info(f"Message callback {'configurado' if callback is not None else 'removido'} no SendLayer")
+    
     def messageCallback(self,msg):
         #if msg.HasField("participant"):
             #group msg, ignore it
         #    return
+        
+        # Primeiro chama o callback customizado do SendLayer (se configurado)
+        if self.message_callback is not None:
+            msg.bot_id = self.bot.botId
+            logger.debug(f"messageCallback chamado - callback customizado: {self.message_callback}, msg type: {msg.type if hasattr(msg, 'type') else 'unknown'}")
+            try:
+                self.message_callback(message=msg, logger=logger, caller=self.bot)
+            except Exception as e:
+                logger.error(f"Erro ao chamar callback customizado de mensagem: {e}", exc_info=True)
+        
+        # Depois chama o callback padrão do bot (se configurado)
         if self.bot.callback is not None:
             msg.bot_id = self.bot.botId
-            self.bot.callback(message=msg,logger=self.logger,caller=self.bot)
+            logger.debug(f"messageCallback chamado - callback do bot: {self.bot.callback}, msg type: {msg.type if hasattr(msg, 'type') else 'unknown'}")
+            try:
+                self.bot.callback(message=msg,logger=logger,caller=self.bot)
+            except Exception as e:
+                logger.error(f"Erro ao chamar callback do bot: {e}", exc_info=True)
 
     @ProtocolEntityCallback("success")
     def onSuccess(self, successProtocolEntity):                  
-        self.logger.info("Login OK")     
+        logger.info("Login OK")     
                             
         self.isConnected = True
         self.loginEvent.set()  
@@ -638,12 +722,17 @@ class SendLayer(YowInterfaceLayer):
         
         self.lastOnlineTimeStamp = int(time.time()) 
 
-        #self.setProp(PROP_IDENTITY_AUTOTRUST, True)
+        # Atualiza status da conta no banco de dados
+        if self.bot.botId is not None:
+            from app.db import update_account_status
+            update_account_status(self.bot.botId, is_logged_in=True, has_restriction=False)
+
+        self.setProp(PROP_IDENTITY_AUTOTRUST, True)
         
 
     @ProtocolEntityCallback("stream:error")
     def onStreamError(self, entity):
-        self.logger.info("Stream Error")      
+        logger.info("Stream Error")      
         print(entity)        
 
         if entity.code is not None :
@@ -652,21 +741,46 @@ class SendLayer(YowInterfaceLayer):
                 self.bot._stack.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_DISCONNECT))                
    
     @ProtocolEntityCallback("ack")
-    def onAck(self, entity):                
+    def onAck(self, entity):               
+
+        logger.info(f"onAck chamado: {entity}") 
         
         if entity.getId() in self.ackQueue:
 
             if entity._from is not None:
                 num = entity._from[0:entity._from.rfind('@', 0)]                  
 
-            if entity.getError() is None:                                                      
+            if entity.getError() is None:
+                    # Atualiza o status da mensagem para SENT no banco de dados
+                    if self.bot.botId is not None:
+                        from app.db import register_sent_message
+                        recipient_jid = Jid.normalize(entity._from) if entity._from else num
+                        register_sent_message(
+                            phone=self.bot.botId,
+                            msg_id=entity.getId(),
+                            recipient=recipient_jid,
+                            status="SENT",
+                        )
+                    
                     self.eventCallback(wsend_pb2.BotEvent.Event.MSG_LOG,msgLog={
                             'msgId':entity.getId(),                                                 
                             'sender':self.bot.botId,
                             'target':num,
                             'status': wsend_pb2.MsgLogItem.Status.Value("SENT")
                     })
-            else:                
+            else:
+                    # Atualiza o status da mensagem para ERROR no banco de dados
+                    if self.bot.botId is not None:
+                        from app.db import register_sent_message
+                        recipient_jid = Jid.normalize(entity._from) if entity._from else num
+                        register_sent_message(
+                            phone=self.bot.botId,
+                            msg_id=entity.getId(),
+                            recipient=recipient_jid,
+                            status="ERROR",
+                            error_code=entity.getError(),
+                        )
+                
                     self.eventCallback(wsend_pb2.BotEvent.Event.MSG_LOG,msgLog={
                             'msgId':entity.getId(),                            
                             'sender':self.bot.botId,
@@ -739,6 +853,7 @@ class SendLayer(YowInterfaceLayer):
     
     @ProtocolEntityCallback("message")
     def onMessage(self, messageProtocolEntity):            
+        logger.debug(f"[SendLayer] onMessage chamado - type: {messageProtocolEntity.getType()}, from: {messageProtocolEntity.getFrom(False) if hasattr(messageProtocolEntity, 'getFrom') else 'unknown'}")
            
         if messageProtocolEntity.getType() == 'text' :
 
@@ -753,7 +868,7 @@ class SendLayer(YowInterfaceLayer):
             msg = wsend_pb2.Message()                         
             msg.msg_id = messageProtocolEntity.getId()                            
             msg.target = messageProtocolEntity.getTo(False) if messageProtocolEntity.fromme else self.bot.botId
-            msg.sender = messageProtocolEntity.getFrom(False)
+            msg.sender = messageProtocolEntity.getFromPn(False) or messageProtocolEntity.getFrom(False)
             msg.notify = messageProtocolEntity.getNotify()
             msg.timestamp = int(time.time())
             if messageProtocolEntity.getParticipant(False) :
@@ -910,8 +1025,8 @@ class SendLayer(YowInterfaceLayer):
 
         self.toLower(entity.ack())        
 
-    def isConnected(self):
-       return self.isConnected
+    # Mantido atributo booleano self.isConnected para status de conexão.
+    # Método removido para evitar recursão e confusão com o atributo.
                       
     def waitLogin(self):
         #等待bot连接就绪,
@@ -922,7 +1037,7 @@ class SendLayer(YowInterfaceLayer):
         tos, *other = cmdParams
         toArr = tos.split(",")
         if len(toArr)==0:
-            self.logger.info("No target to send")
+            logger.info("No target to send")
             return False
 
         repeat = int(Utils.getOption(options,"repeat",1))
@@ -933,48 +1048,466 @@ class SendLayer(YowInterfaceLayer):
                 params.extend(cmdParams[1:])
                 self.sendMsg(params,options)
                 execCount+= 1
-                time.sleep(3)
+                time.sleep(1)
                             
         return "JUSTWAIT"
     
+    def _check_account_restriction(self):
+        """
+        Verifica se a conta tem restrições antes de enviar mensagem.
+        
+        Returns:
+            True se a conta está restrita, False caso contrário
+        """
+        if self.bot.botId is None:
+            return False
+        
+        try:
+            from app.db import SessionLocal
+            from app import models
+            
+            db = SessionLocal()
+            try:
+                account = db.query(models.Account).filter_by(phone=self.bot.botId).one_or_none()
+                if account and account.has_restriction:
+                    logger.warning(f"Conta {self.bot.botId} está com restrição, não é possível enviar mensagens")
+                    return True
+                return False
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"Erro ao verificar restrições da conta: {e}")
+            return False
+    
+    def _check_rate_limit(self, recipient_jid, min_delay_seconds=3):
+        """
+        Verifica e aplica rate limiting para evitar envios muito frequentes.
+        
+        Args:
+            recipient_jid: JID do destinatário
+            min_delay_seconds: Delay mínimo em segundos entre mensagens para o mesmo destinatário
+        
+        Returns:
+            True se pode enviar, False se precisa aguardar
+        """
+        with self._rate_limit_lock:
+            current_time = time.time()
+            last_time = self._last_message_time.get(recipient_jid, 0)
+            
+            if last_time > 0:
+                elapsed = current_time - last_time
+                if elapsed < min_delay_seconds:
+                    wait_time = min_delay_seconds - elapsed
+                    logger.info(f"Rate limit: aguardando {wait_time:.1f}s antes de enviar para {recipient_jid}")
+                    time.sleep(wait_time)
+            
+            self._last_message_time[recipient_jid] = time.time()
+            return True
+    
+    def _check_daily_limit(self, max_messages_per_day=50):
+        """
+        Verifica limite diário de mensagens.
+        
+        Args:
+            max_messages_per_day: Número máximo de mensagens por dia
+        
+        Returns:
+            True se pode enviar, False se excedeu o limite
+        """
+        from datetime import date
+        
+        with self._rate_limit_lock:
+            today = str(date.today())
+            count = self._daily_message_count.get(today, 0)
+            
+            if count >= max_messages_per_day:
+                logger.warning(f"Limite diário de {max_messages_per_day} mensagens atingido para hoje")
+                return False
+            
+            self._daily_message_count[today] = count + 1
+            return True
+    
+    def _is_number_invalid(self, phone_number):
+        """
+        Verifica se um número está na lista de números inválidos.
+        
+        Args:
+            phone_number: Número de telefone
+        
+        Returns:
+            True se o número é inválido, False caso contrário
+        """
+        # Remove @s.whatsapp.net se presente
+        phone = phone_number.split('@')[0] if '@' in phone_number else phone_number
+        return phone in self._invalid_numbers
+    
+    def _mark_number_invalid(self, phone_number):
+        """
+        Marca um número como inválido.
+        
+        Args:
+            phone_number: Número de telefone
+        """
+        phone = phone_number.split('@')[0] if '@' in phone_number else phone_number
+        self._invalid_numbers.add(phone)
+        logger.warning(f"Número {phone} marcado como inválido")
+    
+    def _validate_contact_sync_result(self, sync_result, requested_jid):
+        """
+        Valida o resultado da sincronização de contato.
+        
+        Args:
+            sync_result: Resultado da sincronização (ResultSyncIqProtocolEntity)
+            requested_jid: JID que foi solicitado para sincronizar
+        
+        Returns:
+            Tuple (is_valid, jid_found, phone_number)
+            - is_valid: True se o número é válido no WhatsApp
+            - jid_found: JID encontrado (pode ser diferente do solicitado)
+            - phone_number: Número de telefone extraído
+        """
+        if not sync_result or not hasattr(sync_result, 'inNumbers'):
+            return False, None, None
+        
+        # Extrai o número do JID solicitado
+        phone = requested_jid.split('@')[0] if '@' in requested_jid else requested_jid
+        
+        # Verifica se está na lista de números inválidos (prioridade)
+        invalid_users = getattr(sync_result, 'invalidUsers', [])
+        if phone in invalid_users:
+            logger.warning(f"Número {phone} está na lista de inválidos do WhatsApp")
+            return False, None, phone
+        
+        # Verifica se está em inNumbers (números válidos que têm você nos contatos)
+        if phone in sync_result.inNumbers:
+            jid_found = sync_result.inNumbers[phone]
+            logger.info(f"Número {phone} válido (inNumbers), JID: {jid_found}")
+            return True, jid_found, phone
+        
+        # Verifica se está em outNumbers (números válidos que você tem nos contatos)
+        if phone in sync_result.outNumbers:
+            jid_found = sync_result.outNumbers[phone]
+            logger.info(f"Número {phone} válido (outNumbers), JID: {jid_found}")
+            return True, jid_found, phone
+        
+        # Se não está em nenhum, pode ser inválido
+        logger.warning(f"Número {phone} não encontrado em inNumbers nem outNumbers - pode ser inválido")
+        return False, None, phone
+    
+    def _human_like_delay(self, base_delay=2.0, variation=1.0):
+        """
+        Gera um delay que simula comportamento humano (variável e natural).
+        
+        Args:
+            base_delay: Delay base em segundos
+            variation: Variação máxima em segundos
+        
+        Returns:
+            Delay aleatório entre base_delay e base_delay + variation
+        """
+        delay = base_delay + random.uniform(0, variation)
+        return delay
+    
     def assureContactsAndSend(self,cmdParams,options,send_func,redo_func):        
-        to,*other = cmdParams
+        """
+        Garante que o contato está sincronizado antes de enviar mensagem.
+        Implementa estratégia anti-banimento com validações robustas.
+        
+        Args:
+            cmdParams: Parâmetros do comando [to, message, ...]
+            options: Opções do comando
+            send_func: Função para enviar mensagem
+            redo_func: Função para reenviar após sincronização
+        
+        Returns:
+            False se contato já existe, None se está sincronizando
+        """
+        if not cmdParams or len(cmdParams) < 1:
+            logger.error("assureContactsAndSend: parâmetros insuficientes")
+            return False
+        
+        to = cmdParams[0]
+        if not to:
+            logger.error("assureContactsAndSend: 'to' vazio")
+            return False
 
-        isCompanion = "_" in self.bot.botId
+        try:
+            # 1. Verifica se a conta está restrita
+            if self._check_account_restriction():
+                logger.error(f"Não é possível enviar: conta {self.bot.botId} está com restrição")
+                raise RuntimeError(f"Conta {self.bot.botId} está com restrição")
+            
+            # 2. Verifica limite diário
+            if not self._check_daily_limit():
+                logger.error(f"Limite diário de mensagens atingido para conta {self.bot.botId}")
+                raise RuntimeError("Limite diário de mensagens atingido")
+            
+            isCompanion = "_" in self.bot.botId if self.bot.botId else False
+            jid = Jid.normalize(to)
+            
+            if not jid:
+                logger.error(f"assureContactsAndSend: falha ao normalizar JID: {to}")
+                raise ValueError(f"JID inválido: {to}")
+            
+            # 3. Verifica se o número está na lista de inválidos
+            phone = jid.split('@')[0] if '@' in jid else jid
+            if self._is_number_invalid(phone):
+                logger.warning(f"Número {phone} está na lista de inválidos, não tentando enviar")
+                raise ValueError(f"Número {phone} é inválido no WhatsApp")
 
-        jid = Jid.normalize(to)
+            isNewContact = self.db._store.isNewContact(jid)
+            if isNewContact and not isCompanion:
+                logger.info(f"Contato {jid} é novo, sincronizando e validando antes de enviar...")
+                
+                # 4. Verifica se já sincronizou recentemente (evita sincronizações muito frequentes)
+                last_sync = self._last_sync_time.get(jid, 0)
+                current_time = time.time()
+                min_sync_interval = 30  # Mínimo 30 segundos entre sincronizações do mesmo número
+                
+                if last_sync > 0 and (current_time - last_sync) < min_sync_interval:
+                    wait_time = min_sync_interval - (current_time - last_sync)
+                    logger.info(f"Aguardando {wait_time:.1f}s antes de sincronizar novamente {jid}")
+                    time.sleep(wait_time)
+                
+                self.db._store.addContact(jid)
+                entity = GetSyncIqProtocolEntity([phone], mode="delta")
+                
+                # Usa uma lista para armazenar o JID atualizado (permite modificação dentro da closure)
+                jid_container = [jid]
+                
+                def on_success(entity, original_iq_entity):
+                    # Valida o resultado da sincronização usando o JID original
+                    is_valid, jid_found, phone_num = self._validate_contact_sync_result(entity, jid_container[0])
+                    
+                    if not is_valid:
+                        logger.error(f"Número {phone_num} não é válido no WhatsApp (não encontrado na sincronização)")
+                        self._mark_number_invalid(phone_num)
+                        # Não tenta enviar para número inválido
+                        return
+                    
+                    # Atualiza o JID se encontrou um diferente
+                    current_jid = jid_container[0]
+                    if jid_found and jid_found != current_jid:
+                        logger.info(f"JID atualizado: {current_jid} -> {jid_found}")
+                        jid_container[0] = jid_found
+                        # Atualiza cmdParams com o JID correto
+                        cmdParams[0] = jid_found.split('@')[0] if '@' in jid_found else jid_found
+                        current_jid = jid_found
+                    
+                    logger.info(f"Contato {current_jid} sincronizado e validado com sucesso")
+                    
+                    # Aguarda delay human-like antes de confiar
+                    trust_delay = self._human_like_delay(base_delay=2.0, variation=1.5)
+                    logger.debug(f"Aguardando {trust_delay:.1f}s antes de confiar no contato...")
+                    time.sleep(trust_delay)
+                    
+                    # Confia no contato
+                    trust_entity = TrustContactIqProtocolEntity(current_jid, int(time.time()))
+                    self.toLower(trust_entity)
+                    
+                    # Aguarda mais um pouco antes de enviar (comportamento humano)
+                    send_delay = self._human_like_delay(base_delay=3.0, variation=2.0)
+                    logger.debug(f"Aguardando {send_delay:.1f}s antes de enviar mensagem...")
+                    time.sleep(send_delay)
+                    
+                    # Atualiza timestamp da última sincronização
+                    self._last_sync_time[current_jid] = time.time()
+                    
+                    # Reenvia a mensagem
+                    redo_func(cmdParams, options)
+                
+                def on_error(entity, original_iq):
+                    logger.error(f"Erro ao sincronizar contato {jid_container[0]}")
+                    # Marca como inválido se erro persistente
+                    error_code = getattr(entity, 'code', None)
+                    if error_code in ['404', '406']:  # Códigos comuns para número inválido
+                        logger.warning(f"Erro {error_code} ao sincronizar {phone}, marcando como inválido")
+                        self._mark_number_invalid(phone)
+                    # Não tenta enviar para número que falhou na sincronização
 
-        isNewContact = self.db._store.isNewContact(jid)        
-        if isNewContact and not isCompanion:
-            self.db._store.addContact(jid) 
-            entity = GetSyncIqProtocolEntity([jid],mode = "delta")    
-            def on_success(entity, original_iq_entity):  
-                #同步成功,重新调用一次
-                logger.info("add target to contacts")      
-                entity = TrustContactIqProtocolEntity(jid,int(time.time()))
-                self.toLower(entity)                
-                redo_func(cmdParams,options)                
-            def on_error(entity, original_iq):         
-                print("ERROR")   
-
-            self._sendIq(entity,on_success,on_error)                        
-        else:
-            logger.info("target in contacts")                       
-            send_func(cmdParams,options)        
+                self._last_sync_time[jid] = time.time()
+                self._sendIq(entity, on_success, on_error)
+                return None  # Indica que está em processo de sincronização
+            else:
+                logger.debug(f"Contato {jid} já existe nos contatos")
+                # Aplica rate limiting mesmo para contatos conhecidos
+                self._check_rate_limit(jid, min_delay_seconds=2.0)
+                send_func(cmdParams, options)
+                return False
+                
+        except (ValueError, RuntimeError) as e:
+            logger.error(f"Erro em assureContactsAndSend: {e}")
+            raise  # Re-lança exceções críticas
+        except Exception as e:
+            logger.error(f"Erro inesperado em assureContactsAndSend: {e}", exc_info=True)
+            # Em caso de erro inesperado, não tenta enviar (mais seguro)
             return False    
         
     def sendMsgDirect(self,cmdParams,options):
-        to,message,*other = cmdParams
+        """
+        Envia mensagem de texto de forma robusta e consistente.
+        
+        Args:
+            cmdParams: Lista com [to, message, ...]
+            options: Dict com opções adicionais
+        
+        Returns:
+            message_id da mensagem enviada
+        
+        Raises:
+            ValueError: Se parâmetros inválidos
+            RuntimeError: Se não estiver conectado ou erro ao enviar
+        """
+        # Validação de parâmetros
+        if not cmdParams or len(cmdParams) < 2:
+            raise ValueError("sendMsgDirect requer pelo menos 2 parâmetros: [to, message]")
+        
+        to = cmdParams[0]
+        message = cmdParams[1]
+        
+        # Validação de entrada
+        if not to or not isinstance(to, str):
+            raise ValueError(f"Parâmetro 'to' inválido: {to}")
+        
+        if not message or not isinstance(message, str):
+            raise ValueError(f"Parâmetro 'message' inválido: {message}")
+        
+        # Validação de tamanho da mensagem (WhatsApp limita a ~4096 caracteres)
+        MAX_MESSAGE_LENGTH = 4096
+        if len(message) > MAX_MESSAGE_LENGTH:
+            logger.warning(f"Mensagem muito longa ({len(message)} chars), truncando para {MAX_MESSAGE_LENGTH}")
+            message = message[:MAX_MESSAGE_LENGTH]
+        
+        # Verifica se está conectado
+        if not self.isConnected:
+            error_msg = f"Não é possível enviar mensagem: conta não está conectada (botId={self.bot.botId})"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        
+        # Verifica se a conta está restrita (anti-banimento)
+        if self._check_account_restriction():
+            error_msg = f"Conta {self.bot.botId} está com restrição, não é possível enviar mensagens"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        
+        try:
+            # Normaliza o JID do destinatário
+            normalized_to = Jid.normalize(to)
+            if not normalized_to:
+                raise ValueError(f"Falha ao normalizar JID: {to}")
+            
+            # Verifica se o número está na lista de inválidos
+            phone = normalized_to.split('@')[0] if '@' in normalized_to else normalized_to
+            if self._is_number_invalid(phone):
+                error_msg = f"Número {phone} é inválido no WhatsApp (marcado como inválido anteriormente)"
+                logger.warning(error_msg)
+                raise ValueError(error_msg)
+            
+            # Aplica rate limiting (anti-banimento)
+            # Para grupos, usa delay menor; para contatos individuais, delay maior
+            is_group = normalized_to.endswith("@g.us")
+            min_delay = .5 if is_group else 1.0  # Grupos podem ter delay menor
+            self._check_rate_limit(normalized_to, min_delay_seconds=min_delay)
+            
+            logger.debug(f"Enviando mensagem para {normalized_to} (original: {to})")
+            
+            # Prepara context_info
+            context_info = self._prepare_context_info(options)
+            
+            # Cria atributos da mensagem baseado nas opções
+            attr = self._create_text_attributes(message, context_info, options)
+            
+            # Cria entidade da mensagem
+            messageEntity = ExtendedTextMessageProtocolEntity(
+                attr, 
+                MessageMetaAttributes(
+                    id=self.bot.idType,
+                    recipient=normalized_to,
+                    timestamp=int(time.time())
+                )            
+            )
+            
+            msg_id = messageEntity.getId()
+            logger.info(f"Preparando envio de mensagem (ID={msg_id}) para {normalized_to}")
+            
+            # Adiciona à fila de ACK
+            self.ackQueue.append(msg_id)
+            
+            # Envia mensagem baseado no tipo
+            if "broadcast" in options:
+                self._send_broadcast_message(messageEntity, options)
+            else:
+                self._send_regular_message(messageEntity, normalized_to, to, options)
+            
+            # Registra no banco de dados
+            self._register_sent_message(msg_id, normalized_to, "TEXT", "EXECUTED")
+            
+            # Notifica evento
+            self._notify_message_sent(msg_id, normalized_to, to)
+            
+            # Se waitMsgId está configurado, sinaliza o evento
+            if "waitMsgId" in options and "ctxId" in options:
+                ctx_id = options["ctxId"]
+                if ctx_id in self.ctxMap:
+                    self.ctxMap[ctx_id]["msgId"] = msg_id
+                    self.ctxMap[ctx_id]["event"].set()
+            
+            logger.info(f"Mensagem enviada com sucesso (ID={msg_id}) para {normalized_to}")
+            return msg_id
+            
+        except Exception as e:
+            logger.exception(e)
+            error_msg = f"Erro ao enviar mensagem para {to}: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            
+            # Tenta registrar erro no banco de dados
+            try:
+                normalized_to = Jid.normalize(to) if to else None
+                if normalized_to and self.bot.botId:
+                    from app.db import register_sent_message
+                    register_sent_message(
+                        phone=self.bot.botId,
+                        msg_id=None,
+                        recipient=normalized_to,
+                        message_type="TEXT",
+                        status="ERROR",
+                        error_code=str(e)
+                    )
+            except:
+                pass
+            
+            raise RuntimeError(error_msg) from e
+    
+    def _prepare_context_info(self, options):
+        """Prepara ContextInfoAttributes baseado nas opções."""
         context_info = ContextInfoAttributes()
 
+        # Configura reply/quote se fornecido
+        if "reply" in options or "reply_to" in options:
+            reply_to = options.get("reply") or options.get("reply_to")
+            if isinstance(reply_to, str):
+                # Se for apenas uma string, assume que é o message_id
+                context_info.stanza_id = reply_to
+            elif isinstance(reply_to, dict):
+                # Se for um dict, pode ter message_id, participant, etc.
+                context_info.stanza_id = reply_to.get("message_id") or reply_to.get("id")
+                context_info.participant = reply_to.get("participant")
+                context_info.remote_jid = reply_to.get("remote_jid")
+        
+        # Configura disappearing mode
         if "disappearing" in options:
-            context_info.expiration = int(options["disappearing"])*86400
-            context_info.ephemeral_setting_timestamp = int(time.time())
-            context_info.disappearing_mode = DisappearingModeAttributes(
-                initiator=DisappearingModeAttributes.INITIATOR_CHANGED_IN_CHAT,
-                trigger=DisappearingModeAttributes.TRIGGER_CHAT_SETTING,
-                initiatedByMe=True
-            )
+            try:
+                disappearing_days = int(options["disappearing"])
+                context_info.expiration = disappearing_days * 86400
+                context_info.ephemeral_setting_timestamp = int(time.time())
+                context_info.disappearing_mode = DisappearingModeAttributes(
+                    initiator=DisappearingModeAttributes.INITIATOR_CHANGED_IN_CHAT,
+                    trigger=DisappearingModeAttributes.TRIGGER_CHAT_SETTING,
+                    initiatedByMe=True
+                )
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Valor inválido para 'disappearing': {options.get('disappearing')}, usando padrão")
+                context_info.expiration = 0
         else:
             context_info.expiration = 0
             context_info.ephemeral_setting_timestamp = int(time.time())
@@ -984,84 +1517,137 @@ class SendLayer(YowInterfaceLayer):
                 initiatedByMe=None
             )
 
+        # Configura source tracking
         if "source" in options:
-            if options["source"]=="random":
-                srcs = ["contact_card","contact_search","global_search_new_chat","phone_number_hyperlink"]
+            if options["source"] == "random":
+                srcs = ["contact_card", "contact_search", "global_search_new_chat", "phone_number_hyperlink"]
                 source = random.choice(srcs)
             else:
-                #"group_participant_list"
                 source = options["source"]
 
-            context_info.entry_point_conversion_app ="whatsapp"
+            context_info.entry_point_conversion_app = "whatsapp"
             context_info.entry_point_conversion_source = source
-            context_info.entry_point_conversion_delay_seconds = random.randint(5,13)
+            context_info.entry_point_conversion_delay_seconds = random.randint(5, 13)
 
+        return context_info
+    
+    def _create_text_attributes(self, message, context_info, options):
+        """Cria ExtendedTextAttributes baseado nas opções."""
         if "url" in options:
             url = options["url"]                    
-            urlTitle = options["urltitle"] if "urltitle" in options else None
-            urlDesc = options["urldesc"] if "urldesc" in options else None
+            urlTitle = options.get("urltitle")
+            urlDesc = options.get("urldesc")
             
-            attr = ExtendedTextAttributes(
-                text = message,            
-                matched_text = url,
-                description= urlDesc,
-                title = urlTitle,
-                context_info= context_info
+            return ExtendedTextAttributes(
+                text=message,
+                matched_text=url,
+                description=urlDesc,
+                title=urlTitle,
+                context_info=context_info
             )     
         elif "bjid" in options:
-            context_info.forwarding_score=2
-            context_info.is_forwarded=True
-            context_info.business_message_forward_info=BusinessMessageForwardInfoAttributes(
+            context_info.forwarding_score = 2
+            context_info.is_forwarded = True
+            context_info.business_message_forward_info = BusinessMessageForwardInfoAttributes(
                         business_owner_jid=Jid.normalize(options["bjid"])
                     )              
-            attr = ExtendedTextAttributes(
-                text = message,
+            
+            return ExtendedTextAttributes(
+                text=message,
                 preview_type=0,
-                context_info= context_info,
+                context_info=context_info,
                 invite_link_group_type_v2=0
             )   
         else:        
-            attr = ExtendedTextAttributes(                
-                text = message,
+            return ExtendedTextAttributes(
+                text=message,
                 preview_type=0,
-                context_info= context_info,
-                invite_link_group_type_v2=0
+                context_info=context_info,
+                invite_link_group_type_v2=0,
             )            
 
-        messageEntity = ExtendedTextMessageProtocolEntity(attr, 
-            MessageMetaAttributes(id=self.bot.idType,recipient=Jid.normalize(to),timestamp=int(time.time()))            
-        )        
-
-        self.ackQueue.append(messageEntity.getId())
-
-        if "broadcast" in options:
-            #广播@broadcast发送            
-            self.logger.info("Send broadcast msg (ID=%s)" % messageEntity.getId())           
-            messageEntity.to = options["bcid"]
-            messageEntity.phash = options["phash"]            
-            self.toLower(messageEntity)    
-        else:
-            self.logger.info("Send Msg (ID=%s)" % messageEntity.getId())
-            target = Jid.normalize(to.split(",")[0])
-            if target.endswith("@g.us"):
-                entity = OutgoingChatstateProtocolEntity(ChatstateProtocolEntity.STATE_TYPING, target,Jid.normalize(self.bot.botId))
+    def _send_broadcast_message(self, messageEntity, options):
+        """Envia mensagem em modo broadcast."""
+        if "bcid" not in options or "phash" not in options:
+            raise ValueError("Opções 'bcid' e 'phash' são obrigatórias para broadcast")
+        
+        logger.info(f"Enviando mensagem broadcast (ID={messageEntity.getId()})")
+        messageEntity.to = options["bcid"]
+        messageEntity.phash = options["phash"]
+        self.toLower(messageEntity)
+    
+    def _send_regular_message(self, messageEntity, normalized_to, original_to, options):
+        """Envia mensagem regular (não broadcast) com delays human-like."""
+        logger.info(f"Enviando mensagem regular (ID={messageEntity.getId()}) para {normalized_to}")
+        
+        # Envia indicador de digitação antes da mensagem (apenas para contatos individuais)
+        target = Jid.normalize(original_to.split(",")[0])
+        is_group = target.endswith("@g.us")
+        
+        try:
+            if is_group:
+                # Grupo: inclui o próprio JID como participante
+                typing_entity = OutgoingChatstateProtocolEntity(
+                    ChatstateProtocolEntity.STATE_TYPING,
+                    target,
+                    Jid.normalize(self.bot.botId)
+                )
             else:
-                entity = OutgoingChatstateProtocolEntity(ChatstateProtocolEntity.STATE_TYPING, target)
-            self.toLower(entity)
-            time.sleep(1)
-            self.toLower(messageEntity)   
-            self.eventCallback(wsend_pb2.BotEvent.Event.MSG_LOG,msgLog={
-                    'msgId':messageEntity.getId(),                
-                    'sender':self.bot.botId,
-                    "target":to[0:Jid.normalize(to).rfind("@",0)],                
-                    'status': wsend_pb2.MsgLogItem.Status.Value("EXECUTED")                
+                # Contato individual
+                typing_entity = OutgoingChatstateProtocolEntity(
+                    ChatstateProtocolEntity.STATE_TYPING,
+                    target
+                )
+            
+            self.toLower(typing_entity)
+            
+            # Aguarda delay human-like antes de enviar (simula digitação natural)
+            # Para grupos, delay menor; para contatos individuais, delay maior
+            typing_delay = options.get("typing_delay", self._human_like_delay(base_delay=.5, variation=1))
+            
+            if typing_delay > 0:
+                max_delay = 0.5 if is_group else 1.0  # Limite máximo por tipo
+                actual_delay = min(typing_delay, max_delay)
+                logger.debug(f"Aguardando {actual_delay:.1f}s (typing delay) antes de enviar...")
+                # time.sleep(actual_delay)
+            
+        except Exception as e:
+            logger.warning(f"Erro ao enviar indicador de digitação: {e}, continuando...")
+        
+        # Envia a mensagem
+        self.toLower(messageEntity)
+            
+    def _register_sent_message(self, msg_id, recipient_jid, message_type, status, error_code=None):
+        """Registra mensagem enviada no banco de dados."""
+        if self.bot.botId is None:
+            return
+        
+        try:
+            from app.db import register_sent_message
+            register_sent_message(
+                phone=self.bot.botId,
+                msg_id=msg_id,
+                recipient=recipient_jid,
+                message_type=message_type,
+                status=status,
+                error_code=error_code
+            )
+        except Exception as e:
+            logger.warning(f"Erro ao registrar mensagem no banco de dados: {e}")
+    
+    def _notify_message_sent(self, msg_id, normalized_to, original_to):
+        """Notifica evento de mensagem enviada."""
+        try:
+            # Extrai o número do JID para o target
+            self.eventCallback(wsend_pb2.BotEvent.Event.MSG_LOG, msgLog={
+                'msgId': msg_id,
+                'sender': self.bot.botId,
+                'target':  original_to[0:Jid.normalize(original_to).rfind("@",0)],
+                'status': wsend_pb2.MsgLogItem.Status.Value("EXECUTED")                
                 })      
-        
-        if "waitMsgId" in options:
-            self.ctxMap[options["ctxId"]]["msgId"] = messageEntity.getId()
-            self.ctxMap[options["ctxId"]]["event"].set()            
-        
-        return messageEntity.getId()        
+
+        except Exception as e:
+            logger.warning(f"Erro ao notificar evento de mensagem: {e}")        
     
     def getContextValue(self,ctxId,key):
         if ctxId not in self.ctxMap:
@@ -1091,6 +1677,411 @@ class SendLayer(YowInterfaceLayer):
                 return "TIMEOUT"
             else:
                 msgId = self.getContextValue(ctxId,"msgId")
+                del self.ctxMap[ctxId]
+                return msgId
+
+    def sendMessageReaction(self, cmdParams, options):
+        """
+        Envia uma reação (emoji) para uma mensagem de forma robusta e consistente.
+        
+        Args:
+            cmdParams: Lista com [to, message_id, emoji] ou [to, message_id, emoji, participant]
+            options: Dict com opções adicionais
+        
+        Returns:
+            message_id da reação enviada
+        
+        Raises:
+            ValueError: Se parâmetros inválidos
+            RuntimeError: Se não estiver conectado ou erro ao enviar
+        """
+        # Validação de parâmetros
+        if not cmdParams or len(cmdParams) < 3:
+            raise ValueError("sendMessageReaction requer pelo menos 3 parâmetros: [to, message_id, emoji]")
+        
+        to = cmdParams[0]
+        message_id = cmdParams[1]
+        emoji = cmdParams[2]
+        participant = cmdParams[3] if len(cmdParams) > 3 else None
+
+
+
+        logger.info(f"sendMessageReaction: {cmdParams}, {options}")
+        
+        # Validação de entrada
+        if not to or not isinstance(to, str):
+            raise ValueError(f"Parâmetro 'to' inválido: {to}")
+        
+        if not message_id or not isinstance(message_id, str):
+            raise ValueError(f"Parâmetro 'message_id' inválido: {message_id}")
+        
+        if not emoji or not isinstance(emoji, str):
+            raise ValueError(f"Parâmetro 'emoji' inválido: {emoji}")
+        
+        # Verifica se está conectado
+        if not self.isConnected:
+            error_msg = f"Não é possível enviar reação: conta não está conectada (botId={self.bot.botId})"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        
+        # Verifica se a conta está restrita (anti-banimento)
+        if self._check_account_restriction():
+            error_msg = f"Conta {self.bot.botId} está com restrição, não é possível enviar reações"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        
+        try:
+            # Normaliza o JID do destinatário
+            normalized_to = Jid.normalize(to)
+            if not normalized_to:
+                raise ValueError(f"Falha ao normalizar JID: {to}")
+            
+            # Normaliza o participant se fornecido
+            normalized_participant = None
+            if participant:
+                normalized_participant = Jid.normalize(participant)
+                if not normalized_participant:
+                    logger.warning(f"Participant inválido: {participant}, ignorando")
+            
+            # Verifica se é grupo e ajusta participant
+            is_group = normalized_to.endswith("@g.us")
+            if is_group and normalized_participant:
+                # Para grupos, o participant deve ser incluído
+                participant_for_meta = normalized_participant
+            else:
+                participant_for_meta = None
+            
+            # Aplica rate limiting (reações podem ter delay menor)
+            min_delay = 1.0 if is_group else 2.0
+            self._check_rate_limit(normalized_to, min_delay_seconds=min_delay)
+            
+            logger.debug(f"Enviando reação {emoji} para mensagem {message_id} em {normalized_to}")
+            
+            # Cria ReactionAttributes (inclui participant no key para grupos)
+            reaction_attr = ReactionAttributes(
+                msgid=message_id,
+                remote_jid=normalized_to,
+                from_me=False,
+                text=emoji,
+                sender_timestamp_ms=int(time.time() * 1000),
+                participant=participant_for_meta
+            )
+            
+            # Meta da mensagem (inclui participant para grupos)
+            meta_attrs = MessageMetaAttributes(
+                id=self.bot.idType,
+                recipient=normalized_to,
+                participant=participant_for_meta,
+                timestamp=int(time.time()),
+            )
+            
+            # Cria a entidade de reação
+            reaction_entity = ReactionMessageProtocolEntity(
+                reaction_attr,
+                message_meta_attributes=meta_attrs
+            )
+            
+            msg_id = reaction_entity.getId()
+            logger.info(f"Preparando envio de reação (ID={msg_id}) para mensagem {message_id} em {normalized_to}")
+            
+            # Adiciona à fila de ACK
+            self.ackQueue.append(msg_id)
+            
+            # Envia através do stack (ProtocolTreeNode)
+            reaction_node = reaction_entity.toProtocolTreeNode()
+            self.toLower(reaction_node)
+            
+            # Registra e notifica
+            self._register_sent_message(msg_id, normalized_to, "REACTION", "EXECUTED")
+            self._notify_message_sent(msg_id, normalized_to, to)
+            
+            # Se waitMsgId está configurado, sinaliza o evento
+            if "waitMsgId" in options and "ctxId" in options:
+                ctx_id = options["ctxId"]
+                if ctx_id in self.ctxMap:
+                    self.ctxMap[ctx_id]["msgId"] = msg_id
+                    self.ctxMap[ctx_id]["event"].set()
+            
+            logger.info(f"Reação enviada com sucesso (ID={msg_id}) para mensagem {message_id} em {normalized_to}")
+            return msg_id
+            
+        except Exception as e:
+            error_msg = f"Erro ao enviar reação para {to}: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            
+            # Tenta registrar erro no banco de dados
+            try:
+                normalized_to = Jid.normalize(to) if to else None
+                if normalized_to and self.bot.botId:
+                    from app.db import register_sent_message
+                    register_sent_message(
+                        phone=self.bot.botId,
+                        msg_id=None,
+                        recipient=normalized_to,
+                        message_type="REACTION",
+                        status="ERROR",
+                        error_code=str(e)
+                    )
+            except:
+                pass
+            
+            raise RuntimeError(error_msg) from e
+    
+    def sendReaction(self, cmdParams, options):
+        """
+        Envia uma reação (emoji) para uma mensagem.
+        Wrapper que lida com waitMsgId e chama sendMessageReaction.
+        
+        Args:
+            cmdParams: Lista com [to, message_id, emoji] ou [to, message_id, emoji, participant]
+            options: Dict com opções adicionais (pode conter "waitMsgId" e "ctxId")
+        
+        Returns:
+            "JUSTWAIT" se waitMsgId não estiver configurado
+            message_id se waitMsgId estiver configurado e sucesso
+            "TIMEOUT" se waitMsgId estiver configurado mas timeout
+        """
+        if "waitMsgId" not in options:
+            # Envia sem aguardar ID
+            self.sendMessageReaction(cmdParams, options)
+            return "JUSTWAIT"
+        else:
+            # Configura contexto para aguardar ID
+            ctxId = str(uuid.uuid4())
+            self.ctxMap[ctxId] = {"event": threading.Event()}
+            options["ctxId"] = ctxId
+            
+            # Envia a reação
+            self.sendMessageReaction(cmdParams, options)
+            
+            # Aguarda o ID da mensagem
+            ret = self.ctxMap[ctxId]["event"].wait(int(options["waitMsgId"]))
+            if not ret:
+                # Timeout
+                del self.ctxMap[ctxId]
+                return "TIMEOUT"
+            else:
+                # Sucesso - obtém o ID
+                msgId = self.getContextValue(ctxId, "msgId")
+                del self.ctxMap[ctxId]
+                return msgId
+    
+    def sendTextReplyDirect(self, cmdParams, options):
+        """
+        Envia mensagem de texto marcando outra como resposta (reply/quote) de forma robusta e consistente.
+        
+        Args:
+            cmdParams: Lista com [to, text, reply_to_message_id] ou [to, text, reply_to_message_id, reply_to_participant]
+            options: Dict com opções adicionais (pode conter "quoted_text", etc.)
+        
+        Returns:
+            message_id da mensagem enviada
+        
+        Raises:
+            ValueError: Se parâmetros inválidos
+            RuntimeError: Se não estiver conectado ou erro ao enviar
+        """
+        # Validação de parâmetros
+        if not cmdParams or len(cmdParams) < 3:
+            raise ValueError("sendTextReplyDirect requer pelo menos 3 parâmetros: [to, text, reply_to_message_id]")
+        
+        to = cmdParams[0]
+        text = cmdParams[1]
+        reply_to_message_id = cmdParams[2]
+        reply_to_participant = cmdParams[3] if len(cmdParams) > 3 else None
+        
+        # Validação de entrada
+        if not to or not isinstance(to, str):
+            raise ValueError(f"Parâmetro 'to' inválido: {to}")
+        
+        if not text or not isinstance(text, str):
+            raise ValueError(f"Parâmetro 'text' inválido: {text}")
+        
+        if not reply_to_message_id or not isinstance(reply_to_message_id, str):
+            raise ValueError(f"Parâmetro 'reply_to_message_id' inválido: {reply_to_message_id}")
+        
+        # Validação de tamanho da mensagem
+        MAX_MESSAGE_LENGTH = 4096
+        if len(text) > MAX_MESSAGE_LENGTH:
+            logger.warning(f"Mensagem muito longa ({len(text)} chars), truncando para {MAX_MESSAGE_LENGTH}")
+            text = text[:MAX_MESSAGE_LENGTH]
+        
+        # Verifica se está conectado
+        if not self.isConnected:
+            error_msg = f"Não é possível enviar mensagem de reply: conta não está conectada (botId={self.bot.botId})"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        
+        # Verifica se a conta está restrita (anti-banimento)
+        if self._check_account_restriction():
+            error_msg = f"Conta {self.bot.botId} está com restrição, não é possível enviar mensagens"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        
+        try:
+            # Normaliza o JID do destinatário
+            normalized_to = Jid.normalize(to)
+            if not normalized_to:
+                raise ValueError(f"Falha ao normalizar JID: {to}")
+            
+            # Normaliza o participant se fornecido
+            normalized_participant = None
+            if reply_to_participant:
+                normalized_participant = Jid.normalize(reply_to_participant)
+                if not normalized_participant:
+                    logger.warning(f"Participant inválido: {reply_to_participant}, ignorando")
+            
+            # Verifica se o número está na lista de inválidos
+            phone = normalized_to.split('@')[0] if '@' in normalized_to else normalized_to
+            if self._is_number_invalid(phone):
+                error_msg = f"Número {phone} é inválido no WhatsApp (marcado como inválido anteriormente)"
+                logger.warning(error_msg)
+                raise ValueError(error_msg)
+            
+            # Aplica rate limiting (anti-banimento)
+            is_group = normalized_to.endswith("@g.us")
+            min_delay = 1.5 if is_group else 3.0
+            self._check_rate_limit(normalized_to, min_delay_seconds=min_delay)
+            
+            logger.debug(f"Enviando mensagem de reply para {normalized_to} (original: {to}) respondendo {reply_to_message_id}")
+            
+            # Prepara context_info com informações do reply
+            context_info = ContextInfoAttributes()
+            context_info.stanza_id = reply_to_message_id
+            context_info.participant = normalized_participant if normalized_participant and is_group else None
+            context_info.remote_jid = None  # None indica que é do mesmo chat
+
+            # Se quoted_text foi fornecido, cria um quoted_message simples para enriquecer a reply
+            quoted_text = options.get("quoted_text")
+            if quoted_text:
+                try:
+                    quoted_entity = TextMessageProtocolEntity(
+                        body=quoted_text,
+                        messageMetaAttributes=MessageMetaAttributes(
+                            id=reply_to_message_id,
+                            recipient=normalized_to,
+                            participant=normalized_participant if normalized_participant and is_group else None,
+                            fromMe=False
+                        )
+                    )
+                    context_info.quoted_message = quoted_entity
+                except Exception as e:
+                    logger.warning(f"Não foi possível construir quoted_message: {e}, continuando sem quoted_text")
+            
+            # Cria ExtendedTextAttributes com context_info
+            extended_text_attrs = ExtendedTextAttributes(
+                text=text,
+                preview_type=0,
+                context_info=context_info,
+                invite_link_group_type_v2=0
+            )
+            
+            # Cria entidade da mensagem
+            messageEntity = ExtendedTextMessageProtocolEntity(
+                extended_text_attrs,
+                MessageMetaAttributes(
+                    id=self.bot.idType,
+                    recipient=normalized_to,
+                    timestamp=int(time.time())
+                )
+            )
+            
+            msg_id = messageEntity.getId()
+            logger.info(f"Preparando envio de mensagem de reply (ID={msg_id}) para {normalized_to} respondendo {reply_to_message_id}")
+            
+            # Adiciona à fila de ACK
+            self.ackQueue.append(msg_id)
+            
+            # Envia mensagem (usa o mesmo padrão de sendMsgDirect)
+            if "broadcast" in options:
+                self._send_broadcast_message(messageEntity, options)
+            else:
+                self._send_regular_message(messageEntity, normalized_to, to, options)
+            
+            # Registra no banco de dados
+            self._register_sent_message(msg_id, normalized_to, "TEXT", "EXECUTED")
+            
+            # Notifica evento
+            self._notify_message_sent(msg_id, normalized_to, to)
+            
+            # Se waitMsgId está configurado, sinaliza o evento
+            if "waitMsgId" in options and "ctxId" in options:
+                ctx_id = options["ctxId"]
+                if ctx_id in self.ctxMap:
+                    self.ctxMap[ctx_id]["msgId"] = msg_id
+                    self.ctxMap[ctx_id]["event"].set()
+            
+            logger.info(f"Mensagem de reply enviada com sucesso (ID={msg_id}) para {normalized_to}")
+            return msg_id
+            
+        except Exception as e:
+            error_msg = f"Erro ao enviar mensagem de reply para {to}: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            
+            # Tenta registrar erro no banco de dados
+            try:
+                normalized_to = Jid.normalize(to) if to else None
+                if normalized_to and self.bot.botId:
+                    from app.db import register_sent_message
+                    register_sent_message(
+                        phone=self.bot.botId,
+                        msg_id=None,
+                        recipient=normalized_to,
+                        message_type="TEXT",
+                        status="ERROR",
+                        error_code=str(e)
+                    )
+            except:
+                pass
+            
+            raise RuntimeError(error_msg) from e
+    
+    def sendTextReply(self, cmdParams, options):
+        """
+        Envia uma mensagem de texto marcando outra como resposta (reply/quote).
+        Wrapper que lida com waitMsgId e chama sendTextReplyDirect.
+        
+        Args:
+            cmdParams: Lista com [to, text, reply_to_message_id] ou [to, text, reply_to_message_id, reply_to_participant]
+            options: Dict com opções adicionais (pode conter "waitMsgId", "ctxId", "quoted_text", etc.)
+        
+        Returns:
+            "JUSTWAIT" se waitMsgId não estiver configurado
+            message_id se waitMsgId estiver configurado e sucesso
+            "TIMEOUT" se waitMsgId estiver configurado mas timeout
+        """
+        if "waitMsgId" not in options:
+            # Envia sem aguardar ID, aplicando fluxo de sincronização/anti-ban
+            self.assureContactsAndSend(
+                cmdParams,
+                options,
+                send_func=self.sendTextReplyDirect,
+                redo_func=self.sendTextReply
+            )
+            return "JUSTWAIT"
+        else:
+            # Configura contexto para aguardar ID
+            ctxId = str(uuid.uuid4())
+            self.ctxMap[ctxId] = {"event": threading.Event()}
+            options["ctxId"] = ctxId
+            
+            # Envia a mensagem de reply com sincronização/anti-ban
+            self.assureContactsAndSend(
+                cmdParams,
+                options,
+                send_func=self.sendTextReplyDirect,
+                redo_func=self.sendTextReply
+            )
+            
+            # Aguarda o ID da mensagem
+            ret = self.ctxMap[ctxId]["event"].wait(int(options["waitMsgId"]))
+            if not ret:
+                # Timeout
+                del self.ctxMap[ctxId]
+                return "TIMEOUT"
+            else:
+                # Sucesso - obtém o ID
+                msgId = self.getContextValue(ctxId, "msgId")
                 del self.ctxMap[ctxId]
                 return msgId
 
@@ -1163,11 +2154,23 @@ class SendLayer(YowInterfaceLayer):
                         message_meta_attrs=MessageMetaAttributes(id=self.bot.idType,recipient= Jid.normalize(to))
                     )                                    
 
-                self.logger.info("Send Media %s Msg (ID=%s)" % (mediaType,entity.getId()))                
+                logger.info(f"Send Media {mediaType} Msg (ID={entity.getId()})")                
 
                 self.ackQueue.append(entity.getId())
 
                 self.toLower(entity) 
+
+                # Registra a mensagem de mídia enviada no banco de dados
+                if self.bot.botId is not None:
+                    from app.db import register_sent_message
+                    recipient_jid = Jid.normalize(to)
+                    register_sent_message(
+                        phone=self.bot.botId,
+                        msg_id=entity.getId(),
+                        recipient=recipient_jid,
+                        message_type=mediaType.upper(),
+                        status="EXECUTED",
+                    )
 
                 self.eventCallback(wsend_pb2.BotEvent.Event.MSG_LOG,msgLog={
                     'msgId':entity.getId(),                    
@@ -1191,7 +2194,7 @@ class SendLayer(YowInterfaceLayer):
 
         mediaType = cmdParams[1]
         if not mediaType in ["image","video","audio","document"]:
-            self.logger.info("sendmedia type %s is not supported now" % mediaType)
+            logger.info(f"sendmedia type {mediaType} is not supported now")
 
         entity = RequestMediaConnIqProtocolEntity()
         successFn = lambda successEntity, originalEntity: onRequestMediaConnResult( cmdParams, successEntity, originalEntity)
@@ -1247,14 +2250,14 @@ class SendLayer(YowInterfaceLayer):
         entity = GetSyncIqProtocolEntity(nums,mode = options["mode"])    
 
         def on_success(entity, original_iq_entity):  
-            self.logger.info("syncContacts success with %d contacts" % len(entity.inNumbers))                      
+            logger.info(f"syncContacts success with {len(entity.inNumbers)} contacts")                      
             self.setCmdResult(entity.getId(),{
                 "count": len(entity.inNumbers),
                 "jids": list(entity.inNumbers.values())
             })               
 
         def on_error(entity, original_iq):            
-            self.logger.error("syncContacts error")
+            logger.error("syncContacts error")
             
         self._sendIq(entity,on_success,on_error)
         return entity.getId()
@@ -1262,10 +2265,10 @@ class SendLayer(YowInterfaceLayer):
     def getConfig(self,cmdParams,options)  :
         push = PushIqProtocolEntity()
         self.toLower(push)
-        self.logger.info("push iq")
+        logger.info("push iq")
         props = PropsIqProtocolEntity()
         self.toLower(props)
-        self.logger.info("props iq")
+        logger.info("props iq")
 
     def cleanDirty(self,cmdParams,options) :
         entity = CleanDirtyIqProtocolEntity(type=cmdParams[0])
@@ -1274,11 +2277,11 @@ class SendLayer(YowInterfaceLayer):
     def joinGroupWithCode(self,cmdParams,options):        
 
         def on_success(entity, original_iq_entity):                 
-            self.logger.info("joinGroupWithCode success")    
+            logger.info("joinGroupWithCode success")    
             self.setCmdResult(entity.getId(),{"group_jid":entity.groupId})
                                                  
         def on_fail(entity, original_iq):          
-            self.logger.error("joinGroupWithCode error")         
+            logger.error("joinGroupWithCode error")         
 
 
         entity = JoinWithCodeGroupsIqProtocolEntity(code=cmdParams[0])
@@ -1348,10 +2351,10 @@ class SendLayer(YowInterfaceLayer):
     def trustContact(self,cmdParams,options):
         def onSuccess(entity, originalIqEntity):
             self.setCmdResult(entity.getId(),{"status":"OK"})
-            self.logger.info("trust contact  success")
+            logger.info("trust contact  success")
 
         def onError(errorIqEntity, originalIqEntity):
-            self.logger.info("trust contact error")
+            logger.info("trust contact error")
         
         entity = TrustContactIqProtocolEntity(Jid.normalize(cmdParams[0]),int(time.time()))
         self._sendIq(entity, onSuccess, onError)    
@@ -1376,7 +2379,7 @@ class SendLayer(YowInterfaceLayer):
         if len(params)!=2:
             self.setCmdResult()
         if params[1]=="":
-            self.logger.info("create an empty group")
+            logger.info("create an empty group")
             pList = None
         else:
             pList = Jid.normalize(params[1]).split(",")
@@ -1384,7 +2387,7 @@ class SendLayer(YowInterfaceLayer):
 
         def on_success(entity, original_iq_entity):        
             if isinstance(entity,SuccessCreateGroupsIqProtocolEntity):    
-                self.logger.info("makegroup success")                
+                logger.info("makegroup success")                
                 self.setCmdResult(entity.getId(),{
                     "groupId":entity.groupId
                 })
@@ -1396,7 +2399,7 @@ class SendLayer(YowInterfaceLayer):
 
     def groupInfo(self,cmdParams,options):
         def on_success(entity, original_iq_entity):  
-            self.logger.info("groupinfo success")            
+            logger.info("groupinfo success")            
             self.setCmdResult(entity.getId(),{
                 "groupId": entity.groupId,
                 "subject": entity.subject,
@@ -1404,7 +2407,7 @@ class SendLayer(YowInterfaceLayer):
             })                        
 
         def on_error(entity, original_iq):            
-            self.logger.error("groupinfo error")
+            logger.error("groupinfo error")
             self.setCmdError(entity.getId(),entity.code)
 
         entity = InfoGroupsIqProtocolEntity(group_jid = Jid.normalize(cmdParams[0]))
@@ -1415,14 +2418,14 @@ class SendLayer(YowInterfaceLayer):
 
         def on_success(entity, original_iq_entity):            
             if isinstance(entity,SuccessGetInviteCodeGroupsIqProtocolEntity):    
-                self.logger.info("getgroupinvite success")       
+                logger.info("getgroupinvite success")       
                 self.setCmdResult(entity.getId(), {
                     "groupJid":entity.groupJid,
                     "inviteCode": entity.inviteCode
                 })       
 
         def on_error(entity, original_iq):                        
-            self.logger.info("getgroupinvite error")  
+            logger.info("getgroupinvite error")  
 
         to = cmdParams[0]        
         entity = GetInviteCodeGroupsIqProtocolEntity(group_jid=Jid.normalize(to))
@@ -1435,6 +2438,7 @@ class SendLayer(YowInterfaceLayer):
         def on_success(entity, original_iq_entity):
             if isinstance(entity, ListGroupsResultIqProtocolEntity):
                 groups = []
+                groups_admins = []
                 for group in entity.getGroups():
                     groups.append({
                         "id": group.getId(),
@@ -1443,10 +2447,18 @@ class SendLayer(YowInterfaceLayer):
                         "subjectOwner": group.getSubjectOwner(),
                         "subjectTime": group.getSubjectTime(),
                         "creationTime": group.getCreationTime(),
-                        "participants": group.getParticipants()
+                        "participants": group.getParticipants(),
                     })
+                    groups_admins.extend(group.getGroupAdmins(account_jid=self.bot.botId))
+
+                    logger.info(f"Groups admins: {groups_admins}")
+
+
+                logger.info(f"Groups admins out: {groups_admins}")
+
                 self.setCmdResult(entity.getId(), {
                     "groups": groups,
+                    "groups_admins": groups_admins,
                     "count": len(groups)
                 })
 
@@ -1459,7 +2471,7 @@ class SendLayer(YowInterfaceLayer):
 
     def groupAdd(self,cmdParams,options):
         def on_success(entity, original_iq_entity):  
-            self.logger.info("groupadd success")
+            logger.info("groupadd success")
 
             self.setCmdResult(entity.getId(),{
                 "successCount": len(entity.successList),
@@ -1469,7 +2481,7 @@ class SendLayer(YowInterfaceLayer):
             }) 
 
         def on_error(entity, original_iq):            
-            self.logger.error("groupadd error")
+            logger.error("groupadd error")
             self.setCmdError(entity.getId(),entity.code)
 
         entity = AddParticipantsIqProtocolEntity(
@@ -1489,10 +2501,10 @@ class SendLayer(YowInterfaceLayer):
     
     def checkDevice(self,cmdParams,options):
         def on_success(entity, original_iq_entity):  
-            self.logger.info("checkDevice success")            
+            logger.info("checkDevice success")            
 
         def on_error(entity, original_iq):            
-            self.logger.error("checkDevice error")
+            logger.error("checkDevice error")
 
         entity = DevicesGetSyncIqProtocolEntity([cmdParams[0]])
         self._sendIq(entity, on_success, on_error)   
@@ -1544,10 +2556,10 @@ class SendLayer(YowInterfaceLayer):
             
     def leaveGroup(self,cmdParams,options):
         def on_success(entity, original_iq_entity):         
-            self.logger.info("leavegroup success")  
+            logger.info("leavegroup success")  
             self.setCmdResult(entity.getId(),{"status":"ok"})                                                 
         def on_error(entity, original_iq):          
-            self.logger.error("leavegroup error")              
+            logger.error("leavegroup error")              
 
         groupJid = cmdParams[0]        
         entity = LeaveGroupsIqProtocolEntity([Jid.normalize(groupJid)])

@@ -2,8 +2,9 @@
 import os,sys
 sys.path.append(os.getcwd())
 from common.consolemain import ConsoleMain
-import logging,time
+import time
 from pathlib import Path
+from loguru import logger
 from app.yowbot import YowBot
 from script.cmdprocess import CmdProcess
 from script.interactiveprocess import InteractiveProcess
@@ -12,8 +13,6 @@ from common.utils import Utils
 from yowsup.profile.profile import YowProfile
 from app.device_env import DeviceEnv
 from app.config import AppConfig
-
-logger = logging.getLogger(__name__)
 
 class Main(ConsoleMain):
      
@@ -26,31 +25,30 @@ class Main(ConsoleMain):
             botId = params[0]
         
         if "debug" in options:
-            self.init_log(logging.DEBUG,botId+".log")
+            self.init_log("DEBUG", botId + ".log")
         else:
-            self.init_log(logging.INFO,botId+".log")
+            self.init_log("INFO", botId + ".log")
 
         
         if "proxy" not in options:
             options["proxy"] = "DIRECT"
 
         lg,lc = Utils.getLGLC(Utils.getMobileCC(botId))
-        logger.info("LG=%s, LC=%s" % (lg,lc))
+        logger.info(f"LG={lg}, LC={lc}")
 
         self.commonOptionsProcess(options)
 
-                                      
-        config_file = Path(SysVar.ACCOUNT_PATH+botId+"/config.json")
-        if not config_file.exists():
+        # Verifica existência da conta via configuração persistida (ProfileConfig / MySQL)
+        config_manager = ConfigManager()
+        cfg = config_manager.load(botId, profile_only=True)
+        if cfg is None:
             logger.info("account not exist !!")
-            return 
-        
-        self.commonOptionsProcess(options)
+            return
 
         info = None        
         if "env" not in options:           
-
-            profile = YowProfile(SysVar.ACCOUNT_PATH+botId)
+        
+            profile = YowProfile(botId)
             if profile.config.os_name is not None:
                 logger.info("Local Profile found")
                 tt = {
@@ -63,9 +61,9 @@ class Main(ConsoleMain):
             else:
                 pass  
 
-        logger.info("ENV=%s",self.env.deviceEnv.getOSName())                
-        logger.info("BotId=%s" % botId)        
-        logger.info("RegType=%s" % (info["regType"] if info is not None else "1")) 
+        logger.info(f"ENV={self.env.deviceEnv.getOSName()}")                
+        logger.info(f"BotId={botId}")        
+        logger.info(f"RegType={info['regType'] if info is not None else '1'}") 
         
 
         

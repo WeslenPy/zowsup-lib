@@ -1,7 +1,6 @@
 import os
 from .constants import YowConstants
 import codecs, sys
-import logging
 import tempfile
 import base64
 import hashlib
@@ -10,10 +9,9 @@ import uuid
 from consonance.structs.keypair import KeyPair
 import re
 from conf.constants import SysVar
+from loguru import logger
 
 from .optionalmodules import PILOptionalModule, FFMpegOptionalModule
-
-logger = logging.getLogger(__name__)
 
 class Jid:
     @staticmethod
@@ -129,6 +127,24 @@ class StorageTools:
     NAME_CONFIG = "config.json"
 
     @staticmethod
+    def _extract_phone_from_profile_name(profile_name):
+        """
+        Attempts to extract the phone / account identifier from a profile_name.
+
+        Common patterns in this project:
+          - SysVar.ACCOUNT_PATH + phone
+          - SysVar.ACCOUNT_PATH + phone + "_" + deviceid
+        We normalize to the last path component and take the leading digits.
+        """
+        base = os.path.basename(str(profile_name))
+        # Strip optional "_deviceId" suffix
+        if "_" in base:
+            base = base.split("_", 1)[0]
+        # Match a leading sequence of at least 5 digits (the phone number)
+        m = re.match(r"(\d{5,})", base)
+        return m.group(1) if m else None
+
+    @staticmethod
     def constructPath(*path):
         path = os.path.join(*path)
         fullPath = os.path.join(SysVar.ACCOUNT_PATH, path)  #如果path不是绝对路径，那就增加ACCOUNT_PATH前缀
@@ -144,34 +160,121 @@ class StorageTools:
 
     @staticmethod
     def writeProfileData(profile_name, name, val):
-        logger.debug("writeProfileData(profile_name=%s, name=%s, val=[omitted])" % (profile_name, name))
+        logger.debug(f"writeProfileData(profile_name={profile_name}, name={name}, val=[omitted])")
         path = os.path.join(StorageTools.getStorageForProfile(profile_name), name)
-        logger.debug("Writing %s" % path)
+        logger.debug(f"Writing {path}")
 
         with open(path, 'w' if type(val) is str else 'wb') as attrFile:
             attrFile.write(val)
 
     @staticmethod
     def readProfileData(profile_name, name, default=None):
-        logger.debug("readProfileData(profile_name=%s, name=%s)" % (profile_name, name))
+        logger.debug(f"readProfileData(profile_name={profile_name}, name={name})")
         path = StorageTools.getStorageForProfile(profile_name)
         dataFilePath = os.path.join(path, name)
         if os.path.isfile(dataFilePath):
-            logger.debug("Reading %s" % dataFilePath)
+            logger.debug(f"Reading {dataFilePath}")
             with open(dataFilePath, 'rb') as attrFile:
                 return attrFile.read()
         else:
-            logger.debug("%s does not exist" % dataFilePath)
+            logger.debug(f"{dataFilePath} does not exist")
 
         return default
 
     @classmethod
     def writeProfileConfig(cls, profile_name, config):
-        cls.writeProfileData(profile_name, cls.NAME_CONFIG, config)
+
+        """
+        Writes profile config exclusively to the unified database (ProfileConfig).
+
+        No config.json or per-account directories are used anymore. The
+        profile_name is expected to start with the phone number (or
+        phone_deviceid), so we can link it to an Account row.
+        """
+        phone = cls._extract_phone_from_profile_name(profile_name)
+
+        if not phone:
+            logger.error(f"Cannot infer phone from profile_name={profile_name}; config will not be persisted")
+            return
+
+        # Lazy import to avoid circular dependencies at module import time
+        try:
+            from app.db import SessionLocal
+            from app import models
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error(f"Error persisting profile config to DB: {e}")
+            raise
+
+        db = SessionLocal()
+        try:
+            account = db.query(models.Account).filter_by(phone=phone).one_or_none()
+            if account is None:
+                account = models.Account(phone=phone)
+                db.add(account)
+                db.commit()
+                db.refresh(account)
+
+            row = (
+                db.query(models.ProfileConfig)
+                .filter_by(account_id=account.id, name=cls.NAME_CONFIG)
+                .one_or_none()
+            )
+
+            data = config.encode() if isinstance(config, str) else config
+
+            if row is None:
+                row = models.ProfileConfig(
+                    account_id=account.id,
+                    name=cls.NAME_CONFIG,
+                    data=data,
+                )
+                db.add(row)
+            else:
+                row.data = data
+
+            db.commit()
+            logger.debug(f"ProfileConfig stored in DB for phone={phone}")
+        finally:
+            db.close()
 
     @classmethod
     def readProfileConfig(cls, profile_name, config):
-        return cls.readProfileData(profile_name, cls.NAME_CONFIG)
+        """
+        Reads profile config exclusively from the unified database (ProfileConfig).
+
+        If no matching Account/ProfileConfig is found, returns None. No
+        file-based config.json lookup is performed.
+        """
+        phone = cls._extract_phone_from_profile_name(profile_name)
+
+        if not phone:
+            logger.error(f"Cannot infer phone from profile_name={profile_name}; no config available")
+            return None
+
+        try:
+            from app.db import SessionLocal
+            from app import models
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error(f"Error loading profile config from DB: {e}")
+            raise
+
+        db = SessionLocal()
+        try:
+            account = db.query(models.Account).filter_by(phone=phone).one_or_none()
+            if not account:
+                return None
+
+            row = (
+                db.query(models.ProfileConfig)
+                .filter_by(account_id=account.id, name=cls.NAME_CONFIG)
+                .one_or_none()
+            )
+            if row is None:
+                return None
+
+            return row.data
+        finally:
+            db.close()
 
 
 class ImageTools:

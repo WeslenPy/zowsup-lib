@@ -8,7 +8,7 @@ from ...layers.auth.protocolentities import StreamErrorProtocolEntity
 from ...layers import EventCallback
 import inspect
 import logging
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class ProtocolEntityCallback(object):
@@ -16,6 +16,7 @@ class ProtocolEntityCallback(object):
         self.entityType = entityType
 
     def __call__(self, fn):
+        logger.info(f"[ProtocolEntityCallback] Chamando callback para {self.entityType}")
         fn.entity_callback = self.entityType
         return fn
 
@@ -76,9 +77,14 @@ class YowInterfaceLayer(YowLayer):
     def receive(self, entity):
         if not self.processIqRegistry(entity):
             entityType = entity.getTag()
+            logger.debug(f"[InterfaceLayer] receive chamado - entityType: {entityType}, callbacks disponíveis: {list(self.entity_callbacks.keys())}")
             if entityType in self.entity_callbacks:
+                logger.debug(f"[InterfaceLayer] Chamando callback para {entityType}")
+                logger.debug(f"[InterfaceLayer] Chamando callback com {entity}")
+                logger.info(f"[InterfaceLayer] entity: {self.entity_callbacks[entityType]}")
                 self.entity_callbacks[entityType](entity)
             else:
+                logger.debug(f"[InterfaceLayer] Nenhum callback para {entityType}, enviando para layer superior")
                 self.toUpper(entity)
 
     @ProtocolEntityCallback("stream:error")
@@ -91,8 +97,7 @@ class YowInterfaceLayer(YowLayer):
                 logger.info("Initiating reconnect")
                 self.reconnect = True
         else:
-            logger.warn("Not reconnecting because property %s is not set" %
-                        self.__class__.PROP_RECONNECT_ON_STREAM_ERR)
+            logger.warn(f"Not reconnecting because property {self.__class__.PROP_RECONNECT_ON_STREAM_ERR} is not set")
         self.toUpper(streamErrorEntity)
         self.disconnect()
 

@@ -29,7 +29,7 @@ try:
     import Queue
 except ImportError:
     import queue as Queue
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 YOWSUP_PROTOCOL_LAYERS_BASIC = (
     YowAuthenticationProtocolLayer, YowMessagesProtocolLayer,
@@ -162,7 +162,7 @@ class YowStack(object):
         :param profile: profile to use.
         :return:
         """
-        logger.debug("setProfile(%s)" % profile)
+        logger.debug(f"setProfile({profile})")
         self.setProp("profile", profile if isinstance(profile, YowProfile) else YowProfile(profile))
 
     def addLayer(self, layerClass):
@@ -217,7 +217,7 @@ class YowStack(object):
                 else:
                     raise ValueError("Stack must contain only subclasses of YowLayer")
                 #inst = s()
-            logger.debug("Constructed %s" % inst)
+            logger.debug(f"Constructed {inst}")
             inst.setStack(self)
             self.__stackInstances.append(inst)
 

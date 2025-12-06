@@ -4,7 +4,7 @@ from ....layers.protocol_messages.protocolentities.attributes.converter import A
 from proto.e2e_pb2 import Message
 import logging
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 class ProtomessageProtocolEntity(MessageProtocolEntity):
     '''

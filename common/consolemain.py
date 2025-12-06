@@ -2,8 +2,7 @@
 import sys,os
 sys.path.append(os.getcwd())
 from conf.constants import SysVar
-import logging
-logger = logging.getLogger(__name__)
+from loguru import logger
 from common.utils import Utils
 
 from common.utils import Utils
@@ -11,7 +10,7 @@ from app.bot_env import BotEnv
 from app.network_env import NetworkEnv
 from app.device_env import DeviceEnv
 
-logger = logging.getLogger(__name__)
+
 class ConsoleMain:
 
     def __init__(self):        

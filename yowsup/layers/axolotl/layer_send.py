@@ -18,7 +18,7 @@ import base64,os
 
 import logging
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class AxolotlSendLayer(AxolotlBaseLayer):
@@ -73,7 +73,7 @@ class AxolotlSendLayer(AxolotlBaseLayer):
                     retryReceiptEntity = RetryIncomingReceiptProtocolEntity.fromProtocolTreeNode(protocolTreeNode)
                     self.toLower(retryReceiptEntity.ack().toProtocolTreeNode()) #对重试那个包的ack，遵循协议    
                     if messageNode :
-                        logger.info("Got retry to from %s for message %s, and Axolotl layer has the message" % (protocolTreeNode["from"],protocolTreeNode["id"]))
+                        logger.info(f"Got retry to from {protocolTreeNode['from']} for message {protocolTreeNode['id']}, and Axolotl layer has the message")
                         self.getKeysFor(
                             [protocolTreeNode["participant"] or protocolTreeNode["from"]],
                             lambda successJids, errors: on_get_keys_success(messageNode, retryReceiptEntity, successJids, errors)
@@ -90,12 +90,12 @@ class AxolotlSendLayer(AxolotlBaseLayer):
         # type: (dict) -> None
         for jid, error in errors.items():
             if isinstance(error, MissingParametersException):
-                logger.error("Failed to create prekeybundle for %s, user had missing parameters: %s, "
-                             "is that a valid user?" % (jid, error.parameters))                
+                logger.error(f"Failed to create prekeybundle for {jid}, user had missing parameters: {error.parameters}, "
+                             "is that a valid user?")                
             elif isinstance(error, exceptions.UntrustedIdentityException):
-                logger.error("Failed to create session for %s as user's identity is not trusted. " % jid)
+                logger.error(f"Failed to create session for {jid} as user's identity is not trusted. ")
             else:
-                logger.error("Failed to process keys for %s, is that a valid user? Exception: %s" % error)
+                logger.error(f"Failed to process keys for {error[0]}, is that a valid user? Exception: {error[1]}")
 
     def processPlaintextNodeAndSend(self, node, retryReceiptEntity = None):
         if "," in node["to"]:
@@ -155,7 +155,7 @@ class AxolotlSendLayer(AxolotlBaseLayer):
                 return self.sentQueue.pop(i)
             
     def sendEncEntities(self, node, encEntities, participant=None,tctoken=None):
-        logger.debug("sendEncEntities(node=[omitted], encEntities=[omitted], participant=%s)" % participant)
+        logger.debug(f"sendEncEntities(node=[omitted], encEntities=[omitted], participant={participant})")
 
         message_attrs = MessageMetaAttributes.from_message_protocoltreenode(node)
         message_attrs.participant = participant        
@@ -221,7 +221,7 @@ class AxolotlSendLayer(AxolotlBaseLayer):
 
     def ensureSessionsAndSendToContacts(self, node, jids):
 
-        logger.debug("ensureSessionsAndSendToContacts(node=[omitted], jids=%s)" % jids)
+        logger.debug(f"ensureSessionsAndSendToContacts(node=[omitted], jids={jids})")
         allJids = []
         jidsNoSession = []
 
@@ -337,7 +337,7 @@ class AxolotlSendLayer(AxolotlBaseLayer):
         self.sendEncEntities(node, encEntities, participant)
 
     def ensureSessionsAndSendToGroup(self, node, jids):
-        logger.debug("ensureSessionsAndSendToGroup(node=[omitted], jids=%s)" % jids)
+        logger.debug(f"ensureSessionsAndSendToGroup(node=[omitted], jids={jids})")
 
         allJids = []
         jidsNoSession = []    
@@ -377,10 +377,8 @@ class AxolotlSendLayer(AxolotlBaseLayer):
             - request participants keys
             - send message with dist key only + conversation, only for this participat
         """
-        logger.debug("sendToGroup(node=[omitted], retryReceiptEntity=[%s])" %
-                     ("[retry_count=%s, retry_jid=%s]" % (
-                         retryReceiptEntity.getRetryCount(), retryReceiptEntity.getRetryJid())
-                      ) if retryReceiptEntity is not None else None)
+        retry_info = f"[retry_count={retryReceiptEntity.getRetryCount()}, retry_jid={retryReceiptEntity.getRetryJid()}]" if retryReceiptEntity is not None else "[None]"
+        logger.debug(f"sendToGroup(node=[omitted], retryReceiptEntity={retry_info})")
 
         groupJid = node["to"]        
         ownJid = self.getLayerInterface(YowAuthenticationProtocolLayer).getUsername(True)

@@ -1,3 +1,6 @@
+from loguru import logger
+
+
 class ExtendedTextAttributes(object):
     def __init__(
             self,
@@ -19,6 +22,9 @@ class ExtendedTextAttributes(object):
         self._invite_link_group_type_v2 = invite_link_group_type_v2
         self._doNotPlayInline=doNotPlayInline
 
+
+
+        logger.info(f"ExtendedTextAttributes: {self}")
 
 
 

@@ -17,7 +17,7 @@ import threading,logging,uuid,base64
 from common.utils import Utils
 from app.yowbot_values import YowBotType
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 try:
     import Queue
 except ImportError:
@@ -77,6 +77,16 @@ class YowNoiseLayer(YowLayer):
 
             passive = False
             
+            # Obtém MCC/MNC dinamicamente se houver config disponível
+            mcc = "000"
+            mnc = "000"
+            if self._profile is not None and hasattr(self._profile, 'config'):
+                config = self._profile.config
+                if config and hasattr(config, 'cc') and config.cc:
+                    mccmnc = Utils.getMccMnc(config.cc)
+                    mcc = mccmnc.get("mcc", "000")
+                    mnc = mccmnc.get("mnc", "000")
+            
             #这个client_cofig 的结构是consonance里面的         
             client_config = ClientConfig(          
                 username=None,
@@ -85,8 +95,8 @@ class YowNoiseLayer(YowLayer):
                 useragent=UserAgentConfig(
                     platform=yowsupenv.getPlatform(),
                     app_version=yowsupenv.getVersion(),
-                    mcc="000",
-                    mnc="000",
+                    mcc=mcc,
+                    mnc=mnc,
                     os_version=yowsupenv.getOSVersion(),
                     manufacturer=yowsupenv.getManufacturer(),
                     device=yowsupenv.getDeviceName2(),
@@ -193,7 +203,12 @@ class YowNoiseLayer(YowLayer):
                 self._rs = remote_static
 
                 cc = Utils.getMobileCC(str(username))       
-                lg,lc = Utils.getLGLC(cc)                
+                lg,lc = Utils.getLGLC(cc)
+                
+                # Obtém MCC/MNC dinamicamente baseado no código do país
+                mccmnc = Utils.getMccMnc(cc) if cc else {"mcc": "000", "mnc": "000"}
+                mcc = mccmnc.get("mcc", config.mcc if hasattr(config, 'mcc') and config.mcc else "000")
+                mnc = mccmnc.get("mnc", config.mnc if hasattr(config, 'mnc') and config.mnc else "000")
                 
                 client_config = ClientConfig(
                     username=username,
@@ -201,8 +216,8 @@ class YowNoiseLayer(YowLayer):
                     useragent=UserAgentConfig(
                         platform=yowsupenv.getPlatform(),
                         app_version=yowsupenv.getVersion(),
-                        mcc="000",
-                        mnc="000",
+                        mcc=mcc,
+                        mnc=mnc,
                         os_version=yowsupenv.getOSVersion(),
                         manufacturer=yowsupenv.getManufacturer(),
                         device=yowsupenv.getDeviceName2(),
@@ -219,7 +234,7 @@ class YowNoiseLayer(YowLayer):
                 )
 
                 if not self._in_handshake():
-                    logger.debug("Performing handshake [username= %d, passive=%s]" % (username, passive) )
+                    logger.debug(f"Performing handshake [username= {username}, passive={passive}]")
                     self._handshake_worker = WANoiseProtocolHandshakeWorker(
                         self._wa_noiseprotocol, self._stream, client_config, local_static, remote_static,
                         self.on_handshake_finished,

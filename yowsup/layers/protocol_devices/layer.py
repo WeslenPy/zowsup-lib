@@ -2,7 +2,7 @@ from ...layers import YowProtocolLayer
 from .protocolentities import *
 import logging
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 class YowDevicesIqProtocolLayer(YowProtocolLayer):
     def __init__(self):
@@ -27,8 +27,8 @@ class YowDevicesIqProtocolLayer(YowProtocolLayer):
             elif node.getChild("update"):
                 pass
             else :
-                logger.warning("Unsupported device notification type: %s " % node["type"])
-                logger.debug("Unsupported device notification node: %s" % node)
+                logger.warning(f"Unsupported device notification type: {node['type']} ")
+                logger.debug(f"Unsupported device notification node: {node}")
 
     def recvIq(self, node):        
         pass

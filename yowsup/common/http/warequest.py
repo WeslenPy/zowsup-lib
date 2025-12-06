@@ -13,7 +13,7 @@ import uuid
 
 from urllib.parse import quote as urllib_quote
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
     
 class WARequest(object):
@@ -134,10 +134,8 @@ class WARequest(object):
 
     def send(self, parser=None, encrypt=True, preview=False,cert=None,proxy=None):
         
-        logger.debug("send(parser=%s, encrypt=%s, preview=%s)" % (
-            None if parser is None else "[omitted]",
-            encrypt, preview
-        ))
+        parser_str = None if parser is None else "[omitted]"
+        logger.debug(f"send(parser={parser_str}, encrypt={encrypt}, preview={preview})")
         if self.type == "POST":
             return self.sendPostRequest(parser)
 
@@ -178,16 +176,14 @@ class WARequest(object):
 
     def sendGetRequest(self, parser=None, encrypt_params=True, preview=False,cert=None,proxy=None):
                 
-        logger.debug("sendGetRequest(parser=%s, encrypt_params=%s, preview=%s)" % (
-            None if parser is None else "[omitted]",
-            encrypt_params, preview
-        ))
+        parser_str = None if parser is None else "[omitted]"
+        logger.debug(f"sendGetRequest(parser={parser_str}, encrypt_params={encrypt_params}, preview={preview})")
         self.response = None
 
         if encrypt_params:
             logger.debug("Encrypting parameters")
             if logger.level <= logging.DEBUG:
-                logger.debug("pre-encrypt (encoded) parameters = \n%s", (self.urlencodeParams(self.params)))
+                logger.debug(f"pre-encrypt (encoded) parameters = \n{self.urlencodeParams(self.params)}")
             params = self.encryptParams(self.params, self.ENC_PUBKEY)
         else:
             ## params will be logged right before sending
@@ -214,7 +210,7 @@ class WARequest(object):
             logger.info("Preview request, skip response handling and return None")
             return None
         if not self.response.status_code == WARequest.OK:
-            logger.error("Request not success, status was %s" % self.response.status)
+            logger.error(f"Request not success, status was {self.response.status}")
             return {}
         return self.response.json()
 
@@ -231,7 +227,7 @@ class WARequest(object):
         self.response = WARequest.sendRequest(host, port, path, headers, params, "POST",proxy=proxy)
 
         if not self.response.status_code == WARequest.OK:
-            logger.error("Request not success, status was %s" % self.response.status)
+            logger.error(f"Request not success, status was {self.response.status}")
             return {}
 
         self.sent = True             
@@ -262,29 +258,27 @@ class WARequest(object):
         merged = []
         for k, v in params:
             merged.append(
-                "%s=%s" % (k, cls.urlencode(v))
+                f"{k}={cls.urlencode(v)}"
             )
         return "&".join(merged)
 
     @classmethod
     def sendRequest(cls, host, port, path, headers, params, reqType="GET", preview=False,tls_adapter=None,proxy=None):        
-        logger.debug("sendRequest(host=%s, port=%s, path=%s, headers=%s, params=%s, reqType=%s, preview=%s)" % (
-            host, port, path, headers, params, reqType, preview
-        ))
+        logger.debug(f"sendRequest(host={host}, port={port}, path={path}, headers={headers}, params={params}, reqType={reqType}, preview={preview})")
         params = cls.urlencodeParams(params)
         rawpath = path
         path = path + "?" + params if reqType == "GET" and params else path
         session = requests.Session()   
 
         if proxy is not None:
-            logger.debug("PROXY REQUEST TO %s" % rawpath)
+            logger.debug(f"PROXY REQUEST TO {rawpath}")
             proxies = {
-                "http":  "socks5://%s:%s@%s:%d" % (proxy.username, proxy.password, proxy.host, proxy.port),
-                "https":  "socks5://%s:%s@%s:%d" % (proxy.username, proxy.password, proxy.host, proxy.port)
+                "http":  f"socks5://{proxy.username}:{proxy.password}@{proxy.host}:{proxy.port}",
+                "https":  f"socks5://{proxy.username}:{proxy.password}@{proxy.host}:{proxy.port}"
             }               
-            response = session.request(reqType,"https://%s:%d%s" % (host,port,path),headers=headers,proxies=proxies)            
+            response = session.request(reqType,f"https://{host}:{port}{path}",headers=headers,proxies=proxies)            
         else:
-            logger.debug("REQUEST TO %s" % rawpath)
-            response = session.request(reqType,"https://%s:%d%s" % (host,port,path),headers=headers)
+            logger.debug(f"REQUEST TO {rawpath}")
+            response = session.request(reqType,f"https://{host}:{port}{path}",headers=headers)
                 
         return response

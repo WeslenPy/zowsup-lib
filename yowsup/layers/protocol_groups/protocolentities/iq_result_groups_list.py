@@ -1,3 +1,4 @@
+from loguru import logger
 from ....common import YowConstants
 from ....structs import ProtocolEntity, ProtocolTreeNode
 from ....layers.protocol_iq.protocolentities import ResultIqProtocolEntity
@@ -43,6 +44,8 @@ class ListGroupsResultIqProtocolEntity(ResultIqProtocolEntity):
     def toProtocolTreeNode(self):
         node = super(ListGroupsResultIqProtocolEntity, self).toProtocolTreeNode()
 
+
+        logger.info(f"Groups list: {self.groupsList}")
         groupsNodes = []
         for group in self.groupsList:
             groupNode = ProtocolTreeNode("group", {
@@ -71,12 +74,51 @@ class ListGroupsResultIqProtocolEntity(ResultIqProtocolEntity):
         entity = ResultIqProtocolEntity.fromProtocolTreeNode(node)
         entity.__class__ = ListGroupsResultIqProtocolEntity
         groups = []                       
-        for groupNode in node.getChild("groups").getAllChildren():            
+
+        logger.info(f"Groups: {node.getChild('groups').getAllChildren()}")
+        for groupNode in node.getChild("groups").getAllChildren():
             participants = {}
+            participants_phone_map = {}
+            
+            # Verifica se o grupo usa LID (Linked ID) ou JID normal
+            valueName = "jid"
+            if groupNode.getAttributeValue("addressing_mode") == "lid":
+                valueName = "phone_number"
+            
             for p in groupNode.getAllChildren("participant"):
-                participants[p["jid"]] = p["type"]
+                # Obtém jid (LID) e phone_number (JID normal) se disponível
+                lid_jid = p["jid"]
+                phone_number = p["phone_number"]
+                participant_type = p["type"]
+                
+                # Se não tiver jid, tenta usar phone_number e converter para LID
+                if not lid_jid:
+                    if valueName == "phone_number":
+                        participant_value = p.get(valueName) or p.get("jid")
+                        if participant_value:
+                            # Se for phone_number e não tiver @, converte para LID
+                            if "@" not in participant_value:
+                                lid_jid = Group.phone_to_lid(participant_value)
+                            else:
+                                # Se já tiver @, é o phone_number, precisa converter para LID
+                                if not phone_number:
+                                    phone_number = participant_value
+                                phone_only = phone_number.split('@')[0]
+                                lid_jid = Group.phone_to_lid(phone_only)
+                    else:
+                        lid_jid = p.get("jid")
+                
+                # Armazena o mapeamento phone_number -> lid_jid se ambos estiverem disponíveis
+                if lid_jid and phone_number:
+                    participants_phone_map[phone_number] = lid_jid
+                    logger.debug(f"Mapped phone_number {phone_number} -> lid_jid {lid_jid}")
+                
+                # Armazena o participante usando lid_jid como chave
+                if lid_jid:
+                    participants[lid_jid] = participant_type
+            
             groups.append(
-                Group(groupNode["id"], groupNode["creator"], groupNode["subject"], groupNode["s_o"], groupNode["s_t"], groupNode["creation"], participants)
+                Group(groupNode["id"], groupNode["creator"], groupNode["subject"], groupNode["s_o"], groupNode["s_t"], groupNode["creation"], participants, participants_phone_map)
             )
         entity.setProps(groups)        
         return entity

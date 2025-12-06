@@ -3,7 +3,7 @@ from .protocolentities import *
 from ..protocol_iq.protocolentities import CleanDirtyIqProtocolEntity
 import logging
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class YowIbProtocolLayer(YowProtocolLayer):
@@ -25,7 +25,7 @@ class YowIbProtocolLayer(YowProtocolLayer):
     def recvIb(self, node):
         if node.getChild("dirty"):
             dirty_node = node.getChild("dirty")
-            logger.info("auto clean %s" % dirty_node["type"])
+            logger.info(f"auto clean {dirty_node['type']}")
             clean = CleanDirtyIqProtocolEntity(type=dirty_node["type"])
             self.toLower(clean.toProtocolTreeNode())
         elif node.getChild("offline"):
@@ -52,4 +52,4 @@ class YowIbProtocolLayer(YowProtocolLayer):
         elif node.getChild("offline_preview"):
             logger.info(node)
         else:
-            logger.warning("Unsupported ib node: \n%s" % node)
+            logger.warning(f"Unsupported ib node: \n{node}")

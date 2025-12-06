@@ -3,7 +3,7 @@ from ....layers.protocol_messages.protocolentities.attributes.attributes_message
 from ....layers.protocol_messages.protocolentities.attributes.attributes_message_meta import MessageMetaAttributes
 
 import logging
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 import traceback
 
@@ -55,7 +55,7 @@ class MediaMessageProtocolEntity(ProtomessageProtocolEntity):
     @media_type.setter
     def media_type(self, value):
         if value not in MediaMessageProtocolEntity.TYPES_MEDIA:
-            logger.warn("media type: '%s' is not supported" % value)
+            logger.warn(f"media type: '{value}' is not supported")
         self._media_type = value
 
     def toProtocolTreeNode(self):

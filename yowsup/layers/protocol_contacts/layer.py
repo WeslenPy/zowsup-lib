@@ -2,7 +2,7 @@ from ...layers import YowProtocolLayer
 from .protocolentities import *
 import logging
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class YowContactsIqProtocolLayer(YowProtocolLayer):
@@ -32,8 +32,8 @@ class YowContactsIqProtocolLayer(YowProtocolLayer):
                 self.toUpper(ContactsSyncNotificationProtocolEntity.fromProtocolTreeNode(node))
 
             else:
-                logger.warning("Unsupported contact notification type: %s " % node["type"])
-                logger.debug("Unsupported contact notification node: %s" % node)
+                logger.warning(f"Unsupported contact notification type: {node['type']} ")
+                logger.debug(f"Unsupported contact notification node: {node}")
 
     def recvIq(self, node):        
         if node["type"] == "result":            

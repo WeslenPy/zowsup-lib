@@ -2,7 +2,7 @@ import os,sys
 sys.path.append(os.getcwd())
 
 # coding=UTF-8
-import logging
+from loguru import logger
 
 from yowsup.stacks import YowStackBuilder
 from yowsup.layers import YowLayerEvent
@@ -22,8 +22,6 @@ from yowsup.structs import ProtocolEntity
 import names
 
 import os,time,threading,uuid,json,inspect,time,socks
-
-logger = logging.getLogger(__name__)
 
 class BotCmd(object):
     def __init__(self, cmd , desc, order = 0):
@@ -50,8 +48,8 @@ class YowBot:
             self.idType = ProtocolEntity.ID_TYPE_IOS
                 
         if self.botId is not None:   
-            path = SysVar.ACCOUNT_PATH 
-            self.profile = YowProfile(path+self.botId)   
+            # Usa apenas o identificador lógico da conta (botId) como profile_name
+            self.profile = YowProfile(self.botId)   
             self.env.networkEnv.updateByWaNum(self.botId)            
             self.sendLayer.db = self.profile.axolotl_manager  
             
@@ -100,25 +98,25 @@ class YowBot:
 
         if event is not None:   
             if event.HasField("contact_update"):
-                logger.info("Contact %s notification:  %s : %s" %(event.contact_update.target,event.contact_update.key,event.contact_update.value))                     
+                logger.info(f"Contact {event.contact_update.target} notification:  {event.contact_update.key} : {event.contact_update.value}")                     
             elif event.HasField("msg_log"):
                 if event.msg_log.error_code:
-                    logger.info("MsgLog %s-%s (ID=%s) from %s" % (wsend_pb2.MsgLogItem.Status.Name(event.msg_log.status),event.msg_log.error_code,event.msg_log.msg_id,event.bot_id))
+                    logger.info(f"MsgLog {wsend_pb2.MsgLogItem.Status.Name(event.msg_log.status)}-{event.msg_log.error_code} (ID={event.msg_log.msg_id}) from {event.bot_id}")
                 else:
-                    logger.info("MsgLog %s(ID=%s) from %s" % (wsend_pb2.MsgLogItem.Status.Name(event.msg_log.status),event.msg_log.msg_id,event.msg_log.target))
+                    logger.info(f"MsgLog {wsend_pb2.MsgLogItem.Status.Name(event.msg_log.status)}(ID={event.msg_log.msg_id}) from {event.msg_log.target}")
             else:
-                logger.info("Event %s from %s" % (wsend_pb2.BotEvent.Event.Name(event.event),event.bot_id))
+                logger.info(f"Event {wsend_pb2.BotEvent.Event.Name(event.event)} from {event.bot_id}")
             
         if message is not None:
             if message.HasField("participant"):
-                src = "%s::%s" % (message.sender ,message.participant)
+                src = f"{message.sender}::{message.participant}"
             else:
                 src = message.sender
             dst = message.target                
             if message.HasField("text_message"):
-                logger.info("Receive text message \"%s\" from %s to %s" % (message.text_message.text,src,dst))  
+                logger.info(f'Receive text message "{message.text_message.text}" from {src} to {dst}')  
             else:
-                logger.info("Receive %s message from %s to %s" % (wsend_pb2.Message.Type.Name(message.type),src,dst)) 
+                logger.info(f"Receive {wsend_pb2.Message.Type.Name(message.type)} message from {src} to {dst}") 
 
 
     def getCmdList(self):
@@ -130,7 +128,7 @@ class YowBot:
             logger.info("Pairing-Device Registration Start")
         else:
             logger.info("Login start")           
-            logger.info("AccountFile=%s" % self.profile)
+            logger.info(f"AccountFile={self.profile}")
                            
         try :                            
             self.inloop = True            
@@ -163,7 +161,7 @@ class YowBot:
         for m in cmdmembers:            
             if hasattr(m[1], "desc"):                
                 fn = m[1]
-                print("%s|\t%s" % (m[1].cmd.ljust(30,' '), m[1].desc.ljust(50,' ')))
+                print(f"{m[1].cmd.ljust(30,' ')}|\t{m[1].desc.ljust(50,' ')}")
         print("----------------------------------------------------------------------------")
 
     def disconnect(self):        
@@ -194,7 +192,7 @@ class YowBot:
             
             return cmdId,None
         else:
-            logger.info("command %s not found" % name)
+            logger.info(f"command {name} not found")
             return None,{"code":-2,"msg":"Command Not Found"}
 
     def checkCmdResult(self,cmdId):        
@@ -261,17 +259,17 @@ class YowBot:
         cmdId,errMsg = self.callDirect(name,params,options)
 
         if cmdId is None:
-            logger.info("Command %s error(execute stage），info=%s" % (name,errMsg))                  
+            logger.info(f"Command {name} error(execute stage），info={errMsg}")                  
             return None,errMsg
         
         result,errMsg = self.getCmdResult(cmdId,waitResultTime)
         
         if errMsg is not None:
-            logger.info("Command %s error(result stage），info=%s" % (name,errMsg)) 
+            logger.info(f"Command {name} error(result stage），info={errMsg}") 
             return None,errMsg
 
         else:            
-            logger.info("Command %s complete，result=%s" % (name,json.dumps(result)))
+            logger.info(f"Command {name} complete，result={json.dumps(result)}")
             return result,None
 
     '''
@@ -280,7 +278,32 @@ class YowBot:
     
     @BotCmd("msg.send","send message")
     def sendMsg(self,params,options):                 
-        return self.sendLayer.sendMsg(params,options)    
+        return self.sendLayer.sendMsg(params,options)
+    
+    @BotCmd("account.getsentcount", "get count of sent messages by account and recipient")
+    def getSentMessagesCount(self, params, options):
+        """
+        Retorna a contagem de mensagens enviadas pela conta.
+        
+        Parâmetros opcionais:
+        - recipient: filtrar por destinatário específico
+        - message_type: filtrar por tipo de mensagem (TEXT, IMAGE, etc.)
+        - status: filtrar por status (EXECUTED, SENT, ERROR)
+        """
+        from app.db import get_sent_messages_count
+        
+        recipient = options.get("recipient") if "recipient" in options else None
+        message_type = options.get("message_type") if "message_type" in options else None
+        status = options.get("status") if "status" in options else None
+        
+        result = get_sent_messages_count(
+            phone=self.botId,
+            recipient=recipient,
+            message_type=message_type,
+            status=status,
+        )
+        
+        return result    
 
     @BotCmd("msg.sendmedia","send media message")
     def sendMediaMsg(self,params,options):                    
@@ -300,10 +323,16 @@ class YowBot:
 
     @BotCmd("account.init", "initialize the account (for the 1st login)")        
     def intialize(self,params,options):    
-        time.sleep(5)  #wait 5 seconds
+        time.sleep(1)  #wait 5 seconds
         self.sendLayer.getConfig(params,options)    
         time.sleep(2)                
         self.setSelfName(params,options)
+        
+        # Atualiza status da conta no banco de dados - marca como inicializada
+        if self.botId is not None:
+            from app.db import update_account_status
+            update_account_status(self.botId, is_initialized=True)
+        
         return "JUSTWAIT"     
     
     @BotCmd("group.getinvite", "get the invite code of group")

@@ -19,12 +19,11 @@ from axolotl.state.axolotlstore import AxolotlStore
 from ..axolotl.store.sqlite.liteaxolotlstore import LiteAxolotlStore
 from ..axolotl import exceptions
 import random
-import logging
 import sys
 import base64
 from ..common.tools import WATools
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class AxolotlManager(object):
@@ -51,7 +50,7 @@ class AxolotlManager(object):
         self._group_session_builder = GroupSessionBuilder(self._store) # type: GroupSessionBuilder
         self._session_ciphers = {} # type: dict[str, SessionCipher]
         self._group_ciphers = {} # type: dict[str, GroupCipher]
-        logger.debug("Initialized AxolotlManager [username=%s, db=%s]" % (self._username, store))
+        logger.debug(f"Initialized AxolotlManager [username={self._username}, db={store}]")
 
 
     @property
@@ -67,22 +66,20 @@ class AxolotlManager(object):
         return ret
 
     def level_prekeys(self, force=False):        
-        logger.debug("level_prekeys(force=%s)" % force)
+        logger.debug(f"level_prekeys(force={force})")
         len_pending_prekeys = len(self._store.loadPreKeys())
-        logger.debug("len(pending_prekeys) = %d" % len_pending_prekeys)
+        logger.debug(f"len(pending_prekeys) = {len_pending_prekeys}")
         
         
         if force or len_pending_prekeys < self.THRESHOLD_REGEN:
             count_gen = self.COUNT_GEN_PREKEYS
             max_prekey_id = self._store.preKeyStore.loadMaxPreKeyId()
-            logger.info("Generating %d prekeys, current max_prekey_id=%d" % (count_gen, max_prekey_id))
+            logger.info(f"Generating {count_gen} prekeys, current max_prekey_id={max_prekey_id}")
             prekeys = KeyHelper.generatePreKeys(max_prekey_id + 1, count_gen)
-            logger.info("Storing %d prekeys" % len(prekeys))
+            logger.info(f"Storing {len(prekeys)} prekeys")
             for i in range(0, len(prekeys)):
                 key = prekeys[i]
-                if logger.level <= logging.DEBUG:
-                    sys.stdout.write("Storing prekey %d/%d \r" % (i + 1, len(prekeys)))
-                    sys.stdout.flush()
+                logger.debug(f"Storing prekey {i + 1}/{len(prekeys)} \r")
                 self._store.storePreKey(key.getId(), key)
             return prekeys
         
@@ -94,7 +91,7 @@ class AxolotlManager(object):
         logger.debug("load_unsent_prekeys")
         unsent = self._store.preKeyStore.loadUnsentPendingPreKeys()
         if len(unsent) > 0:
-            logger.info("Loaded %d unsent prekeys" % len(unsent))
+            logger.info(f"Loaded {len(unsent)} unsent prekeys")
         return unsent
 
     def set_prekeys_as_sent(self, prekeyIds):
@@ -104,7 +101,7 @@ class AxolotlManager(object):
         :return:
         :rtype:
         """
-        logger.debug("set_prekeys_as_sent(prekeyIds=[%d prekeyIds])" % len(prekeyIds))
+        logger.debug(f"set_prekeys_as_sent(prekeyIds=[{len(prekeyIds)} prekeyIds])")
         self._store.preKeyStore.setAsSent([prekey.getId() for prekey in prekeyIds])
 
     def generate_signed_prekey(self):
@@ -130,7 +127,7 @@ class AxolotlManager(object):
         return self.generate_signed_prekey() if generate else None
     
     def _get_session_cipher(self, username,deviceid=0):
-        logger.debug("get_session_cipher(username=%s)" % username)
+        logger.debug(f"get_session_cipher(username={username})")
         key = "%s-%d" % (username,deviceid)        
         if key in self._session_ciphers:
             session_cipher = self._session_ciphers[key]
@@ -140,7 +137,7 @@ class AxolotlManager(object):
         return session_cipher
 
     def _get_group_cipher(self, groupid, username):
-        logger.debug("get_group_cipher(groupid=%s, username=%s)" % (groupid, username))
+        logger.debug(f"get_group_cipher(groupid={groupid}, username={username})")
         senderkeyname = SenderKeyName(groupid, AxolotlAddress(username, 0))
         if senderkeyname in self._group_ciphers:
             group_cipher = self._group_ciphers[senderkeyname]
@@ -163,7 +160,7 @@ class AxolotlManager(object):
         # to avoid the hassle of encoding issues and associated unnecessary crashes,
         # don't log the message content.
         # see https://github.com/tgalal/yowsup/issues/2732
-        logger.debug("encrypt(username=%s, message=[omitted])" % username)
+        logger.debug(f"encrypt(username={username}, message=[omitted])")
         """
         :param username:
         :type username: str
@@ -178,25 +175,26 @@ class AxolotlManager(object):
         return cipher.encrypt(message + self._generate_random_padding())
     
     def decrypt_pkmsg(self, senderid, data, unpad):
-        logger.debug("decrypt_pkmsg(senderid=%s, data=(omitted), unpad=%s)" % (senderid, unpad))
+        logger.debug(f"decrypt_pkmsg(senderid={senderid}, data=(omitted), unpad={unpad})")
         pkmsg = PreKeyWhisperMessage(serialized=data)
 
         recipientId,a,deviceid = WATools.jidDecode(senderid)        
         try:
             plaintext = self._get_session_cipher(recipientId,deviceid).decryptPkmsg(pkmsg)
             return self._unpad(plaintext) if unpad else plaintext
-        except NoSessionException:
-            raise exceptions.NoSessionException()
-        except InvalidKeyIdException:
-            raise exceptions.InvalidKeyIdException()
-        except InvalidMessageException:
-            raise exceptions.InvalidMessageException()
-        except DuplicateMessageException:
-            raise exceptions.DuplicateMessageException()
+        except NoSessionException as e:
+            raise exceptions.NoSessionException(str(e) if str(e) else "No session")
+        except InvalidKeyIdException as e:
+            raise exceptions.InvalidKeyIdException(str(e) if str(e) else "Invalid key ID")
+        except InvalidMessageException as e:
+            # Preserva a mensagem original da exceção (pode conter "Bad Mac!" ou outras informações)
+            raise exceptions.InvalidMessageException(str(e) if str(e) else "Invalid message")
+        except DuplicateMessageException as e:
+            raise exceptions.DuplicateMessageException(str(e) if str(e) else "Duplicate message")
 
 
     def decrypt_msg(self, senderid, data, unpad):
-        logger.debug("decrypt_msg(senderid=%s, data=[omitted], unpad=%s)" % (senderid, unpad))
+        logger.debug(f"decrypt_msg(senderid={senderid}, data=[omitted], unpad={unpad})")
         msg = WhisperMessage(serialized=data)
         recipientId,a,deviceid = WATools.jidDecode(senderid)
 
@@ -204,14 +202,16 @@ class AxolotlManager(object):
             plaintext = self._get_session_cipher(recipientId,deviceid).decryptMsg(msg)
 
             return self._unpad(plaintext) if unpad else plaintext
-        except NoSessionException:
-            raise exceptions.NoSessionException()
-        except InvalidKeyIdException:
-            raise exceptions.InvalidKeyIdException()
-        except InvalidMessageException:
-            raise exceptions.InvalidMessageException()
-        except DuplicateMessageException:
-            raise exceptions.DuplicateMessageException()
+        except NoSessionException as e:
+            raise exceptions.NoSessionException(str(e) if str(e) else "No session")
+        except InvalidKeyIdException as e:
+            raise exceptions.InvalidKeyIdException(str(e) if str(e) else "Invalid key ID")
+        except InvalidMessageException as e:
+            # Preserva a mensagem original da exceção (pode conter "Bad Mac!" ou outras informações)
+            # Isso ajuda no diagnóstico quando a exceção é tratada em camadas superiores
+            raise exceptions.InvalidMessageException(str(e) if str(e) else "Invalid message")
+        except DuplicateMessageException as e:
+            raise exceptions.DuplicateMessageException(str(e) if str(e) else "Duplicate message")
 
     def group_encrypt(self, groupid, message):
         """
@@ -225,12 +225,12 @@ class AxolotlManager(object):
         # to avoid the hassle of encoding issues and associated unnecessary crashes,
         # don't log the message content.
         # see https://github.com/tgalal/yowsup/issues/2732
-        logger.debug("group_encrypt(groupid=%s, message=[omitted])" % groupid)
+        logger.debug(f"group_encrypt(groupid={groupid}, message=[omitted])")
         group_cipher = self._get_group_cipher(groupid, self._username)
         return group_cipher.encrypt(message + self._generate_random_padding())
 
     def group_decrypt(self, groupid, participantid, data):
-        logger.debug("group_decrypt(groupid=%s, participantid=%s, data=[omitted])" % (groupid, participantid))
+        logger.debug(f"group_decrypt(groupid={groupid}, participantid={participantid}, data=[omitted])")
         group_cipher = self._get_group_cipher(groupid, participantid)
         try:
             plaintext = group_cipher.decrypt(data)
@@ -244,7 +244,7 @@ class AxolotlManager(object):
             raise exceptions.InvalidMessageException()
 
     def group_create_skmsg(self, groupid):
-        logger.debug("group_create_skmsg(groupid=%s)" % groupid)
+        logger.debug(f"group_create_skmsg(groupid={groupid})")
         senderKeyName = SenderKeyName(groupid, AxolotlAddress(self._username, 0))
         return self._group_session_builder.create(senderKeyName)
 
@@ -259,8 +259,7 @@ class AxolotlManager(object):
         :return:
         :rtype:
         """
-        logger.debug("group_create_session(groupid=%s, participantid=%s, skmsgdata=[omitted])"
-                     % (groupid, participantid))
+        logger.debug(f"group_create_session(groupid={groupid}, participantid={participantid}, skmsgdata=[omitted])")
         senderKeyName = SenderKeyName(groupid, AxolotlAddress(participantid, 0))
         senderkeydistributionmessage = SenderKeyDistributionMessage(serialized=skmsgdata)
         self._group_session_builder.process(senderKeyName, senderkeydistributionmessage)
@@ -274,7 +273,7 @@ class AxolotlManager(object):
         :return:
         :rtype:
         """
-        logger.debug("create_session(username=%s, prekeybundle=[omitted], autotrust=%s)" % (username, autotrust))
+        logger.debug(f"create_session(username={username}, prekeybundle=[omitted], autotrust={autotrust})")
 
         recipient,a,deviceid = WATools.jidDecode(username)     
 
@@ -294,7 +293,7 @@ class AxolotlManager(object):
         :return:
         :rtype:
         """        
-        logger.debug("session_exists(%s)?" % username)
+        logger.debug(f"session_exists({username})?")
         recipient,a,deviceid = WATools.jidDecode(username)   
         return self._store.containsSession(recipient, deviceid)
     
@@ -304,12 +303,12 @@ class AxolotlManager(object):
         return self._store.get_all_session_usernames(username)
 
     def load_senderkey(self, groupid):
-        logger.debug("load_senderkey(groupid=%s)" % groupid)
+        logger.debug(f"load_senderkey(groupid={groupid})")
         senderkeyname = SenderKeyName(groupid, AxolotlAddress(self._username, 0))
         return self._store.loadSenderKey(senderkeyname)
 
     def trust_identity(self, account ,identitykey):
-        logger.debug("trust_identity(account=%s, identitykey=[omitted])" % account)
+        logger.debug(f"trust_identity(account={account}, identitykey=[omitted])")
 
         recipient,a,deviceid = WATools.jidDecode(account) 
         self._store.saveIdentity(recipient,deviceid,identitykey)

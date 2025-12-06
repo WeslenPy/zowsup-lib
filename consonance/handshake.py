@@ -29,7 +29,7 @@ from .util.byte import ByteUtil
 from.exceptions.handshake_failed_exception import HandshakeFailedException
 import struct,binascii
 import base64,hashlib,logging
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 class WAHandshake(object):
     def __init__(self, version_major, version_minor):
@@ -81,9 +81,7 @@ class WAHandshake(object):
         :rtype:
         """        
                 
-        logger.debug("perform(client_config=%s, stream=%s, s=%s, rs=%s, e=%s)" % (
-            client_config, stream, s, rs, e
-        ))
+        logger.debug(f"perform(client_config={client_config}, stream={stream}, s={s}, rs={rs}, e={e})")
         dh = X25519DH()
         if e is not None:
             dh = NoGenDH(dh, PrivateKey(e.private.data))

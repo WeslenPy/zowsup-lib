@@ -7,7 +7,6 @@ import re
 import json
 import urllib
 import random
-import logging
 import hashlib
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
@@ -21,9 +20,7 @@ from axolotl.ecc.curve import Curve
 import zlib
 
 import base64,time
-
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 class Utils:
 
@@ -109,7 +106,6 @@ class Utils:
             #pass    
 
     def compress(uncompressed: bytes) -> bytes:
-        # 压缩数据
         compressor = zlib.compressobj()
         compressed_data = compressor.compress(uncompressed)
         compressed_data += compressor.flush()
@@ -219,25 +215,40 @@ class Utils:
                 i+=1
         return params,options
 
-    def init_log(level,name=None):
-        
+    def init_log(level: str = "INFO", name: str | None = None):
+        """
+        Inicializa o sistema de logs usando loguru, com saída em stdout e arquivo.
+
+        - level: nível mínimo de log (ex.: "DEBUG", "INFO", "WARNING")
+        - name: nome do arquivo de log dentro de SysVar.LOG_PATH (default: "default.log")
+        """
+
+        from loguru import logger as _logger
+
         if name is None:
             name = "default.log"
 
         log_dir = Path(SysVar.LOG_PATH)
+        Utils.assureDir(log_dir)
 
-        Utils.assureDir(log_dir)               
-                
-        logging.basicConfig(level=level, 
-                            format='%(asctime)s %(levelname)s %(name)s: %(message)s',                            
-                            handlers=[
-                                logging.StreamHandler(sys.stdout),
-                                logging.FileHandler(filename=log_dir/name, encoding='utf8')
-                            ])
-                
-        logging.getLogger('transitions').setLevel(logging.WARNING)
-        logging.getLogger('dissononce').setLevel(logging.WARNING)
-      
+        # Remove handlers existentes para evitar duplicação
+        _logger.remove()
+
+        # Console
+        _logger.add(
+            sys.stdout,
+            level="DEBUG",
+            # format="{time:YYYY-MM-DD HH:mm:ss,SSS} {level} {name}: {message}",
+        )
+
+        # Arquivo
+        _logger.add(
+            name,
+            level=level,
+            encoding="utf-8",
+            rotation="50 MB",
+            retention="7 days",
+        )
         
     def genMccMncList():
 
@@ -292,22 +303,31 @@ class Utils:
             f2.write(json.dumps(mcc_mnc_list, indent=2))           
         
     def getMccMnc(countryCode):
-        return {
-            "mnc":"000",
-            "mcc":"000"
-        }
+        """
+        Retorna um par mcc/mnc plausível para o código de país informado.
 
-        '''
-        with open("mcc_mnc.json", 'r', encoding='utf8') as f:            
-            list =json.loads(f.read())
-        map = {}
-        for item in list:
-            if item["countryCode"] not in map:
-                map[item["countryCode"]] = []
-            map[item["countryCode"]].append({"mcc":item["mcc"],"mnc":item["mnc"],"iso":item["iso"],"network":item["network"].strip()})
-        x = random.choice(map[countryCode])
-        return x
-        '''
+        A fonte é o arquivo data/mcc_mnc.json (pré-gerado). Caso não haja
+        entradas para o countryCode, retorna "000"/"000".
+        """
+        try:
+            with open("data/mcc_mnc.json", 'r', encoding='utf8') as f:
+                items = json.loads(f.read())
+        except Exception as e:
+            logger.error(f"Erro ao carregar data/mcc_mnc.json: {e}")
+            return {"mcc": "000", "mnc": "000"}
+
+        candidates = [
+            item for item in items
+            if item.get("countryCode") == countryCode
+               and item.get("mcc")
+               and item.get("mnc")
+        ]
+
+        if not candidates:
+            return {"mcc": "000", "mnc": "000"}
+
+        choice = random.choice(candidates)
+        return {"mcc": choice["mcc"], "mnc": choice["mnc"]}
 
     def getMobileCC(mobile):
         with open("data/mcc_mnc.json", 'r', encoding='utf8') as f:            

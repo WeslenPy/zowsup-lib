@@ -5,7 +5,7 @@ import socket
 import traceback
 import time
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class AsyncoreConnectionDispatcher(YowConnectionDispatcher, asyncore.dispatcher_with_send):
@@ -21,15 +21,15 @@ class AsyncoreConnectionDispatcher(YowConnectionDispatcher, asyncore.dispatcher_
             self.out_buffer = self.out_buffer + data                        
             self.initiate_send()
         else:
-            logger.warn("Attempted to send %d bytes while still not connected" % len(data))
+            logger.warn(f"Attempted to send {len(data)} bytes while still not connected")
 
     def connect(self, host):
-        logger.debug("connect(%s)" % str(host))
+        logger.debug(f"connect({str(host)})")
         self.connectionCallbacks.onConnecting()
         
         proxy = None        
         if self._networkEnv.type!="direct":
-            logger.debug("proxy set %s %s %s %s" % (self._networkEnv.host,self._networkEnv.port,self._networkEnv.username,self._networkEnv.password))
+            logger.debug(f"proxy set {self._networkEnv.host} {self._networkEnv.port} {self._networkEnv.username} {self._networkEnv.password}")
             proxy = {
                 "host":self._networkEnv.host ,
                 "port":self._networkEnv.port,

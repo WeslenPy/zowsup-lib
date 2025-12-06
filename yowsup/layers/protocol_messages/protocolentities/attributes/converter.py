@@ -458,6 +458,9 @@ class AttributesConverter(object):
         m.key.id = reaction_attributes.msgid
         m.key.remote_jid = reaction_attributes.remote_jid
         m.key.from_me = reaction_attributes.from_me
+        # Inclui participant no key se fornecido (necessário para grupos)
+        if reaction_attributes.participant is not None:
+            m.key.participant = reaction_attributes.participant
         m.text = reaction_attributes.text
         m.sender_timestamp_ms = reaction_attributes.sender_timestamp_ms
         return m
@@ -468,7 +471,8 @@ class AttributesConverter(object):
             remote_jid= proto.key.remote_jid,
             from_me = proto.key.from_me,
             text = proto.text,
-            sender_timestamp_ms= proto.sender_timestamp_ms            
+            sender_timestamp_ms= proto.sender_timestamp_ms,
+            participant=proto.key.participant if proto.key.HasField("participant") else None
         )
         
     def sticker_to_proto(self, sticker_attributes):

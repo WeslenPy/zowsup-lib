@@ -6,7 +6,7 @@ from ...layers.network.dispatcher.dispatcher_socket import SocketConnectionDispa
 from ...layers.network.dispatcher.dispatcher_asyncore import AsyncoreConnectionDispatcher
 import logging
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 class YowNetworkLayer(YowLayer, ConnectionCallbacks):
     """This layer wraps a connection dispatcher that provides connection and a communication channel
@@ -88,7 +88,7 @@ class YowNetworkLayer(YowLayer, ConnectionCallbacks):
         self._dispatcher = self.__create_dispatcher(self.getProp(self.PROP_DISPATCHER, self.DISPATCHER_DEFAULT))
         self.state = self.__class__.STATE_CONNECTING
         endpoint = self.getProp(self.__class__.PROP_ENDPOINT)        
-        logger.info("Connecting to %s:%s" % endpoint)    
+        logger.info(f"Connecting to {endpoint[0]}:{endpoint[1]}")    
 
         self._dispatcher.connect(endpoint)
 

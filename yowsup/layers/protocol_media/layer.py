@@ -16,7 +16,7 @@ from ...layers.protocol_iq.protocolentities import IqProtocolEntity, ErrorIqProt
 import logging
 import traceback
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class YowMediaProtocolLayer(YowProtocolLayer):
@@ -89,12 +89,12 @@ class YowMediaProtocolLayer(YowProtocolLayer):
                     entity = StickerDownloadableMediaMessageProtocolEntity.fromProtocolTreeNode(node)
                     self.toUpper(entity)
                 else:
-                    logger.warn("Unsupported mediatype: %s, will send receipts" % mediaNode.getAttributeValue("mediatype"))
+                    logger.warn(f"Unsupported mediatype: {mediaNode.getAttributeValue('mediatype')}, will send receipts")
                     self.toLower(MediaMessageProtocolEntity.fromProtocolTreeNode(node).ack(True).toProtocolTreeNode())
             
             except:
                 print(traceback.format_exc())
-                logger.warn("mediatype: %s, process with exception " % mediaNode.getAttributeValue("mediatype"))
+                logger.warn(f"mediatype: {mediaNode.getAttributeValue('mediatype')}, process with exception ")
                 self.toLower(MediaMessageProtocolEntity.fromProtocolTreeNode(node).ack(True).toProtocolTreeNode())
 
     

@@ -9,3 +9,14 @@ build
 .idea
 .tox
 config.conf
+
+.venv
+
+.env
+accounts.txt
+*.vcf
+maturation.py
+*.log
+test.py
+unique.py
+*.db

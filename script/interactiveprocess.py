@@ -9,13 +9,11 @@ from common.utils import Utils
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), os.pardir)))
 
-import logging
+from loguru import logger
 import threading
 import time
 import json
 import shlex
-
-logger = logging.getLogger(__name__)
 
 class InteractiveProcess:
 
@@ -29,14 +27,14 @@ class InteractiveProcess:
         return self.bot.waitLogin() 
 
     def runThread(self):
-        logger.info("Waiting BOT %s " % self.bot.botId) 
+        logger.info(f"Waiting BOT {self.bot.botId} ") 
 
         if self.waitLogin():       
             if self.bot.sendLayer.detect40x:
-                logger.info("BOT %s login failed" % self.bot.botId)    
+                logger.info(f"BOT {self.bot.botId} login failed")    
                 self.bot.disconnect()                 
             else:
-                logger.info("BOT %s ready." % self.bot.botId)      
+                logger.info(f"BOT {self.bot.botId} ready.")      
 
                 time.sleep(1)
 
@@ -70,22 +68,22 @@ class InteractiveProcess:
                         cmdId,errMsg = self.bot.callDirect(params[0],params[1:] if  len(params)>1 else [],options)        
 
                         if errMsg is not None:
-                            logger.info("Commmand %s error(execute stage），info=%s" % (params[0],errMsg))      
+                            logger.info(f"Commmand {params[0]} error(execute stage），info={errMsg}")      
                         else:                    
                             if cmdId=="JUSTWAIT":                         
                                 logger.info("Command complete") 
                             else:
                                 result,errMsg = self.bot.getCmdResult(cmdId,waitTime)                    
                                 if errMsg is not None:
-                                    logger.info("Command %s error (result stage），info=%s" % (params[0],errMsg)) 
+                                    logger.info(f"Command {params[0]} error (result stage），info={errMsg}") 
                                 else:
-                                    logger.info("Command %s complete，result=%s" % (params[0],json.dumps(result)))
+                                    logger.info(f"Command {params[0]} complete，result={json.dumps(result)}")
 
                                    
                 self.bot.disconnect()           
 
         else:
-            logger.info("BOT %s connection timeout" % self.bot.botId)    
+            logger.info(f"BOT {self.bot.botId} connection timeout")    
             self.bot.disconnect() 
     
     def run(self):       

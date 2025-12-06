@@ -1,3 +1,4 @@
+from loguru import logger
 from ....layers.protocol_messages.protocolentities.attributes.attributes_message_meta import MessageMetaAttributes
 from ....layers.protocol_messages.protocolentities.attributes.attributes_extendedtext import ExtendedTextAttributes
 from ....layers.protocol_messages.protocolentities.protomessage import ProtomessageProtocolEntity
@@ -21,8 +22,10 @@ class ExtendedTextMessageProtocolEntity(ProtomessageProtocolEntity):
 
     @property
     def context_info(self):
+        logger.info(f"context_info: {self.message_attributes.extended_text.context_info}")
         return self.message_attributes.extended_text.context_info
 
     @context_info.setter
     def context_info(self, value):
+        logger.info(f"context_info setter: {value}")
         self.message_attributes.extended_text.context_info = value

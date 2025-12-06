@@ -18,7 +18,7 @@ from .util.keyhelper import KeyHelper
 import base64
 
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class SessionBuilder:
@@ -62,7 +62,7 @@ class SessionBuilder:
         #print(message.getMessageVersion())
 
         if sessionRecord.hasSessionState(message.getMessageVersion(), message.getBaseKey().serialize()):
-            logger.warn("We've already setup a session for this V3 message, letting bundled message fall through...")
+            logger.warning("We've already setup a session for this V3 message, letting bundled message fall through...")
             return None
         
 

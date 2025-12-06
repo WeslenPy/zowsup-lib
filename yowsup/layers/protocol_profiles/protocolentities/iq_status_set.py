@@ -3,7 +3,7 @@ from ....layers.protocol_iq.protocolentities import IqProtocolEntity
 from ....structs import ProtocolTreeNode
 import logging
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class SetStatusIqProtocolEntity(IqProtocolEntity):
