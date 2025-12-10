@@ -41,10 +41,10 @@ class PathStatic:
         """
         candidate = cls.DATA_DIR / name
         if candidate.exists():
-            return candidate
+            return candidate.as_posix()
         # fallback para execução em diretórios alternativos
-        cwd_candidate = Path.cwd() / "zowsuplib" / "data" / name
-        return cwd_candidate
+        cwd_candidate = Path.cwd() / "data" / name
+        return cwd_candidate.as_posix()
 
 class Utils:
 

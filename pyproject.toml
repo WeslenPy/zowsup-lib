@@ -53,6 +53,7 @@ dependencies = [
   "loguru",
   "SQLAlchemy",
   "PyMySQL",
+  "pytest (>=9.0.2,<10.0.0)",
 ]
 
 [project.urls]
@@ -72,3 +73,7 @@ namespaces = true
 "proto" = ["*.proto"]
 "consonance" = ["proto/*.proto", "config/templates/*.json"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = "."
+addopts = '-p no:warnings'
