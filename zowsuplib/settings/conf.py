@@ -54,7 +54,7 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
-
+        extra = "ignore"
 
 # Singleton settings instance used across the application
 settings = Settings()
