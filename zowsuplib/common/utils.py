@@ -22,6 +22,30 @@ import zlib
 import base64,time
 from loguru import logger
 
+
+class PathStatic:
+    """
+    Resolve caminhos para arquivos estáticos incluídos no pacote.
+    Funciona tanto no checkout quanto após instalação como biblioteca.
+    """
+
+    # Raiz do pacote (zowsuplib/)
+    BASE_DIR = Path(__file__).resolve().parents[1]
+    DATA_DIR = BASE_DIR / "data"
+
+    @classmethod
+    def data_file(cls, name: str) -> Path:
+        """
+        Retorna o caminho absoluto para um arquivo em zowsuplib/data.
+        Faz fallback para path relativo ao cwd caso não exista no pacote.
+        """
+        candidate = cls.DATA_DIR / name
+        if candidate.exists():
+            return candidate
+        # fallback para execução em diretórios alternativos
+        cwd_candidate = Path.cwd() / "zowsuplib" / "data" / name
+        return cwd_candidate
+
 class Utils:
 
     _OUTPUT = []
@@ -251,56 +275,52 @@ class Utils:
         )
         
     def genMccMncList():
+        """
+        Baixa a tabela de mcc-mnc e gera zowsuplib/data/mcc_mnc.json (ordenado).
+        """
+        td_re = re.compile(r"<td>(.*?)</td>")
+        url = "http://mcc-mnc.com/"
 
-        td_re = re.compile('<td>(.*)</td>')
-        
-        with urllib.request.urlopen('http://mcc-mnc.com/') as f:
-            html = f.read().decode('utf-8')
+        with urllib.request.urlopen(url) as f:
+            html = f.read().decode("utf-8")
 
         tbody_start = False
         mcc_mnc_list = []
+        row = []
 
-        i=0
-        for line in html.split('\n'):        
-            if '<tbody>' in line:
+        for line in html.split("\n"):
+            if "<tbody>" in line:
                 tbody_start = True
-                logger.info("start")
-            elif '</tbody>' in line:
+                continue
+            if "</tbody>" in line:
                 break
-            elif tbody_start:
-                td_search = td_re.search(line)     
+            if not tbody_start:
+                continue
 
-                if td_search is None:
-                    continue       
-                                        
-                if i==0:
-                    current_item = {}
-                    current_item['mcc'] = td_search[1]
-                    i+=1
-                    continue
-                if i==1:
-                    current_item['mnc'] = td_search[1]
-                    i+=1
-                    continue
-                if i==2:
-                    current_item['iso'] = td_search[1]
-                    i+=1
-                    continue            
-                if i==3:
-                    current_item['country'] = td_search[1]
-                    i+=1
-                    continue            
-                if i==4:
-                    current_item['countryCode'] = td_search[1]
-                    i+=1
-                    continue            
-                if i==5:
-                    current_item['network'] = td_search[1]
-                    mcc_mnc_list.append(current_item)
-                    i=0
-                    continue      
-        with open("mcc_mnc.json", 'w', encoding='utf8') as f2:
-            f2.write(json.dumps(mcc_mnc_list, indent=2))           
+            td_search = td_re.search(line)
+            if td_search is None:
+                continue
+
+            row.append(td_search.group(1))
+            if len(row) == 6:
+                mcc, mnc, iso, country, country_code, network = row
+                mcc_mnc_list.append(
+                    {
+                        "mcc": mcc,
+                        "mnc": mnc,
+                        "iso": iso,
+                        "country": country,
+                        "countryCode": country_code,
+                        "network": network,
+                    }
+                )
+                row = []
+
+        out_path = PathStatic.data_file("mcc_mnc.json")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        mcc_mnc_list.sort(key=lambda x: (x.get("countryCode", ""), x.get("mcc", ""), x.get("mnc", "")))
+        with open(out_path, "w", encoding="utf8") as f2:
+            f2.write(json.dumps(mcc_mnc_list, indent=2))
         
     def getMccMnc(countryCode):
         """
@@ -310,10 +330,11 @@ class Utils:
         entradas para o countryCode, retorna "000"/"000".
         """
         try:
-            with open("zowsuplib/data/mcc_mnc.json", 'r', encoding='utf8') as f:
+            path = PathStatic.data_file("mcc_mnc.json")
+            with open(path, 'r', encoding='utf8') as f:
                 items = json.loads(f.read())
         except Exception as e:
-            logger.error(f"Erro ao carregar zowsuplib/data/mcc_mnc.json: {e}")
+            logger.error(f"Erro ao carregar mcc_mnc.json: {e}")
             return {"mcc": "000", "mnc": "000"}
 
         candidates = [
@@ -330,16 +351,23 @@ class Utils:
         return {"mcc": choice["mcc"], "mnc": choice["mnc"]}
 
     def getMobileCC(mobile):
-        with open("zowsuplib/data/mcc_mnc.json", 'r', encoding='utf8') as f:            
-            list =json.loads(f.read())
-        map = {}
-        for item in list:
-            if item["countryCode"]!="":
-                map[item["countryCode"]] = 1
-        
-        for k in map:
-            if mobile.startswith(k):                                                
-                return k
+        """
+        Retorna o prefixo (código do país) com base na lista mcc_mnc.json.
+        Funciona tanto no checkout quanto como pacote instalado.
+        """
+        try:
+            path = PathStatic.data_file("mcc_mnc.json")
+            with open(path, "r", encoding="utf8") as f:
+                items = json.loads(f.read())
+        except Exception as e:
+            logger.error(f"Erro ao carregar mcc_mnc.json: {e}")
+            return None
+
+        prefixes = {item["countryCode"] for item in items if item.get("countryCode")}
+        for code in prefixes:
+            if mobile.startswith(code):
+                return code
+        return None
 
 
     def getLGLC(countryCode):        
