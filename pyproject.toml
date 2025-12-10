@@ -1,10 +1,11 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
 
 [project]
 name = "zowsuplib"
-version = "0.6.5"
+version = "1.6.5"
 description = "WhatsApp protocol client and tooling based on yowsup, kept updated for multi-device flows."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -59,16 +60,4 @@ dependencies = [
 Homepage = "https://github.com/WeslenPy/zowsup-lib"
 Repository = "https://github.com/WeslenPy/zowsup-lib"
 
-[tool.setuptools]
-include-package-data = true
-license-files = ["LICENSE"]
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["*"]
-namespaces = true
-
-[tool.setuptools.package-data]
-"proto" = ["*.proto"]
-"consonance" = ["proto/*.proto", "config/templates/*.json"]
 
