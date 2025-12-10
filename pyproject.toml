@@ -65,7 +65,7 @@ license-files = ["LICENSE"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["*"]
+include = ["zowsuplib*"]
 namespaces = true
 
 [tool.setuptools.package-data]
