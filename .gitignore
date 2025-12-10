@@ -9,7 +9,7 @@ build
 .idea
 .tox
 config.conf
-
+poetry.lock
 .venv
 
 .env
