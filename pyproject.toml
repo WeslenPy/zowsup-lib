@@ -56,8 +56,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/"
-Repository = "https://github.com/"
+Homepage = "https://github.com/WeslenPy/zowsup-lib"
+Repository = "https://github.com/WeslenPy/zowsup-lib"
 
 [tool.setuptools]
 include-package-data = true
