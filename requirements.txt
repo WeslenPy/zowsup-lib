@@ -1,27 +1,66 @@
-protobuf==5.29.5
-requests
-six==1.17.0
-appdirs
-websocket-client
-rel
-PySocks
-names
-ffmpeg
-pillow
-qrcode
-python-axolotl-curve25519
-cffi
-transitions
-dissononce
-tlslite-ng==0.8.0b3
-urllib3
-apkutils
-pycryptodome
-betterproto
-Flask
-gevent
-pyyaml
-pydantic
-loguru
-SQLAlchemy
-PyMySQL
+Updating dependencies
+Resolving dependencies...
+
+Writing lock file
+annotated-types==0.7.0 ; python_version >= "3.10"
+apkutils==1.5.4 ; python_version >= "3.10"
+appdirs==1.4.4 ; python_version >= "3.10"
+beautifulsoup4==4.14.3 ; python_version >= "3.10"
+betterproto==1.2.5 ; python_version >= "3.10"
+blinker==1.9.0 ; python_version >= "3.10"
+certifi==2025.11.12 ; python_version >= "3.10"
+cffi==2.0.0 ; python_version >= "3.10"
+charset-normalizer==3.4.4 ; python_version >= "3.10"
+click==8.3.1 ; python_version >= "3.10"
+colorama==0.4.6 ; python_version >= "3.10" and (platform_system == "Windows" or sys_platform == "win32")
+colorlog==6.10.1 ; python_version >= "3.10"
+cryptography==46.0.3 ; python_version >= "3.10"
+dissononce==0.34.3 ; python_version >= "3.10"
+ecdsa==0.19.1 ; python_version >= "3.10"
+ffmpeg==1.4 ; python_version >= "3.10"
+flask==3.1.2 ; python_version >= "3.10"
+gevent==25.9.1 ; python_version >= "3.10"
+greenlet==3.3.0 ; (platform_python_implementation == "CPython" or platform_machine == "aarch64" or platform_machine == "ppc64le" or platform_machine == "x86_64" or platform_machine == "amd64" or platform_machine == "AMD64" or platform_machine == "win32" or platform_machine == "WIN32") and python_version >= "3.10"
+grpclib==0.4.8 ; python_version >= "3.10"
+h2==4.3.0 ; python_version >= "3.10"
+hpack==4.1.0 ; python_version >= "3.10"
+hyperframe==6.1.0 ; python_version >= "3.10"
+idna==3.11 ; python_version >= "3.10"
+itsdangerous==2.2.0 ; python_version >= "3.10"
+jinja2==3.1.6 ; python_version >= "3.10"
+loguru==0.7.2 ; python_version >= "3.10"
+lxml==6.0.2 ; python_version >= "3.10"
+markupsafe==3.0.3 ; python_version >= "3.10"
+multidict==6.7.0 ; python_version >= "3.10"
+names==0.3.0 ; python_version >= "3.10"
+pillow==12.0.0 ; python_version >= "3.10"
+protobuf==5.29.5 ; python_version >= "3.10"
+pycparser==2.23 ; implementation_name != "PyPy" and python_version >= "3.10"
+pycryptodome==3.23.0 ; python_version >= "3.10"
+pydantic-core==2.41.5 ; python_version >= "3.10"
+pydantic==2.12.5 ; python_version >= "3.10"
+pyelftools==0.27 ; python_version >= "3.10"
+pyftype==1.2.4 ; python_version >= "3.10"
+pygments==2.19.2 ; python_version >= "3.10"
+pymysql==1.1.2 ; python_version >= "3.10"
+pypng==0.20220715.0 ; python_version >= "3.10"
+pysocks==1.7.1 ; python_version >= "3.10"
+python-axolotl-curve25519==0.4.1.post2 ; python_version >= "3.10"
+pyyaml==6.0.3 ; python_version >= "3.10"
+qrcode==7.4.2 ; python_version >= "3.10"
+rel==0.4.9.22 ; python_version >= "3.10"
+requests==2.32.5 ; python_version >= "3.10"
+six==1.17.0 ; python_version >= "3.10"
+soupsieve==2.8 ; python_version >= "3.10"
+sqlalchemy==2.0.45 ; python_version >= "3.10"
+stringcase==1.2.0 ; python_version >= "3.10"
+tlslite-ng==0.8.0b3 ; python_version >= "3.10"
+transitions==0.9.3 ; python_version >= "3.10"
+typing-extensions==4.15.0 ; python_version >= "3.10"
+typing-inspection==0.4.2 ; python_version >= "3.10"
+urllib3==2.6.1 ; python_version >= "3.10"
+websocket-client==1.9.0 ; python_version >= "3.10"
+werkzeug==3.1.4 ; python_version >= "3.10"
+win32-setctime==1.2.0 ; sys_platform == "win32" and python_version >= "3.10"
+zope-event==6.1 ; python_version >= "3.10"
+zope-interface==8.1.1 ; python_version >= "3.10"

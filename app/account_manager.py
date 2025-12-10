@@ -7,10 +7,18 @@ múltiplas contas simultaneamente, cada uma completamente isolada.
 
 import threading
 import time
-from typing import Dict, Optional, List
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, List
 from loguru import logger
 
 from app.api import ZowsupClient
+from conf.constants import SysVar
+
+
+@dataclass
+class ManagedAccount:
+    client: ZowsupClient
+    sysvar_context: Optional[Dict[str, Any]] = None
 
 
 class AccountManager:
@@ -49,7 +57,8 @@ class AccountManager:
         if AccountManager._instance is not None:
             raise RuntimeError("AccountManager é um singleton. Use AccountManager.get_instance()")
         
-        self._accounts: Dict[str, ZowsupClient] = {}
+        self._accounts: Dict[str, ManagedAccount] = {}
+        self._connect_threads: Dict[str, threading.Thread] = {}
         self._lock = threading.Lock()
         logger.info("[AccountManager] Inicializado - pronto para gerenciar múltiplas contas")
     
@@ -109,10 +118,42 @@ class AccountManager:
                 auto_connect=auto_connect,
             )
             
-            self._accounts[account_id] = client
+            self._accounts[account_id] = ManagedAccount(
+                client=client,
+                sysvar_context=getattr(client, "_sysvar_context", None),
+            )
             logger.info(f"[AccountManager] Conta {account_id} adicionada com sucesso. Total de contas: {len(self._accounts)}")
             
             return client
+
+    def connect_in_thread(self, account_id: str, *, wait_login: bool = True) -> Optional[threading.Thread]:
+        """
+        Inicia a conexão de uma conta em thread dedicada, aplicando o contexto SysVar correto.
+        """
+        with self._lock:
+            record = self._accounts.get(account_id)
+            if record is None:
+                logger.warning(f"[AccountManager] Conta {account_id} não encontrada para conectar em thread")
+                return None
+
+            # encerra thread anterior, se ainda viva
+            old_thread = self._connect_threads.get(account_id)
+            if old_thread and old_thread.is_alive():
+                logger.debug(f"[AccountManager] Thread de conexão prévia ainda ativa para {account_id}, aguardando término")
+                old_thread.join(timeout=0.1)
+
+            def _run():
+                if record.sysvar_context:
+                    SysVar.apply_context(record.sysvar_context)
+                try:
+                    record.client.connect(wait_login=wait_login)
+                except Exception as exc:
+                    logger.error(f"[AccountManager] Erro ao conectar conta {account_id} em thread: {exc}", exc_info=True)
+
+            t = threading.Thread(target=_run, name=f"connect-{account_id}", daemon=True)
+            self._connect_threads[account_id] = t
+            t.start()
+            return t
     
     def get_account(self, account_id: str) -> Optional[ZowsupClient]:
         """
@@ -125,10 +166,11 @@ class AccountManager:
             ZowsupClient se encontrado, None caso contrário
         """
         with self._lock:
-            client = self._accounts.get(account_id)
-            if client is None:
+            record = self._accounts.get(account_id)
+            if record is None:
                 logger.warning(f"[AccountManager] Conta {account_id} não encontrada")
-            return client
+                return None
+            return record.client
     
     def remove_account(self, account_id: str, disconnect: bool = True) -> bool:
         """
@@ -146,7 +188,8 @@ class AccountManager:
                 logger.warning(f"[AccountManager] Tentativa de remover conta inexistente: {account_id}")
                 return False
             
-            client = self._accounts[account_id]
+            record = self._accounts[account_id]
+            client = record.client
             
             if disconnect:
                 logger.info(f"[AccountManager] Desconectando conta {account_id} antes de remover")
@@ -177,7 +220,7 @@ class AccountManager:
             Dict[account_id, ZowsupClient]
         """
         with self._lock:
-            return self._accounts.copy()
+            return {acc_id: record.client for acc_id, record in self._accounts.items()}
     
     def is_account_active(self, account_id: str) -> bool:
         """
@@ -200,10 +243,10 @@ class AccountManager:
         """
         with self._lock:
             logger.info(f"[AccountManager] Desconectando todas as {len(self._accounts)} contas")
-            for account_id, client in list(self._accounts.items()):
+            for account_id, record in list(self._accounts.items()):
                 try:
                     logger.debug(f"[AccountManager] Desconectando conta {account_id}")
-                    client.disconnect()
+                    record.client.disconnect()
                 except Exception as e:
                     logger.error(f"[AccountManager] Erro ao desconectar conta {account_id}: {e}")
             logger.info("[AccountManager] Todas as contas desconectadas")
@@ -232,6 +275,7 @@ class AccountManager:
         only_active: bool = False,
         without_restriction: bool = False,
         env: Optional[str] = None,
+        max_accounts: Optional[int] = None,
     ) -> Dict[str, ZowsupClient]:
         """
         Carrega todas as contas importadas do banco de dados e adiciona ao gerenciador.
@@ -243,6 +287,7 @@ class AccountManager:
             without_restriction: Se True, carrega apenas contas sem restrição
             env: Ambiente a usar (android, smb_android, ios, smb_ios). 
                  Se None, usa o env salvo na conta ou "smb_android" como padrão
+            max_accounts: Limita a quantidade máxima de contas carregadas (None para ilimitado)
         
         Returns:
             Dict[phone, ZowsupClient] com todas as contas carregadas
@@ -276,6 +321,8 @@ class AccountManager:
             logger.info("[AccountManager] Nenhuma conta encontrada no banco de dados")
             return {}
         
+        if max_accounts is not None:
+            accounts = accounts[:max_accounts]
         logger.info(f"[AccountManager] Carregando {len(accounts)} contas do banco de dados...")
         
         loaded_clients = {}
@@ -286,7 +333,7 @@ class AccountManager:
             # Pula se a conta já está carregada
             if phone in self._accounts:
                 logger.debug(f"[AccountManager] Conta {phone} já está carregada, pulando")
-                loaded_clients[phone] = self._accounts[phone]
+                loaded_clients[phone] = self._accounts[phone].client
                 continue
             
             try:
@@ -321,6 +368,37 @@ class AccountManager:
         """
         with self._lock:
             return len(self._accounts)
+
+    def ensure_account_connected(
+        self,
+        account_id: str,
+        *,
+        wait_login: bool = True,
+        auto_connect: bool = True,
+    ) -> bool:
+        """
+        Verifica se a conta está conectada; caso não esteja, dispara fallback de conexão em thread.
+
+        Returns:
+            True se a conta já estava conectada ou se o disparo de reconexão foi iniciado.
+        """
+        with self._lock:
+            record = self._accounts.get(account_id)
+            if record is None:
+                logger.warning(f"[AccountManager] ensure_account_connected: conta {account_id} não encontrada")
+                return False
+            client = record.client
+
+        if client.is_connected():
+            return True
+
+        if not auto_connect:
+            logger.debug(f"[AccountManager] Conta {account_id} desconectada e auto_connect desabilitado")
+            return False
+
+        logger.info(f"[AccountManager] Conta {account_id} desconectada; iniciando fallback de conexão em thread")
+        self.connect_in_thread(account_id, wait_login=wait_login)
+        return True
     
     def sync_all_accounts(
         self,
@@ -417,8 +495,8 @@ class AccountManager:
         
         # Para cada conta, sincroniza com todas as outras
         for account_phone in accounts_to_sync:
-            client = self._accounts.get(account_phone)
-            if client is None:
+            record = self._accounts.get(account_phone)
+            if record is None:
                 logger.warning(f"[AccountManager] Conta {account_phone} não encontrada no gerenciador")
                 stats["skipped_accounts"] += 1
                 stats["details"][account_phone] = {
@@ -426,6 +504,7 @@ class AccountManager:
                     "status": "not_found"
                 }
                 continue
+            client = record.client
             
             # Verifica se está conectada (se only_connected=True)
             if only_connected and not client.is_connected():

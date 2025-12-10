@@ -18,7 +18,7 @@ class AxolotlControlLayer(AxolotlBaseLayer):
     def __init__(self):
         super(AxolotlControlLayer, self).__init__()
         self._unsent_prekeys = []
-        self._reboot_connection = False
+        self._reboot_connection = True
 
     def send(self, node):       
 

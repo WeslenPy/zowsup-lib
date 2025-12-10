@@ -1,3 +1,4 @@
+from common.utils import Utils
 from .waresponseparser import ResponseParser
 
 import logging

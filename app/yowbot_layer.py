@@ -2,6 +2,8 @@ import os,sys
 sys.path.append(os.getcwd())
 
 # coding=UTF-8
+import random
+from typing import Optional
 from yowsup.common import YowConstants
 from yowsup.layers import EventCallback, YowLayerEvent
 from yowsup.layers.noise.layer import YowNoiseLayer
@@ -131,6 +133,100 @@ class SendLayer(YowInterfaceLayer):
         self._invalid_numbers = set()  # Números inválidos conhecidos (evita tentar novamente)
         self._rate_limit_lock = threading.Lock()  # Lock para thread-safety
         self._handshake_error_detected = False  # Flag para detectar erros de handshake
+        self._login_failed = False  # Flag para diferenciar falha de login x sucesso
+        # Threads auxiliares: usar timers para reagendar ações sem bloquear a thread do stack
+        self._timers: list[threading.Timer] = []
+        # Controle de reconexão com backoff
+        self._reconnect_attempts = 0
+        self._reconnect_timer: Optional[threading.Timer] = None
+        # Monitor de liveness: detecta inatividade e força reconexão
+        self._liveness_stop = threading.Event()
+        self._liveness_thread: Optional[threading.Thread] = None
+        self._liveness_check_interval = 30  # segundos
+        self._liveness_timeout = 320  # segundos sem tráfego para forçar reconnect
+        self._last_activity_ts = time.time()
+
+    # ------------------------------------------------------------------ #
+    # Liveness / watchdog
+    # ------------------------------------------------------------------ #
+    def _mark_activity(self):
+        """Atualiza o timestamp de última atividade (rx/tx relevante)."""
+        self._last_activity_ts = time.time()
+
+    def _start_liveness_monitor(self):
+        if self._liveness_thread and self._liveness_thread.is_alive():
+            return
+
+        self._liveness_stop.clear()
+
+        def _loop():
+            while not self._liveness_stop.wait(self._liveness_check_interval):
+                if not self.isConnected:
+                    continue
+                idle = time.time() - self._last_activity_ts
+                if idle > self._liveness_timeout:
+                    logger.warning(
+                        f"[{self.bot.botId}] Sem atividade há {idle:.0f}s; forçando reconnect"
+                    )
+                    # força ciclo de disconnect → reconnect
+                    try:
+                        self.getStack().broadcastEvent(
+                            YowLayerEvent(
+                                YowNetworkLayer.EVENT_STATE_DISCONNECT,
+                                reason="Liveness timeout",
+                            )
+                        )
+                    except Exception as exc:  # pragma: no cover - defensivo
+                        logger.error(f"Erro ao forçar reconnect por inatividade: {exc}")
+                    # evita flood de forçar reconnect
+                    self._mark_activity()
+
+        self._liveness_thread = threading.Thread(target=_loop, daemon=True)
+        self._liveness_thread.name = f"Liveness-{self.bot.botId or 'unknown'}"
+        self._liveness_thread.start()
+
+    def _stop_liveness_monitor(self):
+        self._liveness_stop.set()
+        if self._liveness_thread and self._liveness_thread.is_alive():
+            self._liveness_thread.join(timeout=1)
+        self._liveness_thread = None
+
+    def _cancel_reconnect_timer(self):
+        if self._reconnect_timer and self._reconnect_timer.is_alive():
+            try:
+                self._reconnect_timer.cancel()
+            except Exception:
+                pass
+        self._reconnect_timer = None
+
+    def _can_reconnect(self) -> bool:
+        """
+        Valida se a conta deve tentar reconectar.
+        Hoje: bloqueia se a conta está marcada com restrição no banco.
+        """
+        if self.bot.botId is None:
+            return True
+        try:
+            from app.db import SessionLocal
+            from app import models
+            db = SessionLocal()
+            try:
+                account = db.query(models.Account).filter_by(phone=self.bot.botId).one_or_none()
+                if account and getattr(account, "has_restriction", False):
+                    logger.warning(f"{self.bot.botId} está com restrição; não será reconectada automaticamente")
+                    return False
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.error(f"Erro ao validar restrição antes de reconectar {self.bot.botId}: {exc}")
+        return True
+
+    def _schedule_event(self, delay: float, fn) -> None:
+        """Agenda uma função sem bloquear a thread atual."""
+        timer = threading.Timer(delay, fn)
+        timer.daemon = True
+        timer.start()
+        self._timers.append(timer)
                 
     def quit(self):
         self.userQuit = True
@@ -211,24 +307,52 @@ class SendLayer(YowInterfaceLayer):
         db._store.removeAllPreKeys()
         db._store.identityKeyStore.dbConn.commit()        
 
+    @ProtocolEntityCallback("chatstate")
+    def onTyping(self, event):
+        logger.info("Typing")
+        logger.info(f"Typing: {event}")
+        self._mark_activity()
+
     @EventCallback(YowNetworkLayer.EVENT_STATE_DISCONNECTED)
     def onDisconnected(self, yowLayerEvent):             
         logger.info("Disconnect")       
         error = self.getStack().getProp("exception")                
+        self._stop_liveness_monitor()
+        # Cancela timers de reconexão pendentes
+        for t in self._timers:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+        self._timers.clear()
+        self._cancel_reconnect_timer()
+        # Se foi timeout de ping, limpa a prop para próxima tentativa
+        try:
+            if self.getStack().getProp("org.openwhatsapp.yowsup.prop.pingtimeout"):
+                logger.warning(f"{self.bot.botId} desconectou por ping timeout; agendando reconexão imediata")
+                self.getStack().setProp("org.openwhatsapp.yowsup.prop.pingtimeout", False)
+        except Exception:
+            pass
         if self.getProp("jid") is not None:           
             if self._qrThread:
                 self._qrThread.stop()
             waNum,a,deviceid = WATools.jidDecode(self.getProp("jid"))
             logger.info(f"Companion device register success({waNum}_{deviceid})")        
             self.setProp("jid",None)
-            time.sleep(1)                                       
-            # Reaponta o stack para o perfil lógico (sem ACCOUNT_PATH)
-            self.getStack().setProfile(f"{waNum}_{deviceid}")                       
-            self.getStack().broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT))
+            # Reaponta o stack para o perfil lógico (sem ACCOUNT_PATH) sem bloquear a thread
+            self._schedule_event(
+                1,
+                lambda: (
+                    self.getStack().setProfile(f"{waNum}_{deviceid}"),
+                    self.getStack().broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT)),
+                ),
+            )
             return        
         if self.getProp("refs") is not None and len(self.getProp("refs"))==0:            
-            time.sleep(1)
-            self.getStack().broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT))
+            self._schedule_event(
+                1,
+                lambda: self.getStack().broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT)),
+            )
             return
         
         if self.isConnected:     
@@ -243,18 +367,31 @@ class SendLayer(YowInterfaceLayer):
         if (not self.detect40x) and (not self.userQuit):     
             self.bot.wa_old = None               
             self.loginEvent.clear()
-            time.sleep(1)            
-            self.getStack().broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT))  
+            self._handshake_error_detected = False
+            self._login_failed = False
+            if not self._can_reconnect():
+                logger.info(f"{self.bot.botId} reconexão abortada pela validação de restrição/estado")
+                return
+            # backoff exponencial com teto de 60s + jitter leve
+            self._reconnect_attempts += 1
+            base_delay = 1
+            delay = min(base_delay * (2 ** (self._reconnect_attempts - 1)), 60)
+            delay += random.uniform(0, 0.5)
+            logger.info(
+                f"{self.bot.botId} agendando reconexão em {delay:.1f}s (tentativa {self._reconnect_attempts})"
+            )
+            self._cancel_reconnect_timer()
+            self._reconnect_timer = threading.Timer(
+                delay,
+                lambda: self.getStack().broadcastEvent(
+                    YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT)
+                ),
+            )
+            self._reconnect_timer.daemon = True
+            self._reconnect_timer.start()
 
         else:                                                      
-            if not self.getProp("HC_MODE"):                                
-                self.eventCallback(wsend_pb2.BotEvent.Event.QUIT)                
-                if self.userQuit :              
-                    Utils.exit(0)    
-                else:             
-                    Utils.exit(1)         
-            else:                
-                time.sleep(1)    
+            self.eventCallback(wsend_pb2.BotEvent.Event.QUIT)                
     
     @EventCallback(HANDSHAKE_FAILED_EVENT)
     def onHandshakeFailed(self, event):
@@ -599,7 +736,7 @@ class SendLayer(YowInterfaceLayer):
     def onFailure(self, entity):
         logger.info("Login Fail")     
 
-        print(entity)
+        logger.info(f"Login Fail: {entity}")
         reason = entity.reason if hasattr(entity, 'reason') else str(entity)
         
         # Verifica se é erro de handshake (pode aparecer como "handshake" ou outros códigos)
@@ -632,6 +769,8 @@ class SendLayer(YowInterfaceLayer):
             if reason!="405" and self.bot.bot_type!=YowBotType.TYPE_RUN_TEMP:
                 pass                
 
+            self._login_failed = True
+            self.isConnected = False
             self.loginEvent.set()
 
     def eventCallback(self,event,eventDetail=None,msgLog=None,contactUpdate=None):        
@@ -690,7 +829,7 @@ class SendLayer(YowInterfaceLayer):
         #if msg.HasField("participant"):
             #group msg, ignore it
         #    return
-        
+        self._mark_activity()
         # Primeiro chama o callback customizado do SendLayer (se configurado)
         if self.message_callback is not None:
             msg.bot_id = self.bot.botId
@@ -715,6 +854,11 @@ class SendLayer(YowInterfaceLayer):
                             
         self.isConnected = True
         self.loginEvent.set()  
+        self._login_failed = False
+        self._mark_activity()
+        # self._start_liveness_monitor()
+        self._reconnect_attempts = 0
+        self._cancel_reconnect_timer()
         entity = AvailablePresenceProtocolEntity()
         self.toLower(entity)                
    
@@ -1030,8 +1174,9 @@ class SendLayer(YowInterfaceLayer):
                       
     def waitLogin(self):
         #等待bot连接就绪,
-        #超时返回false，正常登录返回true        
-        return self.loginEvent.wait(20)
+        #超时返回false，正常登录返回true
+        logged = self.loginEvent.wait(20)
+        return logged and (not self._login_failed) and self.isConnected
     
     def multiSend(self,cmdParams,options):
         tos, *other = cmdParams
@@ -1120,9 +1265,9 @@ class SendLayer(YowInterfaceLayer):
             today = str(date.today())
             count = self._daily_message_count.get(today, 0)
             
-            if count >= max_messages_per_day:
-                logger.warning(f"Limite diário de {max_messages_per_day} mensagens atingido para hoje")
-                return False
+            # if count >= max_messages_per_day:
+            #     logger.warning(f"Limite diário de {max_messages_per_day} mensagens atingido para hoje")
+            #     return False
             
             self._daily_message_count[today] = count + 1
             return True
@@ -2250,11 +2395,14 @@ class SendLayer(YowInterfaceLayer):
         entity = GetSyncIqProtocolEntity(nums,mode = options["mode"])    
 
         def on_success(entity, original_iq_entity):  
-            logger.info(f"syncContacts success with {len(entity.inNumbers)} contacts")                      
+            self.logger.info("syncContacts success with %d contacts" % len(entity.inNumbers))          
+                        
             self.setCmdResult(entity.getId(),{
                 "count": len(entity.inNumbers),
+                "valid": entity.inNumbers,
+                "invalid": entity.outNumbers,
                 "jids": list(entity.inNumbers.values())
-            })               
+            })              
 
         def on_error(entity, original_iq):            
             logger.error("syncContacts error")

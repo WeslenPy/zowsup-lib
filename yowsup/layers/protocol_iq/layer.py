@@ -1,6 +1,7 @@
 import time
 import logging
 from threading import Thread, Lock
+from conf.constants import SysVar
 from ...layers import YowProtocolLayer, YowLayerEvent, EventCallback
 from ...common import YowConstants
 from ...layers.axolotl.protocolentities.iq_keys_get_result import ResultGetKeysIqProtocolEntity
@@ -20,6 +21,7 @@ from loguru import logger
 class YowIqProtocolLayer(YowProtocolLayer):
     
     PROP_PING_INTERVAL               = "org.openwhatsapp.yowsup.prop.pinginterval"
+    PROP_PING_TIMEOUT                = "org.openwhatsapp.yowsup.prop.pingtimeout"
     
     def __init__(self):
         handleMap = {
@@ -28,6 +30,8 @@ class YowIqProtocolLayer(YowProtocolLayer):
         self._pingThread = None
         self._pingQueue = {}
         self._pingQueueLock = Lock()
+        self._pingSysvarCtx = None
+        self._pingAccountId = None
         self.__logger = logger
         super(YowIqProtocolLayer, self).__init__(handleMap)
 
@@ -117,16 +121,39 @@ class YowIqProtocolLayer(YowProtocolLayer):
         self._pingQueueLock.release()
         self.__logger.debug(f"ping queue size: {pingQueueSize}")
         if pingQueueSize >= 3:
+            # Marca prop de timeout para camadas superiores reagirem
+            try:
+                self.getStack().setProp(self.__class__.PROP_PING_TIMEOUT, True)
+            except Exception:
+                pass
+            self.__logger.warning("Ping timeout: desconectando stack")
             self.getStack().broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_DISCONNECT, reason = "Ping Timeout"))
 
     @EventCallback(YowAuthenticationProtocolLayer.EVENT_AUTHED)
     def onAuthed(self, event):        
         interval = self.getProp(self.__class__.PROP_PING_INTERVAL, 50)
-        if not self._pingThread and interval > 0:
-            self._pingQueue = {}
-            self._pingThread = YowPingThread(self, interval)
-            self.__logger.debug("starting ping thread.")
-            self._pingThread.start()
+        if interval <= 0:
+            return
+        # Sempre recria a thread de ping para garantir isolamento por conta/stack
+        # e evitar reuso entre contas durante reconexões.
+        self.stop_thread()
+        self._pingQueue = {}
+        self._pingSysvarCtx = SysVar.capture_context()
+        # Tenta identificar a conta a partir das props do stack
+        account_id = (
+            self.getStack().getProp("botId")
+            or self.getStack().getProp("jid")
+            or "unknown"
+        )
+        self._pingAccountId = account_id
+        self._pingThread = YowPingThread(
+            self,
+            interval,
+            account_id=account_id,
+            sysvar_context=self._pingSysvarCtx,
+        )
+        self.__logger.debug(f"starting ping thread for {account_id} (interval={interval}s).")
+        self._pingThread.start()
     
     
     def stop_thread(self):
@@ -147,17 +174,25 @@ class YowIqProtocolLayer(YowProtocolLayer):
         self.stop_thread()
             
 class YowPingThread(Thread):
-    def __init__(self, layer, interval):
+    def __init__(self, layer, interval, *, account_id="unknown", sysvar_context=None):
         assert type(layer) is YowIqProtocolLayer, "layer must be a YowIqProtocolLayer, got %s instead." % type(layer)
         self._layer = layer
         self._interval = interval
         self._stop = False
-        self.__logger = logging.getLogger(__name__)
+        self._account_id = account_id
+        self._sysvar_context = sysvar_context
+        self.__logger = logger
         super(YowPingThread, self).__init__()
         self.daemon = True
-        self.name = "YowPing%s" % self.name
+        # Nome da thread deixa claro qual conta está sendo monitorada
+        self.name = f"YowPing-{account_id}"
 
     def run(self):
+        if self._sysvar_context:
+            try:
+                SysVar.apply_context(self._sysvar_context)
+            except Exception:
+                pass
         while not self._stop:
             for i in range(0, self._interval):                
                 time.sleep(1)                

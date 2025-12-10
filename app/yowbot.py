@@ -6,6 +6,7 @@ from loguru import logger
 
 from yowsup.stacks import YowStackBuilder
 from yowsup.layers import YowLayerEvent
+from yowsup.layers.protocol_iq.layer import YowIqProtocolLayer
 from yowsup.layers.network import YowNetworkLayer
 from app.yowbot_layer import SendLayer
 from conf.constants import SysVar
@@ -36,8 +37,11 @@ class BotCmd(object):
         
 class YowBot: 
                     
-    def __init__(self,bot_id,env,bot_type=YowBotType.TYPE_RUN_MANUAL):     
+    def __init__(self,bot_id,env,bot_type=YowBotType.TYPE_RUN_MANUAL,sysvar_context=None):     
         self.botId = bot_id                
+        # Cada bot mantém o contexto SysVar que estava ativo durante a criação
+        # para que a thread interna use caminhos isolados por conta.
+        self.sysvar_context = sysvar_context or SysVar.capture_context()
         stackBuilder = YowStackBuilder()
         self.sendLayer = SendLayer(self)        
         self.env = env if env is not None else BotEnv(deviceEnv=DeviceEnv("android"),networkEnv=NetworkEnv("direct"))
@@ -60,6 +64,10 @@ class YowBot:
         
         self._stack.setProp("env",self.env)        
         self._stack.setProp("ID_TYPE",self.idType)
+        # Identificador lógico da conta para camadas inferiores (ping thread, logs)
+        self._stack.setProp("botId", self.botId)
+        # Mantém a conexão viva com pings mais frequentes (30s) para evitar timeout de NAT/rede
+        self._stack.setProp(YowIqProtocolLayer.PROP_PING_INTERVAL, 30)
         self.bot_type = bot_type              
         self.callback = self.onCallback      
         self.inloop = False              
@@ -87,7 +95,12 @@ class YowBot:
                     self.cmdList[m[1].cmd] = m[1]       
 
     def runAsThread(self):
-        self.thread = threading.Thread(target=self.run)
+        def _runner():
+            if self.sysvar_context:
+                SysVar.apply_context(self.sysvar_context)
+            self.run()
+
+        self.thread = threading.Thread(target=_runner)
         self.thread.daemon=True       
         self.thread.start()    
 
@@ -133,15 +146,18 @@ class YowBot:
         try :                            
             self.inloop = True            
             self._stack.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT))                                         
-            self._stack.loop()                   
+            self._stack.loop()           
+            logger.info("LOOP ENDED")
 
-        except KeyboardInterrupt:      
+        except KeyboardInterrupt as erro:      
+            logger.info("KeyboardInterrupt: CLOSE RUNNER ")
             self.inloop = False
             self.disconnect()                   
         except socks.SOCKS5Error:
             logger.info("PROXY ERROR, CHANGE IP AND RECONNECT")
             self.env.networkEnv.changeIP(self.bot_api.botId)     
         except OSError:
+            logger.info("OS ERROR, CLOSE RUNNER")
             self.inloop = False 
             self.disconnect()                          
     

@@ -212,7 +212,7 @@ class SessionBuilder:
 
         if not hasPendingKeyExchange \
                 or sessionState.getPendingKeyExchangeSequence() != keyExchangeMessage.getSequence():
-            logger.warn("No matching sequence for response. "
+            logger.warning("No matching sequence for response. "
                         "Is simultaneous initiate response: %s" % isSimultaneousInitiateResponse)
             if not isSimultaneousInitiateResponse:
                 raise StaleKeyExchangeException()

@@ -143,7 +143,7 @@ class AxolotlSendLayer(AxolotlBaseLayer):
     def enqueueSent(self, node):
         logger.debug("enqueueSent(node=[omitted])")
         if len(self.sentQueue) >= self.__class__.MAX_SENT_QUEUE:
-            logger.warn("Discarding queued node without receipt")
+            logger.warning("Discarding queued node without receipt")
             self.sentQueue.pop(0)
         self.sentQueue.append(node)
 

@@ -7,12 +7,13 @@ from consonance.structs.publickey import PublicKey
 
 import threading
 import logging
+import os
 
 from loguru import logger
 
 
 class WANoiseProtocolHandshakeWorker(threading.Thread):
-    def __init__(self, wanoiseprotocol, stream, client_config, s, rs=None, finish_callback=None,mode=None,identity=None, regid=None, signedprekey=None,deviceid=None):
+    def __init__(self, wanoiseprotocol, stream, client_config, s, rs=None, finish_callback=None,mode=None,identity=None, regid=None, signedprekey=None,deviceid=None, attempt_id=None):
         """
         :param wanoiseprotocol:
         :type wanoiseprotocol: WANoiseProtocol
@@ -34,6 +35,7 @@ class WANoiseProtocolHandshakeWorker(threading.Thread):
         self._s = s # type: KeyPair
         self._rs = rs # type: PublicKey
         self._finish_callback = finish_callback
+        self._attempt_id = attempt_id
 
         self._mode = mode
         self._identity = identity
@@ -44,11 +46,18 @@ class WANoiseProtocolHandshakeWorker(threading.Thread):
     def run(self):
         self._protocol.reset()
         error = None
+        logger.debug(f"[handshake {self._attempt_id}] worker starting | mode={self._mode} deviceid={self._deviceid} rs={'present' if self._rs else 'none'}")
         try:          
+            logger.debug(f"[handshake {self._attempt_id}] client_config username={self._client_config.username} mcc={self._client_config.useragent.mcc} mnc={self._client_config.useragent.mnc} passive={self._client_config.passive} short_connect={self._client_config.short_connect}")
             self._protocol.start(self._stream, self._client_config, self._s, self._rs,mode=self._mode,identity= self._identity,regid = self._regid,signedprekey = self._signedprekey,deviceid=self._deviceid)       
+            logger.debug(f"[handshake {self._attempt_id}] protocol.start returned without exception")
             
         except HandshakeFailedException as e:                  
             error = e
+            logger.error(f"[handshake {self._attempt_id}] handshake failed: {e}")
+        except Exception as e:
+            error = e
+            logger.exception(f"[handshake {self._attempt_id}] unexpected error during handshake")
 
         if self._finish_callback is not None:
             self._finish_callback(error)

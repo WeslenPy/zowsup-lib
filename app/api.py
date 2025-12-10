@@ -2,7 +2,8 @@ import time
 import random
 import base64
 import uuid
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, Optional, Set
 
 import names
@@ -215,6 +216,31 @@ class ZowsupClient:
         logger.info(f"Conta {phone} importada com sucesso no DB unificado")
         return phone
 
+    def _build_account_config(self, base_config: AppConfig) -> AppConfig:
+        """
+        Cria um AppConfig isolado para a conta (subpastas por account_id).
+        """
+        account_dir = base_config.account_path  # YowProfile já cria subpastas por profile
+        download_dir = base_config.download_path / self.account_id
+        upload_dir = base_config.upload_path / self.account_id
+        log_dir = base_config.log_path / self.account_id
+
+        for path in (account_dir, download_dir, upload_dir, log_dir):
+            path.mkdir(parents=True, exist_ok=True)
+
+        return replace(
+            base_config,
+            account_path=account_dir,
+            download_path=download_dir,
+            upload_path=upload_dir,
+            log_path=log_dir,
+        )
+
+    def _bind_sysvar_context(self) -> None:
+        """Garante que a thread atual está usando o contexto SysVar desta conta."""
+        if hasattr(self, "_sysvar_context") and self._sysvar_context is not None:
+            SysVar.apply_context(self._sysvar_context)
+
     def __init__(
         self,
         account_id: str,
@@ -242,10 +268,14 @@ class ZowsupClient:
         
         logger.info(f"{self._log_prefix} Inicializando cliente isolado (env={env}, proxy={'DIRECT' if not proxy or proxy.upper() == 'DIRECT' else 'PROXY'})")
         
-        # Cada instância carrega sua própria configuração
-        # O SysVar é aplicado, mas cada conta usa seu próprio profile_name
-        self.config = config or AppConfig.load(config_path)
+        # Cada instância carrega sua própria configuração base e cria
+        # caminhos isolados por conta (evita colisão de diretórios).
+        base_config = config or AppConfig.load(config_path)
+        self.config = self._build_account_config(base_config)
         self.config.apply_to_sysvar()
+        # Captura o contexto SysVar específico desta conta para ser
+        # re-aplicado em qualquer thread (ex.: threads do bot).
+        self._sysvar_context = SysVar.capture_context()
 
         device_env_name = env or self.config.default_env
         device_env = DeviceEnv(device_env_name, random=True)
@@ -262,7 +292,11 @@ class ZowsupClient:
         # Cada conta tem seu próprio YowBot isolado
         # O bot_id é usado como profile_name, garantindo isolamento completo
         logger.debug(f"{self._log_prefix} Criando YowBot isolado com profile_name={account_id}")
-        self.bot = YowBot(bot_id=account_id, env=self.bot_env)
+        self.bot = YowBot(
+            bot_id=account_id,
+            env=self.bot_env,
+            sysvar_context=self._sysvar_context,
+        )
         
         # Referência direta ao SendLayer para integração direta
         self.send_layer = self.bot.sendLayer
@@ -308,6 +342,8 @@ class ZowsupClient:
         Retorna True se o login foi concluído com sucesso dentro do timeout
         padrão, False em caso de timeout.
         """
+        self._bind_sysvar_context()
+
         if self._started:
             logger.debug(f"{self._log_prefix} Já está conectado, ignorando chamada")
             return True
@@ -345,6 +381,49 @@ class ZowsupClient:
         else:
             logger.info(f"{self._log_prefix} Login concluído com sucesso")
         return ok
+
+    def connect_in_thread(self, *, wait_login: bool = True, retry_with_env_rotation: bool = True) -> threading.Thread:
+        """
+        Inicia a conexão desta conta em uma thread dedicada, aplicando o contexto SysVar correto.
+        """
+        def _run():
+            self._bind_sysvar_context()
+            try:
+                self.connect(wait_login=wait_login, retry_with_env_rotation=retry_with_env_rotation)
+            except Exception as exc:  # pragma: no cover - defensivo
+                logger.error(f"{self._log_prefix} Erro ao conectar em thread: {exc}", exc_info=True)
+
+        t = threading.Thread(target=_run, name=f"connect-{self.account_id}", daemon=True)
+        t.start()
+        return t
+
+    def ensure_connected(
+        self,
+        *,
+        auto_connect: bool = True,
+        wait_login: bool = True,
+        retry_with_env_rotation: bool = True,
+        use_thread: bool = True,
+    ) -> bool:
+        """
+        Fallback: garante que a conta esteja conectada, disparando conexão se necessário.
+
+        Returns True se já estava conectada ou se o fluxo de conexão foi iniciado.
+        """
+        self._bind_sysvar_context()
+
+        if self.is_connected():
+            return True
+
+        if not auto_connect:
+            logger.debug(f"{self._log_prefix} Conta desconectada e auto_connect desabilitado")
+            return False
+
+        if use_thread:
+            self.connect_in_thread(wait_login=wait_login, retry_with_env_rotation=retry_with_env_rotation)
+            return True
+
+        return self.connect(wait_login=wait_login, retry_with_env_rotation=retry_with_env_rotation)
     
     def _on_handshake_failed(self, reason=None, bot_id=None):
         """Callback chamado quando há erro de handshake."""
@@ -372,6 +451,8 @@ class ZowsupClient:
         Returns:
             True se conseguiu conectar com algum ambiente, False caso contrário
         """
+        self._bind_sysvar_context()
+
         from app.device_env import DeviceEnv
         from app.bot_env import BotEnv
         from app.network_env import NetworkEnv
@@ -415,7 +496,11 @@ class ZowsupClient:
                 from app.yowbot import YowBot
                 from app.yowbot_values import YowBotType
                 
-                self.bot = YowBot(bot_id=self.account_id, env=new_bot_env)
+                self.bot = YowBot(
+                    bot_id=self.account_id,
+                    env=new_bot_env,
+                    sysvar_context=self._sysvar_context,
+                )
                 self.send_layer = self.bot.sendLayer
                 self.send_layer.handshake_failed_callback = self._on_handshake_failed
                 self.send_layer._handshake_error_detected = False  # Reset flag
@@ -504,6 +589,8 @@ class ZowsupClient:
           padrão configurado e retorna sem dados.
         - Caso contrário, tenta buscar o resultado via getCmdResult.
         """
+        self._bind_sysvar_context()
+
         params = params or []
         options = options or {}
 
@@ -637,6 +724,8 @@ class ZowsupClient:
                 quoted_text="Mensagem original aqui"
             )
         """
+        self._bind_sysvar_context()
+
         # Prepara cmdParams: [to, text, reply_to_message_id, reply_to_participant]
         cmdParams = [to, text, reply_to_message_id]
         if reply_to_participant:
@@ -730,6 +819,8 @@ class ZowsupClient:
                 }
             )
         """
+        self._bind_sysvar_context()
+
         # Integração direta com SendLayer (bypass do sistema de comandos)
         if use_direct_layer and self.send_layer is not None:
             try:
@@ -796,6 +887,8 @@ class ZowsupClient:
         - caption: legenda opcional
         - options: opções adicionais repassadas para a camada de envio
         """
+        self._bind_sysvar_context()
+
         if media_type not in ("image", "video", "audio", "document"):
             raise ValueError("media_type deve ser um de: image, video, audio, document")
 
@@ -890,6 +983,8 @@ class ZowsupClient:
                 participant="5511999999999@s.whatsapp.net"
             )
         """
+        self._bind_sysvar_context()
+
         import time
         from yowsup.layers.protocol_messages.protocolentities.message_reaction import ReactionMessageProtocolEntity
         from yowsup.layers.protocol_messages.protocolentities.attributes.attributes_reaction import ReactionAttributes
@@ -991,6 +1086,8 @@ class ZowsupClient:
         #     logger.info(f"Conta {self.bot.botId} já foi inicializada anteriormente. Pulando inicialização.")
         #     return CommandResponse(data={"message": "Conta já inicializada", "skipped": True})
 
+        self._bind_sysvar_context()
+
         params = [name] if name else []
         result = self._run_command("account.init", params)
         return result
@@ -1049,6 +1146,8 @@ class ZowsupClient:
 
             client.enable_auto_reply(custom_handler=my_handler)
         """
+        self._bind_sysvar_context()
+
         if self._auto_reply_enabled:
             logger.warning("Auto responder já está habilitado. Desabilite antes de reconfigurar.")
             return
@@ -1081,6 +1180,8 @@ class ZowsupClient:
         """
         Desabilita o auto responder e restaura o callback original.
         """
+        self._bind_sysvar_context()
+
         if not self._auto_reply_enabled:
             logger.warning("Auto responder já está desabilitado.")
             return

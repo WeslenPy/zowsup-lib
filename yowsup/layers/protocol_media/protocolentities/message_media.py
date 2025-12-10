@@ -55,7 +55,7 @@ class MediaMessageProtocolEntity(ProtomessageProtocolEntity):
     @media_type.setter
     def media_type(self, value):
         if value not in MediaMessageProtocolEntity.TYPES_MEDIA:
-            logger.warn(f"media type: '{value}' is not supported")
+            logger.warning(f"media type: '{value}' is not supported")
         self._media_type = value
 
     def toProtocolTreeNode(self):

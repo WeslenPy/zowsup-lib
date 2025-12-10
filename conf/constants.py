@@ -1,14 +1,117 @@
 # coding=UTF-8
 import os
+import threading
 import configparser
 from pathlib import Path
+from typing import Dict, Any
 
 
-class SysVar:
+class _SysVarMeta(type):
+    """
+    Metaclasse que permite que SysVar tenha valores isolados por thread
+    sem quebrar o acesso via atributos (SysVar.ACCOUNT_PATH, etc.).
+    """
+
+    def __getattribute__(cls, name: str):
+        managed = super().__getattribute__("_managed_keys")
+        if name in managed:
+            return super().__getattribute__("_get_store")().get(name)
+        return super().__getattribute__(name)
+
+    def __setattr__(cls, name: str, value: Any):
+        managed = cls.__dict__.get("_managed_keys", set())
+        if name in managed:
+            cls._set_value(name, value)
+            return
+        super().__setattr__(name, value)
+
+
+class SysVar(metaclass=_SysVarMeta):
+    """
+    Armazena variáveis globais com isolamento por thread.
+
+    Cada thread mantém uma cópia independente das variáveis gerenciadas,
+    permitindo que múltiplas contas rodem no mesmo processo sem compartilhar
+    caminhos ou configurações sensíveis.
+    """
+
+    _managed_keys = {
+        "ACCOUNT_PATH",
+        "DOWNLOAD_PATH",
+        "UPLOAD_PATH",
+        "DEFAULT_ENV",
+        "LOG_PATH",
+        "CMD_WAIT",
+    }
+    _defaults = {
+        "ACCOUNT_PATH": "/data/account/",
+        "DOWNLOAD_PATH": "/data/download/",
+        "UPLOAD_PATH": "/data/upload/",
+        "DEFAULT_ENV": "android",
+        "LOG_PATH": "/data/log/",
+        "CMD_WAIT": None,
+    }
+    _local = threading.local()
 
     def assureDir(path):
         if not os.path.exists(path):
             os.makedirs(path)
+
+    @classmethod
+    def _get_store(cls) -> Dict[str, Any]:
+        store = getattr(cls._local, "store", None)
+        if store is None:
+            store = cls._defaults.copy()
+            cls._local.store = store
+        return store
+
+    @classmethod
+    def _set_value(cls, key: str, value: Any, *, as_default: bool = False):
+        store = cls._get_store()
+        store[key] = value
+        if as_default:
+            cls._defaults[key] = value
+
+    @classmethod
+    def set_defaults(cls, **kwargs):
+        """
+        Atualiza os valores padrão (herdados por novas threads) e
+        reinicializa o contexto da thread atual com esses valores.
+        """
+        cls._defaults.update(kwargs)
+        cls._local.store = cls._defaults.copy()
+
+    @classmethod
+    def bind_context(cls, context: Dict[str, Any]):
+        """
+        Define um contexto completo para a thread atual.
+        """
+        merged = cls._defaults.copy()
+        merged.update(context)
+        cls._local.store = merged
+
+    @classmethod
+    def capture_context(cls) -> Dict[str, Any]:
+        """
+        Captura o contexto atual (cópia) para reuso em outras threads.
+        """
+        return cls._get_store().copy()
+
+    @classmethod
+    def apply_context(cls, context: Dict[str, Any]):
+        """
+        Aplica um contexto previamente capturado.
+        """
+        cls._local.store = context.copy()
+
+    @classmethod
+    def ensure_dirs(cls):
+        """
+        Garante a existência dos diretórios configurados no contexto atual.
+        """
+        store = cls._get_store()
+        for key in ("ACCOUNT_PATH", "DOWNLOAD_PATH", "UPLOAD_PATH", "LOG_PATH"):
+            cls.assureDir(Path(store[key]))
 
     def loadConfig(path=None):
         """
@@ -31,25 +134,17 @@ class SysVar:
         if configFile.exists():
             conf = configparser.ConfigParser()
             conf.read(path)
-            SysVar.ACCOUNT_PATH = conf.get("SysVar", "ACCOUNT_PATH", fallback="/data/account/")
-            SysVar.DOWNLOAD_PATH = conf.get("SysVar", "DOWNLOAD_PATH", fallback="/data/download/")
-            SysVar.UPLOAD_PATH = conf.get("SysVar", "UPLOAD_PATH", fallback="/data/upload/")
-            SysVar.DEFAULT_ENV = conf.get("SysVar", "DEFAULT_ENV", fallback="android")
-            SysVar.LOG_PATH = conf.get("SysVar", "LOG_PATH", fallback="/data/log/")
+            defaults = {
+                "ACCOUNT_PATH": conf.get("SysVar", "ACCOUNT_PATH", fallback="/data/account/"),
+                "DOWNLOAD_PATH": conf.get("SysVar", "DOWNLOAD_PATH", fallback="/data/download/"),
+                "UPLOAD_PATH": conf.get("SysVar", "UPLOAD_PATH", fallback="/data/upload/"),
+                "DEFAULT_ENV": conf.get("SysVar", "DEFAULT_ENV", fallback="android"),
+                "LOG_PATH": conf.get("SysVar", "LOG_PATH", fallback="/data/log/"),
+                "CMD_WAIT": None,
+            }
 
-            account_dir = Path(SysVar.ACCOUNT_PATH)
-            SysVar.assureDir(account_dir)
-
-            download_dir = Path(SysVar.DOWNLOAD_PATH)
-            SysVar.assureDir(download_dir)
-
-            upload_dir = Path(SysVar.UPLOAD_PATH)
-            SysVar.assureDir(upload_dir)
-
-            log_dir = Path(SysVar.LOG_PATH)
-            SysVar.assureDir(log_dir)
-
-            SysVar.CMD_WAIT = None
+            SysVar.set_defaults(**defaults)
+            SysVar.ensure_dirs()
 
 class GlobalVar:     
     WANUMTYPE = 1       

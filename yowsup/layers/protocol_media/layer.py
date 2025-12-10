@@ -89,12 +89,12 @@ class YowMediaProtocolLayer(YowProtocolLayer):
                     entity = StickerDownloadableMediaMessageProtocolEntity.fromProtocolTreeNode(node)
                     self.toUpper(entity)
                 else:
-                    logger.warn(f"Unsupported mediatype: {mediaNode.getAttributeValue('mediatype')}, will send receipts")
+                    logger.warning(f"Unsupported mediatype: {mediaNode.getAttributeValue('mediatype')}, will send receipts")
                     self.toLower(MediaMessageProtocolEntity.fromProtocolTreeNode(node).ack(True).toProtocolTreeNode())
             
             except:
                 print(traceback.format_exc())
-                logger.warn(f"mediatype: {mediaNode.getAttributeValue('mediatype')}, process with exception ")
+                logger.warning(f"mediatype: {mediaNode.getAttributeValue('mediatype')}, process with exception ")
                 self.toLower(MediaMessageProtocolEntity.fromProtocolTreeNode(node).ack(True).toProtocolTreeNode())
 
     

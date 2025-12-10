@@ -3,9 +3,10 @@ from .handshake import WAHandshake
 from .streams.segmented.segmented import SegmentedStream
 from .transport import WANoiseTransport
 from .exceptions.handshake_failed_exception import HandshakeFailedException
+import logging
 from transitions import Machine
 import base64
-
+from loguru import logger
 
 class WANoiseProtocol(object):
     STATE_INIT = 'init'
@@ -46,9 +47,13 @@ class WANoiseProtocol(object):
         self._version_minor = version_minor
         self._protocol_state_callbacks = protocol_state_callbacks
         self._rs = None
+        self._logger = logger
         self._machine = Machine(
-            states=self.STATES, transitions=self.TRANSITIONS, initial='init',
-            after_state_change=self._trigger_state_callback
+            states=self.STATES,
+            transitions=self.TRANSITIONS,
+            initial='init',
+            after_state_change=self._trigger_state_callback,
+            # ignore_invalid_triggers=True,  # não lança em triggers fora de ordem
         )  # type: Machine
 
         self._transport = None # type: WANoiseTransport
@@ -118,11 +123,16 @@ class WANoiseProtocol(object):
         :return:
         :rtype:
         """        
+        # Só envia se já estiver em transporte; evita MachineError por estado inválido
+        if self._machine.state != self.STATE_TRANSPORT:
+            self._logger.warning("send() ignorado: estado=%s (aguardando handshake)", self._machine.state)
+            return
+
         try:
             self._machine.send()
             self._transport.send(data)
-        except:
-            print("network error")
+        except Exception as exc:  # pragma: no cover - defensivo
+            self._logger.error("Erro ao enviar no transporte: %s", exc)
 
     def receive(self):
         """
@@ -131,6 +141,11 @@ class WANoiseProtocol(object):
         :return:
         :rtype: bytes
         """
+        # Só recebe se já estiver em transporte; evita MachineError por estado inválido
+        if self._machine.state != self.STATE_TRANSPORT:
+            self._logger.debug("receive() ignorado: estado=%s (aguardando handshake)", self._machine.state)
+            return None
+
         self._machine.receive()
         return self._transport.recv()
 

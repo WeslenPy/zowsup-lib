@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zowsup"
+version = "0.6.5"
+description = "WhatsApp protocol client and tooling based on yowsup, kept updated for multi-device flows."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+authors = [
+  { name = "Zowsup maintainers" }
+]
+keywords = ["whatsapp", "signal", "axolotl", "bot"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Communications :: Chat",
+  "Topic :: Internet",
+]
+dependencies = [
+  "protobuf==5.29.5",
+  "requests",
+  "six==1.17.0",
+  "appdirs",
+  "websocket-client",
+  "rel",
+  "PySocks",
+  "names",
+  "ffmpeg",
+  "pillow",
+  "qrcode",
+  "python-axolotl-curve25519",
+  "cffi",
+  "transitions",
+  "dissononce",
+  "tlslite-ng==0.8.0b3",
+  "urllib3",
+  "apkutils",
+  "pycryptodome",
+  "betterproto",
+  "Flask",
+  "gevent",
+  "pyyaml",
+  "pydantic",
+  "loguru",
+  "SQLAlchemy",
+  "PyMySQL",
+]
+
+[project.urls]
+Homepage = "https://github.com/"
+Repository = "https://github.com/"
+
+[tool.setuptools]
+include-package-data = true
+license-files = ["LICENSE"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"proto" = ["*.proto"]
+"consonance" = ["proto/*.proto", "config/templates/*.json"]
+

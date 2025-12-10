@@ -237,14 +237,14 @@ class Utils:
         # Console
         _logger.add(
             sys.stdout,
-            level="DEBUG",
+            level=level,
             # format="{time:YYYY-MM-DD HH:mm:ss,SSS} {level} {name}: {message}",
         )
 
         # Arquivo
         _logger.add(
             name,
-            level=level,
+            level="DEBUG",
             encoding="utf-8",
             rotation="50 MB",
             retention="7 days",

@@ -21,7 +21,7 @@ class AsyncoreConnectionDispatcher(YowConnectionDispatcher, asyncore.dispatcher_
             self.out_buffer = self.out_buffer + data                        
             self.initiate_send()
         else:
-            logger.warn(f"Attempted to send {len(data)} bytes while still not connected")
+            logger.warning(f"Attempted to send {len(data)} bytes while still not connected")
 
     def connect(self, host):
         logger.debug(f"connect({str(host)})")

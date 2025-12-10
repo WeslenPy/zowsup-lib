@@ -13,7 +13,7 @@ from consonance.config.client import ClientConfig
 from consonance.config.useragent import UserAgentConfig
 from consonance.streams.segmented.blockingqueue import BlockingQueueSegmentedStream
 from consonance.structs.keypair import KeyPair
-import threading,logging,uuid,base64
+import threading,logging,uuid,base64,os
 from common.utils import Utils
 from app.yowbot_values import YowBotType
 
@@ -40,6 +40,9 @@ class YowNoiseLayer(YowLayer):
         self._incoming_segments_queue = Queue.Queue()
         self._profile = None
         self._rs = None
+        self._handshake_attempt = 0
+        self._last_handshake_attempt = None
+        self._last_segment_preview = None
 
     def __str__(self):
         return "Noise Layer"
@@ -76,16 +79,9 @@ class YowNoiseLayer(YowLayer):
             '''
 
             passive = False
-            
-            # Obtém MCC/MNC dinamicamente se houver config disponível
+
             mcc = "000"
             mnc = "000"
-            if self._profile is not None and hasattr(self._profile, 'config'):
-                config = self._profile.config
-                if config and hasattr(config, 'cc') and config.cc:
-                    mccmnc = Utils.getMccMnc(config.cc)
-                    mcc = mccmnc.get("mcc", "000")
-                    mnc = mccmnc.get("mnc", "000")
             
             #这个client_cofig 的结构是consonance里面的         
             client_config = ClientConfig(          
@@ -125,17 +121,23 @@ class YowNoiseLayer(YowLayer):
             self.setProp(YowNoiseSegmentsLayer.PROP_ENABLED, True)                    
             
             if not self._in_handshake():
-                logger.debug("Performing reg handshake")
+                self._handshake_attempt += 1
+                attempt_id = self._handshake_attempt
+                self._last_handshake_attempt = attempt_id
+                logger.info(f"[handshake {attempt_id}] performing registration handshake | mcc={mcc} mnc={mnc} deviceid={deviceid if jid is not None else None}")
                 self._handshake_worker = WANoiseProtocolHandshakeWorker(
                     self._wa_noiseprotocol, self._stream, client_config, keypair,rs = None,                    
                     finish_callback = self.on_handshake_finished,
                     mode = "reg",
                     identity = identity,regid = regid,signedprekey = signedprekey,
-                    deviceid = deviceid if jid is not None else None
+                    deviceid = deviceid if jid is not None else None,
+                    attempt_id = attempt_id
                 )
-                logger.debug("Starting handshake worker")                
+                logger.debug(f"[handshake {attempt_id}] starting handshake worker")
                 self._stream.set_events_callback(self._handle_stream_event)
-                self._handshake_worker.start()                
+                self._handshake_worker.start()
+            else:
+                logger.warning("Registration handshake requested while another is in progress; skipping new attempt")
                         
         else :
             
@@ -205,10 +207,8 @@ class YowNoiseLayer(YowLayer):
                 cc = Utils.getMobileCC(str(username))       
                 lg,lc = Utils.getLGLC(cc)
                 
-                # Obtém MCC/MNC dinamicamente baseado no código do país
-                mccmnc = Utils.getMccMnc(cc) if cc else {"mcc": "000", "mnc": "000"}
-                mcc = mccmnc.get("mcc", config.mcc if hasattr(config, 'mcc') and config.mcc else "000")
-                mnc = mccmnc.get("mnc", config.mnc if hasattr(config, 'mnc') and config.mnc else "000")
+                mcc =  "000"
+                mnc = "000"
                 
                 client_config = ClientConfig(
                     username=username,
@@ -234,25 +234,35 @@ class YowNoiseLayer(YowLayer):
                 )
 
                 if not self._in_handshake():
-                    logger.debug(f"Performing handshake [username= {username}, passive={passive}]")
+                    self._handshake_attempt += 1
+                    attempt_id = self._handshake_attempt
+                    self._last_handshake_attempt = attempt_id
+                    logger.info(f"[handshake {attempt_id}] performing login handshake | username={username} passive={passive} deviceid={int(device) if device is not None else None} mcc={mcc} mnc={mnc} rs={'present' if remote_static else 'none'}")
                     self._handshake_worker = WANoiseProtocolHandshakeWorker(
                         self._wa_noiseprotocol, self._stream, client_config, local_static, remote_static,
                         self.on_handshake_finished,
-                        deviceid = int(device) if device is not None else None
+                        deviceid = int(device) if device is not None else None,
+                        attempt_id = attempt_id
                     )
-                    logger.debug("Starting handshake worker")
+                    logger.debug(f"[handshake {attempt_id}] starting handshake worker")
                     self._stream.set_events_callback(self._handle_stream_event)
                     self._handshake_worker.start()
+                else:
+                    logger.warning("Login handshake requested while another is in progress; skipping new attempt")
 
     def on_handshake_finished(self, e=None):
         # type: (Exception) -> None
         if e is not None:
+            logger.error(f"[handshake {self._last_handshake_attempt}] handshake finished with error: {e}")
+            self._maybe_break("NOISE_BREAK_ON_HANDSHAKE_ERROR")
             self.emitEvent(YowLayerEvent(self.EVENT_HANDSHAKE_FAILED, reason=e))
             data=WriteEncoder(TokenDictionary()).protocolTreeNodeToBytes(
                 ProtocolTreeNode("failure", {"reason": str(e)})
             )
             self.toUpper(data)            
             logger.error("An error occurred during handshake, try login again.")
+        else:
+            logger.info(f"[handshake {self._last_handshake_attempt}] handshake finished successfully | state={self._wa_noiseprotocol.state}")
 
     def _in_handshake(self):
         """
@@ -271,12 +281,20 @@ class YowNoiseLayer(YowLayer):
                     self._rs = self._wa_noiseprotocol.rs
 
             self._flush_incoming_buffer()
+        if state == WANoiseProtocol.STATE_ERROR and self._last_segment_preview:
+            logger.error(f"[handshake {self._last_handshake_attempt}] protocol entered ERROR; last incoming segment {self._last_segment_preview}")
+            self._maybe_break("NOISE_BREAK_ON_STATE_ERROR")
+        logger.debug(f"[handshake {self._last_handshake_attempt}] protocol state changed to {state}")
 
     def _handle_stream_event(self, event):        
         if event == BlockingQueueSegmentedStream.EVENT_WRITE:
+            logger.debug(f"[handshake {self._last_handshake_attempt}] stream event WRITE")
             self.toLower(self._stream.get_write_segment())
         elif event == BlockingQueueSegmentedStream.EVENT_READ:
+            logger.debug(f"[handshake {self._last_handshake_attempt}] stream event READ")
             self._stream.put_read_segment(self._incoming_segments_queue.get(block=True))
+        else:
+            logger.debug(f"[handshake {self._last_handshake_attempt}] stream event other={event}")
 
     def send(self, data):
         """
@@ -290,9 +308,15 @@ class YowNoiseLayer(YowLayer):
 
     def _flush_incoming_buffer(self):
         self._flush_lock.acquire()
-        while self._incoming_segments_queue.qsize():
-            self.toUpper(self._wa_noiseprotocol.receive())
-        self._flush_lock.release()
+        try:
+            # Apenas processa mensagens quando o protocolo já está em TRANSPORT.
+            if self._wa_noiseprotocol.state != WANoiseProtocol.STATE_TRANSPORT:
+                return
+
+            while self._incoming_segments_queue.qsize():
+                self.toUpper(self._wa_noiseprotocol.receive())
+        finally:
+            self._flush_lock.release()
 
     def receive(self, data):
         """
@@ -302,5 +326,24 @@ class YowNoiseLayer(YowLayer):
         :rtype:
         """                    
         self._incoming_segments_queue.put(data)
-        if not self._in_handshake():
+        self._debug_segment_preview(data)
+        # Só drena para cima quando já estamos em estado TRANSPORT; evita
+        # chamar receive() do protocolo ainda em INIT/HANDSHAKE.
+        if self._wa_noiseprotocol.state == WANoiseProtocol.STATE_TRANSPORT:
             self._flush_incoming_buffer()
+
+    def _debug_segment_preview(self, data):
+        """
+        Guarda uma prévia do último segmento recebido para analisar falhas
+        de handshake sem logar todo o payload.
+        """
+        try:
+            preview = data[:64].hex()
+            self._last_segment_preview = f"len={len(data)} hex64={preview}"
+            logger.debug(f"[handshake {self._last_handshake_attempt}] incoming segment preview {self._last_segment_preview}")
+        except Exception as e:
+            logger.debug(f"[handshake {self._last_handshake_attempt}] could not preview segment: {e}")
+
+    def _maybe_break(self, env_var):
+        if os.environ.get(env_var) == "1":
+            import pdb; pdb.set_trace()

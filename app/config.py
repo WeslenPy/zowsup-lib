@@ -56,11 +56,16 @@ class AppConfig:
         Útil quando a configuração é criada manualmente em memória e
         queremos que o restante do código legado continue funcionando.
         """
-        SysVar.ACCOUNT_PATH = str(self.account_path)
-        SysVar.DOWNLOAD_PATH = str(self.download_path)
-        SysVar.UPLOAD_PATH = str(self.upload_path)
-        SysVar.LOG_PATH = str(self.log_path)
-        SysVar.DEFAULT_ENV = self.default_env
-        SysVar.CMD_WAIT = self.cmd_wait
+        SysVar.bind_context(
+            {
+                "ACCOUNT_PATH": str(self.account_path),
+                "DOWNLOAD_PATH": str(self.download_path),
+                "UPLOAD_PATH": str(self.upload_path),
+                "LOG_PATH": str(self.log_path),
+                "DEFAULT_ENV": self.default_env,
+                "CMD_WAIT": self.cmd_wait,
+            }
+        )
+        SysVar.ensure_dirs()
 
 
