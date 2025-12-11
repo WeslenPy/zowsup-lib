@@ -768,6 +768,20 @@ class SendLayer(YowInterfaceLayer):
             if reason!="405" and self.bot.bot_type!=YowBotType.TYPE_RUN_TEMP:
                 pass                
 
+            # Se primeira tentativa retornar 403, sinaliza rotação (handled por camada superior)
+            if reason == "403" and not self._handshake_error_detected:
+                logger.info(f"403 no primeiro login: {reason}")
+                # logger.info("403 no primeiro login: sinalizando rotação de handshake/profile")
+                # self.setProp("refs", None)
+                # self.setProp("jid", None)
+                # self.setProp("reg_info", None)
+                # self._handshake_error_detected = True
+                # if self.handshake_failed_callback:
+                #     try:
+                #         self.handshake_failed_callback(reason="403_first_login", bot_id=self.bot.botId)
+                #     except Exception as e:
+                #         logger.error(f"Erro ao chamar callback de rotação após 403: {e}")
+
             self._login_failed = True
             self.isConnected = False
             self.loginEvent.set()
