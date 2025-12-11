@@ -1726,6 +1726,60 @@ class ZowsupClient:
             include_groups=include_groups,
         )
 
+    # ------------------------------------------------------------------ #
+    # Master account helper
+    # ------------------------------------------------------------------ #
+    @classmethod
+    def get_master_client(
+        cls,
+        *,
+        env: Optional[str] = None,
+        proxy: Optional[str] = None,
+        auto_connect: bool = True,
+    ) -> "ZowsupClient":
+        """
+        Retorna um cliente para a conta marcada como master no banco.
+
+        Args:
+            env: override de ambiente (default: usa env da conta ou Settings.default_env)
+            proxy: proxy ou "DIRECT"
+            auto_connect: se True, conecta automaticamente
+
+        Raises:
+            ValueError se nenhuma conta master existir.
+        """
+        session = SessionLocal()
+        account = None
+        try:
+            account = (
+                session.query(models.Account)
+                .filter_by(master=True)
+                .order_by(models.Account.id.desc())
+                .first()
+            )
+            # Fallback: última conta logada caso não exista master
+            if account is None:
+                account = (
+                    session.query(models.Account)
+                    .filter_by(is_logged_in=True)
+                    .order_by(models.Account.updated_at.desc())
+                    .first()
+                )
+        finally:
+            session.close()
+
+        if account is None:
+            raise ValueError("Nenhuma conta master ou conta logada encontrada no banco de dados")
+
+        resolved_env = env or account.env or settings.default_env
+
+        return cls(
+            account_id=account.phone,
+            env=resolved_env,
+            proxy=proxy,
+            auto_connect=auto_connect,
+        )
+
 
 
 
