@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-import os
+import configparser
 
-from zowsuplib.conf.constants import SysVar
+from zowsuplib.settings.conf import settings
 
 
 @dataclass
@@ -11,7 +11,6 @@ class AppConfig:
     """
     Configuração de alto nível da aplicação.
 
-    Esta classe é uma camada fina por cima de SysVar, oferecendo:
     - carregamento centralizado do arquivo config.conf
     - possibilidade de sobrescrever o caminho via variável de ambiente ZOWSUP_CONFIG
     - acesso tipado aos caminhos principais
@@ -31,43 +30,46 @@ class AppConfig:
 
         Ordem de resolução:
         1. Parâmetro config_path, se fornecido
-        2. Variável de ambiente ZOWSUP_CONFIG
+        2. Settings.config (ZOWSUP_CONFIG ou valor padrão)
         3. Caminho padrão (conf/config.conf)
         """
         if config_path is None:
-            config_path = os.environ.get("ZOWSUP_CONFIG")
+            config_path = settings.config
 
-        # Este método inicializa SysVar.* e garante criação de diretórios
-        SysVar.loadConfig(config_path)
+        cfg = configparser.ConfigParser()
+        read_ok = cfg.read(config_path)
+        if not read_ok:
+            # fallback para defaults
+            return cls(
+                account_path=Path(settings.account_path),
+                download_path=Path(settings.download_path),
+                upload_path=Path(settings.upload_path),
+                log_path=Path(settings.log_path),
+                default_env=settings.default_env,
+                cmd_wait=settings.cmd_wait,
+            )
+
+        def _get(key: str, default: str) -> str:
+            return cfg.get("SysVar", key, fallback=default)
+
+        account_path = Path(_get("ACCOUNT_PATH", "/data/account/"))
+        download_path = Path(_get("DOWNLOAD_PATH", "/data/download/"))
+        upload_path = Path(_get("UPLOAD_PATH", "/data/upload/"))
+        log_path = Path(_get("LOG_PATH", "/data/log/"))
+        default_env = _get("DEFAULT_ENV", "android")
+
+        for p in (account_path, download_path, upload_path, log_path):
+            p.mkdir(parents=True, exist_ok=True)
+
+        cmd_wait_raw = _get("CMD_WAIT", "")
+        cmd_wait = int(cmd_wait_raw) if cmd_wait_raw.isdigit() else None
 
         return cls(
-            account_path=Path(SysVar.ACCOUNT_PATH),
-            download_path=Path(SysVar.DOWNLOAD_PATH),
-            upload_path=Path(SysVar.UPLOAD_PATH),
-            log_path=Path(SysVar.LOG_PATH),
-            default_env=SysVar.DEFAULT_ENV,
-            cmd_wait=SysVar.CMD_WAIT,
+            account_path=account_path,
+            download_path=download_path,
+            upload_path=upload_path,
+            log_path=log_path,
+            default_env=default_env,
+            cmd_wait=cmd_wait,
         )
-
-    def apply_to_sysvar(self) -> None:
-        """
-        Aplica os valores desta configuração de volta em SysVar.
-
-        Útil quando a configuração é criada manualmente em memória e
-        queremos que o restante do código legado continue funcionando.
-        """
-        SysVar.bind_context(
-            {
-                "ACCOUNT_PATH": str(self.account_path),
-                "DOWNLOAD_PATH": str(self.download_path),
-                "UPLOAD_PATH": str(self.upload_path),
-                "LOG_PATH": str(self.log_path),
-                "DEFAULT_ENV": self.default_env,
-                "CMD_WAIT": self.cmd_wait,
-            }
-        )
-        SysVar.ensure_dirs()
-
-
-
 

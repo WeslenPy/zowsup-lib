@@ -1,7 +1,8 @@
 # coding=UTF-8
 import sys,os
 from pathlib import Path
-from zowsuplib.conf.constants import SysVar,GlobalVar
+from zowsuplib.conf.constants import GlobalVar
+from zowsuplib.settings.conf import settings
 
 import re
 import json
@@ -252,7 +253,7 @@ class Utils:
         if name is None:
             name = "default.log"
 
-        log_dir = Path(SysVar.LOG_PATH)
+        log_dir = Path(settings.log_path)
         Utils.assureDir(log_dir)
 
         # Remove handlers existentes para evitar duplicação
@@ -267,7 +268,7 @@ class Utils:
 
         # Arquivo
         _logger.add(
-            name,
+            log_dir / name,
             level="DEBUG",
             encoding="utf-8",
             rotation="50 MB",

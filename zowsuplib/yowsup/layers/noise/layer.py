@@ -16,6 +16,7 @@ from zowsuplib.consonance.structs.keypair import KeyPair
 import threading,logging,uuid,base64,os
 from zowsuplib.common.utils import Utils
 from zowsuplib.app.yowbot_values import YowBotType
+from zowsuplib.settings.conf import settings
 
 from loguru import logger
 try:
@@ -345,7 +346,7 @@ class YowNoiseLayer(YowLayer):
             logger.debug(f"[handshake {self._last_handshake_attempt}] could not preview segment: {e}")
 
     def _maybe_break(self, env_var):
-        if os.environ.get(env_var) == "1":
+        if env_var in settings.debug_break_flags:
             import pdb; pdb.set_trace()
 
 

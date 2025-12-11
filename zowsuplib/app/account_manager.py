@@ -1,8 +1,7 @@
 """
 Gerenciador central de múltiplas contas WhatsApp.
 
-Este módulo fornece um AccountManager singleton que permite gerenciar
-múltiplas contas simultaneamente, cada uma completamente isolada.
+Singleton para orquestrar múltiplas contas isoladas, sem dependência de SysVar.
 """
 
 import threading
@@ -12,13 +11,11 @@ from typing import Any, Dict, Optional, List
 from loguru import logger
 
 from zowsuplib.app.api import ZowsupClient
-from zowsuplib.conf.constants import SysVar
 
 
 @dataclass
 class ManagedAccount:
     client: ZowsupClient
-    sysvar_context: Optional[Dict[str, Any]] = None
 
 
 class AccountManager:
@@ -79,8 +76,6 @@ class AccountManager:
         self,
         account_id: str,
         *,
-        config=None,
-        config_path: Optional[str] = None,
         env: Optional[str] = None,
         proxy: Optional[str] = None,
         auto_connect: bool = True,
@@ -90,8 +85,6 @@ class AccountManager:
         
         Args:
             account_id: Número da conta (ex: "5511999999999")
-            config: Instância de AppConfig (opcional)
-            config_path: Caminho para config.conf (opcional)
             env: Ambiente do device (android, ios, smb_android, smb_ios)
             proxy: String de proxy ou "DIRECT"
             auto_connect: Se True, conecta automaticamente
@@ -111,8 +104,6 @@ class AccountManager:
             # Cria cliente isolado - cada conta tem seu próprio contexto
             client = ZowsupClient(
                 account_id=account_id,
-                config=config,
-                config_path=config_path,
                 env=env,
                 proxy=proxy,
                 auto_connect=auto_connect,
@@ -120,7 +111,6 @@ class AccountManager:
             
             self._accounts[account_id] = ManagedAccount(
                 client=client,
-                sysvar_context=getattr(client, "_sysvar_context", None),
             )
             logger.info(f"[AccountManager] Conta {account_id} adicionada com sucesso. Total de contas: {len(self._accounts)}")
             
@@ -128,7 +118,7 @@ class AccountManager:
 
     def connect_in_thread(self, account_id: str, *, wait_login: bool = True) -> Optional[threading.Thread]:
         """
-        Inicia a conexão de uma conta em thread dedicada, aplicando o contexto SysVar correto.
+        Compat: inicia conexão de forma assíncrona. Para reduzir threads, preferir connect().
         """
         with self._lock:
             record = self._accounts.get(account_id)
@@ -142,18 +132,12 @@ class AccountManager:
                 logger.debug(f"[AccountManager] Thread de conexão prévia ainda ativa para {account_id}, aguardando término")
                 old_thread.join(timeout=0.1)
 
-            def _run():
-                if record.sysvar_context:
-                    SysVar.apply_context(record.sysvar_context)
-                try:
-                    record.client.connect(wait_login=wait_login)
-                except Exception as exc:
-                    logger.error(f"[AccountManager] Erro ao conectar conta {account_id} em thread: {exc}", exc_info=True)
-
-            t = threading.Thread(target=_run, name=f"connect-{account_id}", daemon=True)
-            self._connect_threads[account_id] = t
-            t.start()
-            return t
+            # Execução síncrona para reduzir uso de threads
+            try:
+                record.client.connect(wait_login=wait_login)
+            except Exception as exc:
+                logger.error(f"[AccountManager] Erro ao conectar conta {account_id}: {exc}", exc_info=True)
+            return None
     
     def get_account(self, account_id: str) -> Optional[ZowsupClient]:
         """

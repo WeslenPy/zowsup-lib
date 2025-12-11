@@ -19,7 +19,8 @@ CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFT
 OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 '''
 
-import os, base64
+import base64
+from zowsuplib.settings.conf import settings
 
 try:
     from urllib.parse import urlparse
@@ -41,10 +42,7 @@ class HttpProxy:
 
     @staticmethod
     def getFromEnviron():
-        url = None
-        for key in ('http_proxy', 'https_proxy'):
-            url = os.environ.get(key)
-            if url: break
+        url = settings.http_proxy or settings.https_proxy
         if not url:
             return None
         dat = urlparse(url)

@@ -38,6 +38,7 @@ class Account(Base):
 
     # Status fields
     is_logged_in = Column(Boolean, nullable=False, default=False, index=True)
+    master = Column(Boolean, nullable=False, default=False)
     has_restriction = Column(Boolean, nullable=False, default=False, index=True)
     is_initialized = Column(Boolean, nullable=False, default=False, index=True)
 

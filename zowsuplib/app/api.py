@@ -1,32 +1,36 @@
-import time
-import random
 import base64
-import uuid
+import random
 import threading
+import time
+import uuid
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, Optional, Set
 
 import names
 from loguru import logger
 from zowsuplib.consonance.structs.keypair import KeyPair
-from zowsuplib.yowsup.axolotl.factory import AxolotlManagerFactory
-from zowsuplib.yowsup.config.v1.config import Config
-from zowsuplib.yowsup.profile.profile import YowProfile
-from zowsuplib.yowsup.common.tools import WATools
 from zowsuplib.proto import wsend_pb2
+from zowsuplib.yowsup.axolotl.factory import AxolotlManagerFactory
+from zowsuplib.yowsup.common.tools import WATools
+from zowsuplib.yowsup.config.v1.config import Config
+from zowsuplib.yowsup.layers import YowLayerEvent
+from zowsuplib.yowsup.layers.network import YowNetworkLayer
+from zowsuplib.yowsup.layers.protocol_iq.layer import YowIqProtocolLayer
+from zowsuplib.yowsup.profile.profile import YowProfile
+from zowsuplib.yowsup.stacks import YowStackBuilder
+from zowsuplib.yowsup.structs import ProtocolEntity
 
-from zowsuplib.conf.constants import SysVar
-from zowsuplib.common.utils import Utils
+from zowsuplib.app import models
 from zowsuplib.app.bot_env import BotEnv
 from zowsuplib.app.device_env import DeviceEnv
-from zowsuplib.app.network_env import NetworkEnv
-from zowsuplib.app.yowbot import YowBot
-from zowsuplib.app.config import AppConfig
-from zowsuplib.app.db import SessionLocal
-from zowsuplib.app import models
 from zowsuplib.app.message import MessageDefault
-from loguru import logger
-
+from zowsuplib.app.network_env import NetworkEnv
+from zowsuplib.app.yowbot_layer import SendLayer
+from zowsuplib.app.yowbot_values import YowBotType
+from zowsuplib.app.db import SessionLocal
+from zowsuplib.common.utils import Utils
+from zowsuplib.settings.conf import settings
+from pathlib import Path
 
 class ZowsupError(Exception):
     """
@@ -50,6 +54,113 @@ class CommandResponse:
     """
 
     data: Any = None
+
+
+@dataclass
+class ClientConfig:
+    account_path: Path
+    download_path: Path
+    upload_path: Path
+    log_path: Path
+    default_env: str
+    cmd_wait: Optional[int] = None
+
+
+class _CommandDispatcher:
+    """
+    Orquestra comandos assíncronos do SendLayer com sincronização thread-safe.
+    """
+
+    def __init__(self, log_prefix: str) -> None:
+        self._handlers: Dict[str, Callable[[list, Dict[str, Any]], Any]] = {}
+        self._events: Dict[str, Dict[str, Any]] = {}
+        self._lock = threading.Lock()
+        self._log_prefix = log_prefix
+
+    def register(self, name: str, handler: Callable[[list, Dict[str, Any]], Any]) -> None:
+        self._handlers[name] = handler
+
+    def call(self, name: str, params: Optional[list], options: Optional[Dict[str, Any]]):
+        params = params or []
+        options = options or {}
+
+        handler = self._handlers.get(name)
+        if handler is None:
+            return None, {"code": -2, "msg": "Command Not Found"}
+
+        try:
+            cmd_id = handler(params, options)
+        except Exception as exc:
+            logger.error(f"{self._log_prefix} Erro ao executar comando {name}: {exc}", exc_info=True)
+            return None, {"code": -1, "msg": str(exc)}
+
+        if cmd_id is None:
+            return None, {"code": -3, "msg": "No CmdId Return"}
+
+        if cmd_id not in ("JUSTWAIT", "TIMEOUT"):
+            with self._lock:
+                if cmd_id not in self._events:
+                    self._events[cmd_id] = {"event": threading.Event()}
+
+        return cmd_id, None
+
+    def set_result(self, cmd_id: str, result: Any) -> None:
+        with self._lock:
+            obj = self._events.get(cmd_id, {"event": threading.Event()})
+            obj["result"] = result
+            obj["event"].set()
+            self._events[cmd_id] = obj
+
+    def set_error(self, cmd_id: str, error: Any) -> None:
+        with self._lock:
+            obj = self._events.get(cmd_id, {"event": threading.Event()})
+            obj["error"] = error
+            obj["event"].set()
+            self._events[cmd_id] = obj
+
+    def wait_result(self, cmd_id: str, wait_time: int):
+        with self._lock:
+            obj = self._events.get(cmd_id)
+        if obj is None:
+            return None, {"code": -4, "msg": "cmdId not found"}
+
+        event = obj["event"]
+        if not event.wait(wait_time):
+            return None, {"code": -999, "msg": "timeout"}
+
+        with self._lock:
+            obj = self._events.pop(cmd_id, obj)
+
+        if "error" in obj:
+            return None, obj["error"]
+        return obj.get("result"), None
+
+
+@dataclass
+class _SendLayerBotAdapter:
+    """
+    Adaptador mínimo para que o SendLayer funcione sem YowBot.
+    """
+
+    client: "ZowsupClient"
+    botId: str
+    bot_type: Any = YowBotType.TYPE_RUN_AUTO
+    callback: Optional[Callable] = None
+    idType: int = ProtocolEntity.ID_TYPE_ANDROID
+    wa_old: Optional[str] = None
+    pairLinkCode: Optional[str] = None
+    pairPhoneNumber: Optional[str] = None
+    _stack: Any = None
+
+    def __post_init__(self) -> None:
+        # Compat: alguns fluxos acessam bot_api.botId
+        self.bot_api = self
+
+    def setCmdResult(self, cmdId: str, result: Any) -> None:
+        self.client._set_cmd_result(cmdId, result)
+
+    def setCmdError(self, cmdId: str, error: Any) -> None:
+        self.client._set_cmd_error(cmdId, error)
 
 
 class ZowsupClient:
@@ -113,9 +224,6 @@ class ZowsupClient:
         - persiste a configuração de perfil (Config) em `ProfileConfig`
         - grava as chaves de identidade locais na store Axolotl (SqlAxolotlStore)
         """
-        # Garante que SysVar.* está inicializado (paths, DEFAULT_ENV, etc.)
-        app_config = AppConfig.load(config_path)
-        app_config.apply_to_sysvar()
 
         parts = [p.strip() for p in six_parts_data.split(",")]
         if len(parts) != 6:
@@ -216,37 +324,243 @@ class ZowsupClient:
         logger.info(f"Conta {phone} importada com sucesso no DB unificado")
         return phone
 
-    def _build_account_config(self, base_config: AppConfig) -> AppConfig:
+    def _build_account_config(self) -> ClientConfig:
         """
-        Cria um AppConfig isolado para a conta (subpastas por account_id).
+        Cria configuração isolada por conta (sem AppConfig).
         """
-        account_dir = base_config.account_path  # YowProfile já cria subpastas por profile
-        download_dir = base_config.download_path / self.account_id
-        upload_dir = base_config.upload_path / self.account_id
-        log_dir = base_config.log_path / self.account_id
+        account_dir = Path(settings.account_path)
+        download_dir = Path(settings.download_path) / self.account_id
+        upload_dir = Path(settings.upload_path) / self.account_id
+        log_dir = Path(settings.log_path) / self.account_id
 
         for path in (account_dir, download_dir, upload_dir, log_dir):
             path.mkdir(parents=True, exist_ok=True)
 
-        return replace(
-            base_config,
+        return ClientConfig(
             account_path=account_dir,
             download_path=download_dir,
             upload_path=upload_dir,
             log_path=log_dir,
+            default_env=settings.default_env,
+            cmd_wait=settings.cmd_wait,
         )
 
     def _bind_sysvar_context(self) -> None:
-        """Garante que a thread atual está usando o contexto SysVar desta conta."""
-        if hasattr(self, "_sysvar_context") and self._sysvar_context is not None:
-            SysVar.apply_context(self._sysvar_context)
+        """Compat: não usa mais SysVar; mantido para chamadas existentes."""
+        return None
+
+    # ------------------------------------------------------------------ #
+    # Infra de SendLayer (sem YowBot)                                    #
+    # ------------------------------------------------------------------ #
+
+    def _build_id_type(self, device_env: DeviceEnv) -> int:
+        return (
+            ProtocolEntity.ID_TYPE_ANDROID
+            if device_env.getOSName() in ["Android", "SMBA"]
+            else ProtocolEntity.ID_TYPE_IOS
+        )
+
+    def _default_bot_callback(
+        self,
+        event=None,
+        message=None,
+        cmdresult=None,
+        logger=logger,
+        caller=None,
+    ):
+        """
+        Callback padrão usado pelo SendLayer (compat com assinatura esperada).
+        """
+        try:
+            if cmdresult is not None:
+                logger.info(cmdresult)
+
+            if event is not None:
+                if event.HasField("contact_update"):
+                    logger.info(
+                        f"Contact {event.contact_update.target} notification:  "
+                        f"{event.contact_update.key} : {event.contact_update.value}"
+                    )
+                elif event.HasField("msg_log"):
+                    if event.msg_log.error_code:
+                        logger.info(
+                            f"MsgLog {wsend_pb2.MsgLogItem.Status.Name(event.msg_log.status)}"
+                            f"-{event.msg_log.error_code} (ID={event.msg_log.msg_id}) from {event.bot_id}"
+                        )
+                    else:
+                        logger.info(
+                            f"MsgLog {wsend_pb2.MsgLogItem.Status.Name(event.msg_log.status)}"
+                            f"(ID={event.msg_log.msg_id}) from {event.msg_log.target}"
+                        )
+                else:
+                    logger.info(
+                        f"Event {wsend_pb2.BotEvent.Event.Name(event.event)} from {event.bot_id}"
+                    )
+
+            if message is not None:
+                if message.HasField("participant"):
+                    src = f"{message.sender}::{message.participant}"
+                else:
+                    src = message.sender
+                dst = message.target
+                if message.HasField("text_message"):
+                    logger.info(
+                        f'Receive text message "{message.text_message.text}" from {src} to {dst}'
+                    )
+                else:
+                    logger.info(
+                        f"Receive {wsend_pb2.Message.Type.Name(message.type)} message from {src} to {dst}"
+                    )
+        except Exception as exc:  # pragma: no cover - defensivo
+            logger.error(f"Erro no callback padrão: {exc}", exc_info=True)
+
+    def _init_send_layer_stack(
+        self, device_env: DeviceEnv, network_env: NetworkEnv
+    ) -> None:
+        """
+        Constrói o stack Yowsup diretamente com SendLayer (sem YowBot).
+        """
+        self.bot_env = BotEnv(deviceEnv=device_env, networkEnv=network_env)
+        self.bot = _SendLayerBotAdapter(
+            client=self,
+            botId=self.account_id,
+            bot_type=YowBotType.TYPE_RUN_AUTO,
+            callback=self._default_bot_callback,
+        )
+
+        self.send_layer = SendLayer(self.bot)
+
+        # Perfil isolado por conta (compat com YowBot)
+        profile = YowProfile(self.account_id)
+        self.send_layer.db = profile.axolotl_manager
+
+        stack_builder = YowStackBuilder()
+        self._stack = stack_builder.pushDefaultLayers().push(self.send_layer).build()
+
+        # Linka stack no adapter (para callbacks internos do SendLayer)
+        self.bot._stack = self._stack
+
+        id_type = self._build_id_type(device_env)
+        self.bot.idType = id_type
+
+        self._stack.setProp("env", self.bot_env)
+        self._stack.setProp("ID_TYPE", id_type)
+        self._stack.setProp("botId", self.account_id)
+        self._stack.setProp(YowIqProtocolLayer.PROP_PING_INTERVAL, 30)
+        self._stack.setProp("botType", self.bot.bot_type)
+        self._stack.setProp("profile", profile)
+        self._stack.setProfile(profile)
+
+        self.send_layer.handshake_failed_callback = self._on_handshake_failed
+
+        # Dispatcher central para comandos e eventos assíncronos
+        self._dispatcher = _CommandDispatcher(self._log_prefix)
+        self._register_command_handlers()
+
+    def _start_stack_thread(self) -> threading.Thread:
+        """
+        Inicia o loop do stack em thread dedicada.
+        """
+        def _runner():
+            self._run_stack_loop()
+
+        t = threading.Thread(
+            target=_runner, name=f"stack-{self.account_id}", daemon=True
+        )
+        t.start()
+        return t
+
+    def _run_stack_loop(self) -> None:
+        """
+        Executa o loop do stack (equivalente ao YowBot.run()).
+        """
+        logger.info(f"{self._log_prefix} Login start")
+        try:
+            self._stack.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT))
+            self._stack.loop()
+            logger.info(f"{self._log_prefix} LOOP ENDED")
+        except Exception as exc:  # pragma: no cover - defensivo
+            logger.error(f"{self._log_prefix} Erro no loop do stack: {exc}", exc_info=True)
+            try:
+                self.disconnect()
+            except Exception:
+                pass
+
+    def _register_command_handlers(self) -> None:
+        """
+        Registra os handlers de comando no dispatcher.
+        """
+        handlers: Dict[str, Callable[[list, Dict[str, Any]], Any]] = {
+            "msg.send": self.send_layer.sendMsg,
+            "msg.sendmedia": self.send_layer.sendMediaMsg,
+            "group.create": self.send_layer.createGroup,
+            "group.list": self.send_layer.listGroups,
+            "group.add": self.send_layer.groupAdd,
+            "group.info": self.send_layer.groupInfo,
+            "group.getinvite": self.send_layer.getGroupInvite,
+            "group.join": self.send_layer.joinGroupWithCode,
+            "contact.sync": self.send_layer.syncContacts,
+            "account.init": self._command_account_init,
+            "integrity.check": self.send_layer.integrityCheck,
+        }
+        for name, handler in handlers.items():
+            self._dispatcher.register(name, handler)
+
+    def _execute_command(
+        self, name: str, params: Optional[list], options: Optional[Dict[str, Any]]
+    ):
+        """
+        Executa um comando registrado no dispatcher.
+        """
+        return self._dispatcher.call(name, params, options)
+
+    def _set_cmd_result(self, cmd_id: str, result: Any) -> None:
+        """
+        Recebe resultados enviados pelo SendLayer (callback de IQs).
+        """
+        self._dispatcher.set_result(cmd_id, result)
+
+    def _set_cmd_error(self, cmd_id: str, error: Any) -> None:
+        self._dispatcher.set_error(cmd_id, error)
+
+    def _get_cmd_result(self, cmd_id: str, wait_time: int):
+        return self._dispatcher.wait_result(cmd_id, wait_time)
+
+    def _command_account_init(self, params: list, options: Dict[str, Any]):
+        """
+        Implementa o fluxo antigo de account.init sem YowBot.
+        """
+        name = params[0] if params else None
+        time.sleep(1)
+        self.send_layer.getConfig(params, options)
+        time.sleep(2)
+        self._set_self_name(name)
+
+        if self.account_id:
+            from zowsuplib.app.db import update_account_status
+
+            update_account_status(self.account_id, is_initialized=True)
+        return "JUSTWAIT"
+
+    def _set_self_name(self, name: Optional[str] = None) -> None:
+        """
+        Ajusta o pushname da conta, compatível com o fluxo antigo do YowBot.
+        """
+        chosen_name = name or names.get_full_name()
+        profile = self._stack.getProp("profile")
+        profile.config.pushname = chosen_name
+        profile.write_config(profile.config)
+
+        if self.bot_env.deviceEnv.getOSName() in ["SMBA", "SMB iOS"]:
+            try:
+                self.send_layer.setBusinessName([chosen_name], {})
+            except Exception as exc:
+                logger.warning(f"{self._log_prefix} Erro ao definir nome de negócio: {exc}")
 
     def __init__(
         self,
         account_id: str,
         *,
-        config: Optional[AppConfig] = None,
-        config_path: Optional[str] = None,
         env: Optional[str] = None,
         proxy: Optional[str] = None,
         auto_connect: bool = True,
@@ -255,8 +569,6 @@ class ZowsupClient:
         Cria um novo cliente de alto nível completamente isolado.
 
         - account_id: número da conta (como string, ex: "5511999999999")
-        - config: instância pré-carregada de AppConfig (opcional)
-        - config_path: caminho para config.conf, se quiser sobrescrever o padrão
         - env: nome do ambiente de device (android, ios, smb_android, smb_ios)
         - proxy: string de proxy no formato "host:port:username:password" ou "DIRECT"
         - auto_connect: se True, já inicia a conexão e espera login
@@ -268,15 +580,8 @@ class ZowsupClient:
         
         logger.info(f"{self._log_prefix} Inicializando cliente isolado (env={env}, proxy={'DIRECT' if not proxy or proxy.upper() == 'DIRECT' else 'PROXY'})")
         
-        # Cada instância carrega sua própria configuração base e cria
-        # caminhos isolados por conta (evita colisão de diretórios).
-        base_config = config or AppConfig.load(config_path)
-        self.config = self._build_account_config(base_config)
-        self.config.apply_to_sysvar()
-        # Captura o contexto SysVar específico desta conta para ser
-        # re-aplicado em qualquer thread (ex.: threads do bot).
-        self._sysvar_context = SysVar.capture_context()
-
+        # Cria config isolada por conta (sem AppConfig)
+        self.config = self._build_account_config()
         device_env_name = env or self.config.default_env
         device_env = DeviceEnv(device_env_name, random=True)
 
@@ -287,25 +592,16 @@ class ZowsupClient:
             network_env = NetworkEnv(NetworkEnv.TYPE_DIRECT)
             logger.debug(f"{self._log_prefix} Usando conexão direta (sem proxy)")
 
-        self.bot_env = BotEnv(deviceEnv=device_env, networkEnv=network_env)
-        
-        # Cada conta tem seu próprio YowBot isolado
-        # O bot_id é usado como profile_name, garantindo isolamento completo
-        logger.debug(f"{self._log_prefix} Criando YowBot isolado com profile_name={account_id}")
-        self.bot = YowBot(
-            bot_id=account_id,
-            env=self.bot_env,
-            sysvar_context=self._sysvar_context,
-        )
-        
-        # Referência direta ao SendLayer para integração direta
-        self.send_layer = self.bot.sendLayer
+        # Constrói stack direto com SendLayer (sem YowBot)
+        self._init_send_layer_stack(device_env, network_env)
+
         self._started = False
+        self._stack_thread: Optional[threading.Thread] = None
         # Histórico de ambientes que já conectaram com sucesso (não rotacionar se já funcionou)
         self._successful_envs: Set[str] = set()
         self._auto_reply_enabled = False
         self._auto_reply_config: Optional[Dict[str, Any]] = None
-        self._original_callback = None
+        self._original_callback = self.bot.callback
 
         logger.info(f"{self._log_prefix} Cliente inicializado com sucesso (isolado)")
 
@@ -353,8 +649,7 @@ class ZowsupClient:
         # Configura callback para detectar erros de handshake
         if retry_with_env_rotation:
             self.send_layer.handshake_failed_callback = self._on_handshake_failed
-        
-        self.bot.runAsThread()
+        self._stack_thread = self._start_stack_thread()
         self._started = True
 
         if not wait_login:
@@ -363,11 +658,11 @@ class ZowsupClient:
 
         wait_time = self._default_wait_time("login")
         logger.debug(f"{self._log_prefix} Aguardando login (timeout={wait_time}s)")
-        ok = self.bot.waitLogin()
+        ok = self.send_layer.waitLogin()
         
         # Se falhou e retry_with_env_rotation está ativo, verifica se foi erro de handshake
         if not ok and retry_with_env_rotation:
-            if self.send_layer._handshake_error_detected:
+            if getattr(self.send_layer, "_handshake_error_detected", False):
                 logger.warning(f"{self._log_prefix} Erro de handshake detectado, tentando rotação de ambiente...")
                 return self._retry_connect_with_env_rotation()
         
@@ -490,28 +785,19 @@ class ZowsupClient:
                 # Cria novo ambiente
                 device_env = DeviceEnv(env_name, random=True)
                 network_env = NetworkEnv(NetworkEnv.TYPE_DIRECT)
-                new_bot_env = BotEnv(deviceEnv=device_env, networkEnv=network_env)
                 
-                # Recria o bot com novo ambiente
-                from zowsuplib.app.yowbot import YowBot
-                from zowsuplib.app.yowbot_values import YowBotType
-                
-                self.bot = YowBot(
-                    bot_id=self.account_id,
-                    env=new_bot_env,
-                    sysvar_context=self._sysvar_context,
-                )
-                self.send_layer = self.bot.sendLayer
+                # Recria stack/SendLayer direto
+                self._init_send_layer_stack(device_env, network_env)
                 self.send_layer.handshake_failed_callback = self._on_handshake_failed
                 self.send_layer._handshake_error_detected = False  # Reset flag
                 self._started = False
                 
                 # Tenta conectar
-                self.bot.runAsThread()
+                self._stack_thread = self._start_stack_thread()
                 self._started = True
                 
                 wait_time = self._default_wait_time("login")
-                ok = self.bot.waitLogin()
+                ok = self.send_layer.waitLogin()
                 
                 if ok:
                     logger.info(f"{self._log_prefix} ✓ Login bem-sucedido com ambiente: {env_name}")
@@ -519,8 +805,7 @@ class ZowsupClient:
                     # Atualiza o env no banco de dados
                     update_account_status(self.account_id, env=env_name)
                     
-                    # Atualiza o bot_env local
-                    self.bot_env = new_bot_env
+                    # Atualiza o bot_env local (já setado dentro de _init_send_layer_stack)
                     # Marca sucesso para não rotacionar esse env no futuro
                     self._mark_env_success(env_name)
                     
@@ -563,59 +848,17 @@ class ZowsupClient:
         
         logger.info(f"{self._log_prefix} Desconectando...")
         try:
-            self.bot.quit()
+            self.send_layer.userQuit = True
+            self.send_layer.setProp("FORCEQUIT", 1)
+            if self._stack is not None:
+                self._stack.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_DISCONNECT))
+            else:
+                self.send_layer.onDisconnected(YowLayerEvent(YowNetworkLayer.EVENT_STATE_DISCONNECT))
             self._started = False
             logger.info(f"{self._log_prefix} Desconectado com sucesso")
         except Exception as e:
             logger.error(f"{self._log_prefix} Erro ao desconectar: {e}", exc_info=True)
             self._started = False
-
-    # ------------------------------------------------------------------ #
-    # Execução genérica de comandos
-    # ------------------------------------------------------------------ #
-
-    def _run_command(
-        self,
-        name: str,
-        params: Optional[list] = None,
-        options: Optional[Dict[str, Any]] = None,
-        *,
-        wait_for_result: bool = True,
-    ) -> CommandResponse:
-        """
-        Executa um comando YowBot genérico com semântica semelhante ao CLI.
-
-        - Se o comando retornar "JUSTWAIT", o método apenas aguarda o tempo
-          padrão configurado e retorna sem dados.
-        - Caso contrário, tenta buscar o resultado via getCmdResult.
-        """
-        self._bind_sysvar_context()
-
-        params = params or []
-        options = options or {}
-
-        cmd_id, err = self.bot.callDirect(name, params, options)
-
-        if err is not None:
-            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-
-        # Para chamadas que não esperam resultado (fire-and-forget)
-        if not wait_for_result:
-            return CommandResponse(data=cmd_id)
-
-        wait_time = self._default_wait_time(name)
-
-        if cmd_id == "JUSTWAIT":
-            # Mesmo comportamento do CLI: apenas esperar N segundos
-            logger.info(f"Command {name} retornou JUSTWAIT, aguardando {wait_time} segundos")
-            time.sleep(wait_time)
-            return CommandResponse()
-
-        result, err2 = self.bot.getCmdResult(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
-
-        return CommandResponse(data=result)
 
     # ------------------------------------------------------------------ #
     # Acesso direto ao SendLayer
@@ -851,7 +1094,7 @@ class ZowsupClient:
             # diretamente o msgId (sem usar getCmdResult)
             opts["waitMsgId"] = str(timeout)
 
-            cmd_id, err = self.bot.callDirect("msg.send", [to, text], opts)
+            cmd_id, err = self._execute_command("msg.send", [to, text], opts)
 
             if err is not None:
                 raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
@@ -862,8 +1105,21 @@ class ZowsupClient:
             return CommandResponse(data={"message_id": cmd_id})
 
         # Comportamento padrão: igual ao CLI, apenas aguarda alguns segundos
-        resp = self._run_command("msg.send", [to, text], options)
-        return resp
+        cmd_id, err = self._execute_command("msg.send", [to, text], options)
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+
+        wait_time = self._default_wait_time("msg.send")
+        if cmd_id == "JUSTWAIT":
+            logger.info(f"Command msg.send retornou JUSTWAIT, aguardando {wait_time} segundos")
+            time.sleep(wait_time)
+            return CommandResponse()
+
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+
+        return CommandResponse(data=result)
 
     def send_media(
         self,
@@ -900,7 +1156,7 @@ class ZowsupClient:
             timeout = wait_msg_id_timeout or self._default_wait_time("msg.sendmedia")
             opts["waitMsgId"] = str(timeout)
 
-            cmd_id, err = self.bot.callDirect("msg.sendmedia", [to, media_type, file_path_or_url], opts)
+            cmd_id, err = self._execute_command("msg.sendmedia", [to, media_type, file_path_or_url], opts)
             if err is not None:
                 raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
 
@@ -909,8 +1165,21 @@ class ZowsupClient:
 
             return CommandResponse(data={"message_id": cmd_id})
 
-        resp = self._run_command("msg.sendmedia", [to, media_type, file_path_or_url], opts)
-        return resp
+        cmd_id, err = self._execute_command("msg.sendmedia", [to, media_type, file_path_or_url], opts)
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+
+        wait_time = self._default_wait_time("msg.sendmedia")
+        if cmd_id == "JUSTWAIT":
+            logger.info(f"Command msg.sendmedia retornou JUSTWAIT, aguardando {wait_time} segundos")
+            time.sleep(wait_time)
+            return CommandResponse()
+
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+
+        return CommandResponse(data=result)
 
     def create_group(self, subject: str, participants: str) -> CommandResponse:
         """
@@ -919,15 +1188,33 @@ class ZowsupClient:
         - subject: nome do grupo
         - participants: string com jids separados por vírgula
         """
-        result = self._run_command("group.create", [subject, participants])
-        return result
+        cmd_id, err = self._execute_command("group.create", [subject, participants], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("group.create")
+        if cmd_id == "JUSTWAIT":
+            time.sleep(wait_time)
+            return CommandResponse()
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
 
     def list_groups(self) -> CommandResponse:
         """
         Lista grupos da conta atual, quando suportado pela API.
         """
-        result = self._run_command("group.list", [])
-        return result
+        cmd_id, err = self._execute_command("group.list", [], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("group.list")
+        if cmd_id == "JUSTWAIT":
+            time.sleep(wait_time)
+            return CommandResponse()
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
     
     def group_add(self, group_id: str, participant_phones: str) -> CommandResponse:
         """
@@ -941,15 +1228,53 @@ class ZowsupClient:
             CommandResponse com successCount, successJids, errorCount, errorJids
         """
         logger.debug(f"{self._log_prefix} group_add(group_id={group_id}, participants={participant_phones})")
-        result = self._run_command("group.add", [group_id, participant_phones])
-        return result
+        cmd_id, err = self._execute_command("group.add", [group_id, participant_phones], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("group.add")
+        if cmd_id == "JUSTWAIT":
+            time.sleep(wait_time)
+            return CommandResponse()
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
 
     def sync_contacts(self, numbers: str) -> CommandResponse:
         """
         Sincroniza contatos informados (string de números separados por vírgula).
         """
-        result = self._run_command("contact.sync", [numbers])
-        return result
+        cmd_id, err = self._execute_command("contact.sync", [numbers], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("contact.sync")
+        if cmd_id == "JUSTWAIT":
+            time.sleep(wait_time)
+            return CommandResponse()
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+
+    def integrity_check(self, phones: list) -> CommandResponse:
+        """
+        Executa a checagem de integridade (BizIntegrityQuery) para IDs separados por vírgula.
+        """
+
+        phones_str = ",".join(phones)
+
+
+        cmd_id, err = self._execute_command("integrity.check", [phones_str], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("integrity.check")
+        if cmd_id == "JUSTWAIT":
+            time.sleep(wait_time)
+            return CommandResponse()
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
     
     def send_reaction(
         self,
@@ -1089,8 +1414,17 @@ class ZowsupClient:
         self._bind_sysvar_context()
 
         params = [name] if name else []
-        result = self._run_command("account.init", params)
-        return result
+        cmd_id, err = self._execute_command("account.init", params, {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("account.init")
+        if cmd_id == "JUSTWAIT":
+            time.sleep(wait_time)
+            return CommandResponse()
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
 
     # ------------------------------------------------------------------ #
     # Auto responder

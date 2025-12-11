@@ -12,7 +12,7 @@ from zowsuplib.common.utils import Utils
 from zowsuplib.yowsup.config.manager import ConfigManager
 from zowsuplib.yowsup.profile.profile import YowProfile
 from zowsuplib.app.device_env import DeviceEnv
-from zowsuplib.app.config import AppConfig
+from zowsuplib.settings.conf import settings
 
 class Main(ConsoleMain):
      
@@ -93,8 +93,8 @@ class Main(ConsoleMain):
 if __name__ == "__main__":
     
     GlobalVar.WANUMTYPE = 1     
-    # Usa AppConfig para carregar config.conf (respeitando env ZOWSUP_CONFIG)
-    AppConfig.load()
+    # Inicializa Settings (pydantic BaseSettings já carrega .env/variáveis)
+    _ = settings
         
     if len(sys.argv)<=1:
         print("USAGE:")

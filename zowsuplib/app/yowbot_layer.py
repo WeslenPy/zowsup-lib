@@ -42,7 +42,6 @@ from zowsuplib.yowsup.layers.protocol_media.mediacipher import MediaCipher
 from zowsuplib.yowsup.common.tools import Jid
 import requests,logging,io,os,time,mimetypes,base64,random,threading,qrcode
 from zowsuplib.yowsup.common.optionalmodules import PILOptionalModule
-from zowsuplib.conf.constants import SysVar
 from threading import Thread
 from zowsuplib.proto import wsend_pb2,wa_struct_pb2
 from zowsuplib.yowsup.profile.profile import YowProfile
@@ -947,7 +946,9 @@ class SendLayer(YowInterfaceLayer):
                     })                                    
             
                                 
-            self.ackQueue.pop(self.ackQueue.index(entity.getId()))            
+            self.ackQueue.pop(self.ackQueue.index(entity.getId()))   
+
+
                
     def download(self,params):
                     
@@ -987,15 +988,16 @@ class SendLayer(YowInterfaceLayer):
             ext = mimetypes.guess_extension(params["mimetype"].split(";")[0])
                             
         try:
-            filename = SysVar.DOWNLOAD_PATH+filename+ext
-            with open(filename, 'wb') as f:
-                f.write(filedata)            
-            
-        except Exception as e:                       
+            download_dir = getattr(self.bot, "app_config", None).download_path if getattr(self.bot, "app_config", None) else Path("/data/download/")
+            full_path = Path(download_dir) / f"{filename}{ext}"
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(full_path, 'wb') as f:
+                f.write(filedata)
+        except Exception as e:
             logger.error(e)
             return None
         
-        return filename
+        return str(full_path)
     
     def parseMediaCommonAttributes(self,msg,media_specific_attributes):        
         if media_specific_attributes is not None:
@@ -2853,4 +2855,32 @@ class SendLayer(YowInterfaceLayer):
               
 
 
+    def integrityCheck(self,cmdParams,options):        
 
+        def on_success(entity, original_iq_entity):   
+            if isinstance(entity,WmexResultIqProtocolEntity):       
+                self.setCmdResult(entity.getId(), entity.result_obj)
+
+        def on_error(entity, original_iq):                        
+            self.logger.info("integrityCheck error")        
+
+        user_ids = cmdParams[0].split(",")        
+        jids = []
+        for id in user_ids:
+            jids.append({"jid":Jid.normalize(id)})
+
+        query=  {
+            "variables":{         
+                "input":{
+                    "query_input":jids,
+                    "telemetry":{
+                        "context":"INTERACTIVE"
+                    }                    
+                }
+            }
+        }
+        
+        entity = WmexQueryIqProtocolEntity(query_name="BizIntegrityQuery",query_obj=query)            
+        self._sendIq(entity, on_success, on_error)        
+
+        return entity.getId()  

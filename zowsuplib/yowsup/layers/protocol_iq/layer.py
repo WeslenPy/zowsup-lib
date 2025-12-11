@@ -1,7 +1,6 @@
 import time
 import logging
 from threading import Thread, Lock
-from zowsuplib.conf.constants import SysVar
 from ...layers import YowProtocolLayer, YowLayerEvent, EventCallback
 from ...common import YowConstants
 from ...layers.axolotl.protocolentities.iq_keys_get_result import ResultGetKeysIqProtocolEntity
@@ -138,7 +137,6 @@ class YowIqProtocolLayer(YowProtocolLayer):
         # e evitar reuso entre contas durante reconexões.
         self.stop_thread()
         self._pingQueue = {}
-        self._pingSysvarCtx = SysVar.capture_context()
         # Tenta identificar a conta a partir das props do stack
         account_id = (
             self.getStack().getProp("botId")
@@ -150,7 +148,7 @@ class YowIqProtocolLayer(YowProtocolLayer):
             self,
             interval,
             account_id=account_id,
-            sysvar_context=self._pingSysvarCtx,
+            sysvar_context=None,
         )
         self.__logger.debug(f"starting ping thread for {account_id} (interval={interval}s).")
         self._pingThread.start()
@@ -180,7 +178,6 @@ class YowPingThread(Thread):
         self._interval = interval
         self._stop = False
         self._account_id = account_id
-        self._sysvar_context = sysvar_context
         self.__logger = logger
         super(YowPingThread, self).__init__()
         self.daemon = True
@@ -188,11 +185,6 @@ class YowPingThread(Thread):
         self.name = f"YowPing-{account_id}"
 
     def run(self):
-        if self._sysvar_context:
-            try:
-                SysVar.apply_context(self._sysvar_context)
-            except Exception:
-                pass
         while not self._stop:
             for i in range(0, self._interval):                
                 time.sleep(1)                

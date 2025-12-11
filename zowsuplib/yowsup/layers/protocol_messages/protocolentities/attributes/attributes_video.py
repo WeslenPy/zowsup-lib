@@ -1,10 +1,11 @@
 from .....common.tools import VideoTools
 import os
+from pathlib import Path
+from zowsuplib.settings.conf import settings
 from .....layers.protocol_messages.protocolentities.attributes.attributes_downloadablemedia \
     import DownloadableMediaMessageAttributes
 import random
 import requests
-from zowsuplib.conf.constants import SysVar
 import uuid
 
 class VideoAttributes(object):
@@ -138,7 +139,8 @@ class VideoAttributes(object):
         #多一个下载流程
         down_res = requests.get(url=url)
         filename = url[url.rfind("/",0):]
-        filepath = SysVar.DOWNLOAD_PATH+filename                
+        download_dir = Path(settings.download_path)
+        filepath = str(download_dir / filename)                
         with open(filepath,"wb") as file:
             file.write(down_res.content)             
 

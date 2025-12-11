@@ -54,6 +54,7 @@ dependencies = [
   "SQLAlchemy",
   "PyMySQL",
   "pytest (>=9.0.2,<10.0.0)",
+  "zargo @ git+https://github.com/WeslenPy/zargo.git",
 ]
 
 [project.urls]

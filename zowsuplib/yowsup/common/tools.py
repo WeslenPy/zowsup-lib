@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from .constants import YowConstants
 import codecs, sys
 import tempfile
@@ -8,8 +9,8 @@ import os.path, mimetypes
 import uuid
 from zowsuplib.consonance.structs.keypair import KeyPair
 import re
-from zowsuplib.conf.constants import SysVar
 from loguru import logger
+from zowsuplib.settings.conf import settings
 
 from .optionalmodules import PILOptionalModule, FFMpegOptionalModule
 
@@ -132,8 +133,8 @@ class StorageTools:
         Attempts to extract the phone / account identifier from a profile_name.
 
         Common patterns in this project:
-          - SysVar.ACCOUNT_PATH + phone
-          - SysVar.ACCOUNT_PATH + phone + "_" + deviceid
+          - ACCOUNT_PATH + phone
+          - ACCOUNT_PATH + phone + "_" + deviceid
         We normalize to the last path component and take the leading digits.
         """
         base = os.path.basename(str(profile_name))
@@ -147,7 +148,8 @@ class StorageTools:
     @staticmethod
     def constructPath(*path):
         path = os.path.join(*path)
-        fullPath = os.path.join(SysVar.ACCOUNT_PATH, path)  #如果path不是绝对路径，那就增加ACCOUNT_PATH前缀
+        base = str(settings.account_path)
+        fullPath = os.path.join(base, path)  #如果path不是绝对路径，那就增加ACCOUNT_PATH前缀
         if not os.path.exists(os.path.dirname(fullPath)):
             os.makedirs(os.path.dirname(fullPath))
         return fullPath

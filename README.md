@@ -193,8 +193,7 @@ DEFAULT_ENV=android           # default environment: android / smb_android / ios
 
 - Low-level loader: `SysVar.loadConfig(path=None)`
   - Uses `path` if given, else env var `ZOWSUP_CONFIG`, else default `conf/config.conf`.
-- High-level wrapper: `AppConfig.load(config_path: Optional[str] = None)` in `app/config.py`
-  - Returns a typed object and can apply values back to `SysVar` via `apply_to_sysvar()`.
+- Configuração agora é feita via `Settings` (pydantic BaseSettings) em `settings/conf.py`, carregando `.env`/variáveis `ZOWSUP_*` e aplicando defaults tipados.
 
 
 ## High-level Python API (`ZowsupClient`)

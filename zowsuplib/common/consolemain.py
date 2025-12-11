@@ -1,7 +1,6 @@
 # coding=UTF-8
 from loguru import logger
 
-from zowsuplib.conf.constants import SysVar
 from zowsuplib.common.utils import Utils
 from zowsuplib.app.bot_env import BotEnv
 from zowsuplib.app.network_env import NetworkEnv
@@ -14,7 +13,7 @@ class ConsoleMain:
 
         self.env = BotEnv(
             networkEnv=NetworkEnv("direct"),   
-            deviceEnv=DeviceEnv(SysVar.DEFAULT_ENV)
+            deviceEnv=DeviceEnv("android")
         )                   
         
     def init_log(self,level,name):
@@ -37,9 +36,5 @@ class ConsoleMain:
         if "env" in options:            
             self.env.deviceEnv = DeviceEnv(options["env"])            
         
-        if "accountpath" in options:
-            SysVar.ACCOUNT_PATH = options["accountpath"]
-
-        if "cmdwait" in options:
-            SysVar.CMD_WAIT = int(options["cmdwait"])
+        # CLI legado: opções accountpath/cmdwait ignoradas na versão sem SysVar
 

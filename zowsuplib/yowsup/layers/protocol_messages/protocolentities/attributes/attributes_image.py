@@ -3,7 +3,8 @@ from .....layers.protocol_messages.protocolentities.attributes.attributes_downlo
     import DownloadableMediaMessageAttributes
 import os
 import requests
-from zowsuplib.conf.constants import SysVar
+from pathlib import Path
+from zowsuplib.settings.conf import settings
 
 
 class ImageAttributes(object):
@@ -88,7 +89,8 @@ class ImageAttributes(object):
 
         #多一个下载流程
         down_res = requests.get(url=url)
-        filepath = SysVar.DOWNLOAD_PATH+"image.jpg"
+        download_dir = Path(settings.download_path)
+        filepath = str(download_dir / "image.jpg")
         with open(filepath,"wb") as file:
             file.write(down_res.content)             
 

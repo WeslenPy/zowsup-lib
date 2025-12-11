@@ -4,7 +4,8 @@ from .....layers.protocol_messages.protocolentities.attributes.attributes_downlo
 from .....common.tools import AudioTools
 import os
 import requests
-from zowsuplib.conf.constants import SysVar
+from pathlib import Path
+from zowsuplib.settings.conf import settings
 
 class AudioAttributes(object):
     def __init__(self, downloadablemedia_attributes, seconds, ptt, streaming_sidecar=None):
@@ -82,7 +83,8 @@ class AudioAttributes(object):
 
         down_res = requests.get(url=url)
         filename = url[url.rfind("/",0):]
-        filepath = SysVar.DOWNLOAD_PATH+filename                
+        download_dir = Path(settings.download_path)
+        filepath = str(download_dir / filename)
         with open(filepath,"wb") as file:
             file.write(down_res.content)       
 

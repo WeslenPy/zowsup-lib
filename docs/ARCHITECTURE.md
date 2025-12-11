@@ -15,9 +15,8 @@
   - `docs/`: guias funcionais (anti-ban, múltiplas contas, grupos, handshake).
 
 ## Configuração e isolamento
-- Configuração principal em `conf/config.conf` (copiar de `conf/config.conf.example` ou apontar por `ZOWSUP_CONFIG`).
-- `AppConfig.load()` lê o arquivo e aplica valores em `SysVar` (caminhos de conta/download/upload/log e `DEFAULT_ENV`).
-- `SysVar` mantém valores isolados por thread (multi-conta no mesmo processo); `capture_context`/`apply_context` permitem reutilizar o contexto nas threads do bot.
+- Configuração principal vem de `Settings` (pydantic BaseSettings) em `settings/conf.py`, lendo `.env`/variáveis `ZOWSUP_*` (incluindo `ZOWSUP_CONFIG` para o arquivo conf).
+- `SysVar` permanece para compatibilidade, mas valores padrões de caminho/env vêm de `Settings`.
 - Caminhos são criados automaticamente (`SysVar.ensure_dirs`).
 - Config global adicional via Pydantic (`settings/conf.py`), incluindo `ZOWSUP_DB_URL` (padrão `sqlite:///zowsup.db`).
 
@@ -49,7 +48,7 @@
 
 ## API de alto nível (`ZowsupClient`)
 - Local: `app/api.py`. Fornece fachada programática isolada por conta.
-- Construtor aplica `AppConfig`, cria diretórios por conta, captura contexto `SysVar`, instancia `BotEnv` e `YowBot`, e conecta automaticamente (opcional).
+- Construtor usa `Settings`, cria diretórios por conta, instancia `BotEnv` e stack com `SendLayer`, e conecta automaticamente (opcional).
 - Operações principais:
   - `connect`/`disconnect`/`ensure_connected`.
   - Envio: `send_text`, `send_text_reply`, `send_media`, `send_reaction` (opção `wait_for_id`).
@@ -79,8 +78,8 @@
 - Exemplos em `examples/`: envio, sync, múltiplas contas, exportar contatos.
 
 ## Fluxo típico (alto nível)
-1) Copiar/ajustar `conf/config.conf` e garantir `ACCOUNT_PATH`, `DOWNLOAD_PATH`, `UPLOAD_PATH`, `LOG_PATH`, `DEFAULT_ENV`.
-2) `AppConfig.load()` → `SysVar.apply_context` → criação de `ZowsupClient` ou execução de `script/main.py`.
+1) Ajustar `.env` ou variáveis `ZOWSUP_*` (ex.: `ZOWSUP_CONFIG`, `ZOWSUP_ACCOUNT_PATH`, `ZOWSUP_DEFAULT_ENV`).
+2) `settings = Settings()` (autoload) → criação de `ZowsupClient` ou execução de `script/main.py`.
 3) `YowBot.runAsThread()` inicia stack; `SendLayer.waitLogin()` aguarda login. Em erro de handshake, rotação automática de ambiente.
 4) Envio de mensagens via `ZowsupClient` (bypass direto no SendLayer ou via comandos); pode esperar `message_id`.
 5) Eventos chegam em callbacks do bot/SendLayer; auto-reply opcional; status/estatísticas persistidos no DB.
@@ -97,7 +96,7 @@
 - Métricas/telemetria: aproveitar `register_sent_message` e `get_sent_messages_count`.
 
 ## Referências rápidas
-- Config: `conf/config.conf`, `AppConfig.load`, `SysVar` (isolamento por thread).
+- Config: `settings/conf.py` (`Settings` via `.env`/variáveis `ZOWSUP_*`).
 - API: `app/api.py` (`ZowsupClient`, `ZowsupError`, `CommandResponse`).
 - Bot/stack: `app/yowbot.py`, `app/yowbot_layer.py`.
 - DB: `app/db.py`, `app/models.py`, `settings/conf.py` (ZOWSUP_DB_URL).

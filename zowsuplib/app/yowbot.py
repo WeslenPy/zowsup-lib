@@ -8,7 +8,6 @@ from zowsuplib.yowsup.layers import YowLayerEvent
 from zowsuplib.yowsup.layers.protocol_iq.layer import YowIqProtocolLayer
 from zowsuplib.yowsup.layers.network import YowNetworkLayer
 from zowsuplib.app.yowbot_layer import SendLayer
-from zowsuplib.conf.constants import SysVar
 from zowsuplib.yowsup.common.tools import WATools
 from zowsuplib.axolotl.util.keyhelper import KeyHelper
 from zowsuplib.yowsup.profile.profile import YowProfile
@@ -19,6 +18,7 @@ from zowsuplib.app.network_env import NetworkEnv
 from zowsuplib.app.yowbot_values import YowBotType
 from zowsuplib.app.param_not_enough_exception import ParamsNotEnoughException
 from zowsuplib.yowsup.structs import ProtocolEntity
+from zowsuplib.settings.conf import settings
 import names
 
 import os,time,threading,uuid,json,inspect,time,socks
@@ -36,11 +36,9 @@ class BotCmd(object):
         
 class YowBot: 
                     
-    def __init__(self,bot_id,env,bot_type=YowBotType.TYPE_RUN_MANUAL,sysvar_context=None):     
+    def __init__(self,bot_id,env,bot_type=YowBotType.TYPE_RUN_MANUAL,app_config=None):     
         self.botId = bot_id                
-        # Cada bot mantém o contexto SysVar que estava ativo durante a criação
-        # para que a thread interna use caminhos isolados por conta.
-        self.sysvar_context = sysvar_context or SysVar.capture_context()
+        self.app_config = app_config or settings
         stackBuilder = YowStackBuilder()
         self.sendLayer = SendLayer(self)        
         self.env = env if env is not None else BotEnv(deviceEnv=DeviceEnv("android"),networkEnv=NetworkEnv("direct"))
@@ -95,8 +93,6 @@ class YowBot:
 
     def runAsThread(self):
         def _runner():
-            if self.sysvar_context:
-                SysVar.apply_context(self.sysvar_context)
             self.run()
 
         self.thread = threading.Thread(target=_runner)
@@ -470,16 +466,12 @@ class YowBot:
         return self.sendLayer.inputPairingCode(params,options)
                       
 if __name__ == "__main__":    
-    
-    SysVar.loadConfig()  
-
-    # default-env  android,direct
     env = BotEnv(
-        deviceEnv = DeviceEnv("android",random=True), 
+        deviceEnv = DeviceEnv(settings.default_env,random=True), 
         networkEnv = NetworkEnv(NetworkEnv.TYPE_DIRECT)
     )
 
-    bot = YowBot(botId="212719800440",env=env)
+    bot = YowBot(botId="212719800440",env=env,app_config=settings)
 
     bot.run()
     
