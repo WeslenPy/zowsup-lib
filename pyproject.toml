@@ -71,6 +71,7 @@ namespaces = true
 
 [tool.setuptools.package-data]
 "proto" = ["*.proto"]
+"data" = ["*.json"]
 "consonance" = ["proto/*.proto", "config/templates/*.json"]
 
 [tool.pytest.ini_options]
