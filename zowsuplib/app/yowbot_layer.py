@@ -2410,7 +2410,7 @@ class SendLayer(YowInterfaceLayer):
         entity = GetSyncIqProtocolEntity(nums,mode = options["mode"])    
 
         def on_success(entity, original_iq_entity):  
-            self.logger.info("syncContacts success with %d contacts" % len(entity.inNumbers))          
+            logger.info("syncContacts success with %d contacts" % len(entity.inNumbers))          
                         
             self.setCmdResult(entity.getId(),{
                 "count": len(entity.inNumbers),
@@ -2862,7 +2862,7 @@ class SendLayer(YowInterfaceLayer):
                 self.setCmdResult(entity.getId(), entity.result_obj)
 
         def on_error(entity, original_iq):                        
-            self.logger.info("integrityCheck error")        
+            logger.info("integrityCheck error")        
 
         user_ids = cmdParams[0].split(",")        
         jids = []
