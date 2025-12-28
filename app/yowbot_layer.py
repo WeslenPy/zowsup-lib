@@ -131,6 +131,7 @@ class SendLayer(YowInterfaceLayer):
         self._invalid_numbers = set()  # Números inválidos conhecidos (evita tentar novamente)
         self._rate_limit_lock = threading.Lock()  # Lock para thread-safety
         self._handshake_error_detected = False  # Flag para detectar erros de handshake
+        self._message_notifications_enabled = True  # Controle de entrega de callbacks de mensagem
                 
     def quit(self):
         self.userQuit = True
@@ -278,6 +279,10 @@ class SendLayer(YowInterfaceLayer):
     
     @ProtocolEntityCallback("notification")
     def onNotification(self,entity):        
+
+        if not self._message_notifications_enabled:
+            logger.debug("Notificação de mensagem ignorada (desativada)")
+            return
 
         if isinstance(entity,MexUpdateNotificationProtocolEntity):            
             logger.info(f"Notification: Received a MexUpdate Notification: {entity.jsonObj}")            
@@ -685,11 +690,29 @@ class SendLayer(YowInterfaceLayer):
         """
         self.message_callback = callback
         logger.info(f"Message callback {'configurado' if callback is not None else 'removido'} no SendLayer")
+
+    def disableMessageNotifications(self):
+        """
+        Desativa a entrega de callbacks de mensagem (silencia notificações).
+        """
+        self._message_notifications_enabled = False
+        logger.info("Notificações de mensagem desativadas no SendLayer")
+
+    def enableMessageNotifications(self):
+        """
+        Reativa a entrega de callbacks de mensagem.
+        """
+        self._message_notifications_enabled = True
+        logger.info("Notificações de mensagem reativadas no SendLayer")
     
     def messageCallback(self,msg):
         #if msg.HasField("participant"):
             #group msg, ignore it
         #    return
+        
+        if not self._message_notifications_enabled:
+            logger.debug("Notificação de mensagem ignorada (desativada)")
+            return
         
         # Primeiro chama o callback customizado do SendLayer (se configurado)
         if self.message_callback is not None:
