@@ -677,6 +677,36 @@ class ZowsupClient:
             logger.info(f"{self._log_prefix} Login concluído com sucesso")
         return ok
 
+    def login_without_message_notifications(
+        self,
+        *,
+        retry_with_env_rotation: bool = True,
+    ) -> bool:
+        """
+        Realiza o login desativando notificações de mensagens recebidas.
+
+        Útil para cenários em que o cliente só precisa enviar mensagens ou
+        inicializar a sessão sem processar callbacks de mensagens (ex.: workers
+        headless).
+
+        Args:
+            retry_with_env_rotation: tenta rotação de ambiente em caso de erro
+                de handshake (mesma semântica de `connect`).
+
+        Returns:
+            True se o login foi concluído com sucesso; False em caso de timeout.
+        """
+        if self.send_layer is None:
+            raise ZowsupError(-1, "SendLayer não disponível")
+
+        try:
+            self.send_layer.disableMessageNotifications()
+            logger.info(f"{self._log_prefix} Notificações de mensagem desativadas antes do login")
+        except Exception as exc:  # pragma: no cover - defensivo
+            logger.warning(f"{self._log_prefix} Não foi possível desativar notificações de mensagem: {exc}")
+
+        return self.connect(wait_login=True, retry_with_env_rotation=retry_with_env_rotation)
+
     def connect_in_thread(self, *, wait_login: bool = True, retry_with_env_rotation: bool = True) -> threading.Thread:
         """
         Inicia a conexão desta conta em uma thread dedicada, aplicando o contexto SysVar correto.
