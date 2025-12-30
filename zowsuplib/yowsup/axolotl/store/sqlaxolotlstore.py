@@ -120,20 +120,20 @@ class SqlIdentityKeyStore:
         self.db.commit()
 
     def isTrustedIdentity(self, recipient, deviceid, identityKey) -> bool:
-        row = (
-            self.db.query(models.Identity)
+        public_key = (
+            self.db.query(models.Identity.public_key)
             .filter(
                 models.Identity.account_id == self.account.id,
                 models.Identity.recipient_id == recipient,
                 models.Identity.device_id == deviceid,
             )
-            .one_or_none()
+            .scalar()
         )
-        if not row or not row.public_key:
+        if not public_key:
             return True
 
         pub_key = identityKey.getPublicKey().serialize()
-        return row.public_key == pub_key
+        return public_key == pub_key
 
 
 class SqlPreKeyStore:
@@ -146,21 +146,21 @@ class SqlPreKeyStore:
         self.account = account
 
     def loadPreKey(self, preKeyId: int) -> PreKeyRecord:
-        row = (
-            self.db.query(models.PreKey)
+        record = (
+            self.db.query(models.PreKey.record)
             .filter(
                 models.PreKey.account_id == self.account.id,
                 models.PreKey.prekey_id == preKeyId,
             )
-            .one_or_none()
+            .scalar()
         )
-        if not row:
+        if not record:
             raise InvalidKeyIdException("No such prekeyrecord!")
-        return PreKeyRecord(serialized=row.record)
+        return PreKeyRecord(serialized=record)
 
     def loadUnsentPendingPreKeys(self) -> List[PreKeyRecord]:
         rows = (
-            self.db.query(models.PreKey)
+            self.db.query(models.PreKey.record)
             .filter(
                 models.PreKey.account_id == self.account.id,
                 (models.PreKey.sent_to_server.is_(None))
@@ -168,7 +168,7 @@ class SqlPreKeyStore:
             )
             .all()
         )
-        return [PreKeyRecord(serialized=row.record) for row in rows]
+        return [PreKeyRecord(serialized=r[0]) for r in rows]
 
     def setAsSent(self, prekeyIds: List[int]) -> None:
         if not prekeyIds:
@@ -187,12 +187,8 @@ class SqlPreKeyStore:
         self.db.commit()
 
     def loadPendingPreKeys(self) -> List[PreKeyRecord]:
-        rows = (
-            self.db.query(models.PreKey)
-            .filter(models.PreKey.account_id == self.account.id)
-            .all()
-        )
-        return [PreKeyRecord(serialized=row.record) for row in rows]
+        rows = self.db.query(models.PreKey.record).filter(models.PreKey.account_id == self.account.id).all()
+        return [PreKeyRecord(serialized=r[0]) for r in rows]
 
     def storePreKey(self, preKeyId: int, preKeyRecord: PreKeyRecord) -> None:
         row = models.PreKey(
@@ -252,26 +248,26 @@ class SqlSignedPreKeyStore:
         self.account = account
 
     def loadSignedPreKey(self, signedPreKeyId: int) -> SignedPreKeyRecord:
-        row = (
-            self.db.query(models.SignedPreKey)
+        record = (
+            self.db.query(models.SignedPreKey.record)
             .filter(
                 models.SignedPreKey.account_id == self.account.id,
                 models.SignedPreKey.prekey_id == signedPreKeyId,
             )
-            .one_or_none()
+            .scalar()
         )
-        if not row:
+        if not record:
             raise InvalidKeyIdException("No such signedprekeyrecord! %s " % signedPreKeyId)
-        return SignedPreKeyRecord(serialized=row.record)
+        return SignedPreKeyRecord(serialized=record)
 
     def loadSignedPreKeys(self) -> List[SignedPreKeyRecord]:
         rows = (
-            self.db.query(models.SignedPreKey)
+            self.db.query(models.SignedPreKey.record)
             .filter(models.SignedPreKey.account_id == self.account.id)
             .order_by(models.SignedPreKey.prekey_id.asc())
             .all()
         )
-        return [SignedPreKeyRecord(serialized=row.record) for row in rows]
+        return [SignedPreKeyRecord(serialized=r[0]) for r in rows]
 
     def storeSignedPreKey(self, signedPreKeyId: int, signedPreKeyRecord: SignedPreKeyRecord) -> None:
         # Delete existing
@@ -325,17 +321,17 @@ class SqlSessionStore:
         self.account = account
 
     def loadSession(self, account: int, deviceId: int) -> SessionRecord:
-        row = (
-            self.db.query(models.Session)
+        record = (
+            self.db.query(models.Session.record)
             .filter(
                 models.Session.account_id == self.account.id,
                 models.Session.recipient_id == account,
                 models.Session.device_id == deviceId,
             )
-            .one_or_none()
+            .scalar()
         )
-        if row:
-            return SessionRecord(serialized=row.record)
+        if record:
+            return SessionRecord(serialized=record)
         return SessionRecord()
 
     def getSubDeviceSessions(self, recipient: int) -> List[int]:
@@ -462,18 +458,18 @@ class SqlSenderKeyStore:
 
         group_id = senderKeyName.getGroupId()
         sender_id = senderKeyName.getSender().getName()
-        row = (
-            self.db.query(models.SenderKey)
+        record = (
+            self.db.query(models.SenderKey.record)
             .filter(
                 models.SenderKey.account_id == self.account.id,
                 models.SenderKey.group_id == group_id,
                 models.SenderKey.sender_id == sender_id,
             )
-            .one_or_none()
+            .scalar()
         )
-        if not row:
+        if not record:
             return SenderKeyRecord()
-        return SenderKeyRecord(serialized=row.record)
+        return SenderKeyRecord(serialized=record)
 
 
 class SqlPollStore:

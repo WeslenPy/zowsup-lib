@@ -210,8 +210,12 @@ class SendLayer(YowInterfaceLayer):
             from zowsuplib.app import models
             db = SessionLocal()
             try:
-                account = db.query(models.Account).filter_by(phone=self.bot.botId).one_or_none()
-                if account and getattr(account, "has_restriction", False):
+                has_restriction = (
+                    db.query(models.Account.has_restriction)
+                    .filter_by(phone=self.bot.botId)
+                    .scalar()
+                )
+                if has_restriction:
                     logger.warning(f"{self.bot.botId} está com restrição; não será reconectada automaticamente")
                     return False
             finally:
@@ -1246,8 +1250,12 @@ class SendLayer(YowInterfaceLayer):
             
             db = SessionLocal()
             try:
-                account = db.query(models.Account).filter_by(phone=self.bot.botId).one_or_none()
-                if account and account.has_restriction:
+                has_restriction = (
+                    db.query(models.Account.has_restriction)
+                    .filter_by(phone=self.bot.botId)
+                    .scalar()
+                )
+                if has_restriction:
                     logger.warning(f"Conta {self.bot.botId} está com restrição, não é possível enviar mensagens")
                     return True
                 return False

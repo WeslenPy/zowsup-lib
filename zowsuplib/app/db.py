@@ -91,6 +91,93 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
 
 
+def record_group(
+    group_jid: str,
+    creator_phone: str | None,
+    participants: list[str],
+    subject: str | None = None,
+) -> None:
+    """
+    Persiste grupo, criador e participantes no banco.
+    - Cria o grupo se não existir.
+    - Garante participantes únicos.
+    """
+    from zowsuplib.app import models
+
+    db = SessionLocal()
+    try:
+        # Resolve grupo (campos exatos)
+        group_row = (
+            db.query(models.Group.id, models.Group.creator_account_id)
+            .filter_by(group_jid=group_jid)
+            .one_or_none()
+        )
+
+        creator_id = None
+        if creator_phone:
+            creator_id = (
+                db.query(models.Account.id)
+                .filter_by(phone=creator_phone)
+                .scalar()
+            )
+
+        if group_row is None:
+            group = models.Group(
+                group_jid=group_jid,
+                creator_account_id=creator_id,
+                subject=subject,
+            )
+            db.add(group)
+            db.flush()
+            group_id = group.id
+        else:
+            group_id = group_row.id
+            if subject is not None:
+                db.query(models.Group).filter_by(id=group_id).update(
+                    {"subject": subject},
+                    synchronize_session=False,
+                )
+            # Preenche creator_account_id apenas se ainda não existir
+            if creator_id and group_row.creator_account_id is None:
+                db.query(models.Group).filter_by(id=group_id).update(
+                    {"creator_account_id": creator_id},
+                    synchronize_session=False,
+                )
+
+        # Adiciona participantes
+        unique_phones = [p for p in dict.fromkeys(participants) if p]  # de-dupe preservando ordem
+        for phone in unique_phones:
+            acc_id = db.query(models.Account.id).filter_by(phone=phone).scalar()
+            if acc_id is None:
+                acc = models.Account(phone=phone)
+                db.add(acc)
+                db.flush()
+                acc_id = acc.id
+
+            exists_id = (
+                db.query(models.GroupParticipant.id)
+                .filter_by(group_id=group_id, account_id=acc_id)
+                .scalar()
+            )
+            if exists_id is None:
+                db.add(
+                    models.GroupParticipant(
+                        group_id=group_id,
+                        account_id=acc_id,
+                        role="owner" if creator_id and acc_id == creator_id else "member",
+                    )
+                )
+
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        from loguru import logger
+
+        logger.error(f"Erro ao registrar grupo {group_jid}: {exc}")
+    finally:
+        db.close()
+
+
 def update_account_status(
     phone: str,
     *,
@@ -113,20 +200,26 @@ def update_account_status(
 
     db = SessionLocal()
     try:
-        account = db.query(models.Account).filter_by(phone=phone).one_or_none()
-        if account is None:
+        account_id = db.query(models.Account.id).filter_by(phone=phone).scalar()
+        if account_id is None:
             # Cria a conta se não existir
             account = models.Account(phone=phone)
             db.add(account)
+            db.flush()
+            account_id = account.id
 
+        updates = {}
         if is_logged_in is not None:
-            account.is_logged_in = is_logged_in
+            updates["is_logged_in"] = is_logged_in
         if has_restriction is not None:
-            account.has_restriction = has_restriction
+            updates["has_restriction"] = has_restriction
         if is_initialized is not None:
-            account.is_initialized = is_initialized
+            updates["is_initialized"] = is_initialized
         if env is not None:
-            account.env = env
+            updates["env"] = env
+
+        if updates:
+            db.query(models.Account).filter_by(id=account_id).update(updates, synchronize_session=False)
 
         db.commit()
     except Exception as e:
@@ -161,23 +254,23 @@ def register_sent_message(
 
     db = SessionLocal()
     try:
-        account = db.query(models.Account).filter_by(phone=phone).one_or_none()
-        if account is None:
-            # Cria a conta se não existir
+        account_id = db.query(models.Account.id).filter_by(phone=phone).scalar()
+        if account_id is None:
             account = models.Account(phone=phone)
             db.add(account)
-            db.flush()  # Para obter o ID da conta
+            db.flush()
+            account_id = account.id
 
         # Verifica se a mensagem já foi registrada (evita duplicatas)
-        existing = (
-            db.query(models.SentMessage)
-            .filter_by(account_id=account.id, msg_id=msg_id)
-            .one_or_none()
+        existing_id = (
+            db.query(models.SentMessage.id)
+            .filter_by(account_id=account_id, msg_id=msg_id)
+            .scalar()
         )
 
-        if existing is None:
+        if existing_id is None:
             sent_message = models.SentMessage(
-                account_id=account.id,
+                account_id=account_id,
                 msg_id=msg_id,
                 recipient=recipient,
                 message_type=message_type,
@@ -187,9 +280,10 @@ def register_sent_message(
             db.add(sent_message)
         else:
             # Atualiza o status se a mensagem já existir
-            existing.status = status
+            updates = {"status": status}
             if error_code is not None:
-                existing.error_code = error_code
+                updates["error_code"] = error_code
+            db.query(models.SentMessage).filter_by(id=existing_id).update(updates, synchronize_session=False)
 
         db.commit()
     except Exception as e:
@@ -214,10 +308,8 @@ def is_account_initialized(phone: str) -> bool:
 
     db = SessionLocal()
     try:
-        account = db.query(models.Account).filter_by(phone=phone).one_or_none()
-        if account is None:
-            return False
-        return account.is_initialized
+        value = db.query(models.Account.is_initialized).filter_by(phone=phone).scalar()
+        return bool(value)
     except Exception as e:
         from loguru import logger
         logger.error(f"Erro ao verificar status de inicialização da conta {phone}: {e}")
@@ -252,12 +344,12 @@ def get_sent_messages_count(
 
     db = SessionLocal()
     try:
-        account = db.query(models.Account).filter_by(phone=phone).one_or_none()
-        if account is None:
+        account_id = db.query(models.Account.id).filter_by(phone=phone).scalar()
+        if account_id is None:
             return {"total": 0, "by_recipient": []}
 
         # Query base
-        query = db.query(models.SentMessage).filter_by(account_id=account.id)
+        query = db.query(models.SentMessage).filter_by(account_id=account_id)
 
         # Aplicar filtros opcionais
         if recipient is not None:
@@ -276,7 +368,7 @@ def get_sent_messages_count(
                 models.SentMessage.recipient,
                 func.count(models.SentMessage.id).label("count"),
             )
-            .filter_by(account_id=account.id)
+            .filter_by(account_id=account_id)
         )
 
         if message_type is not None:
@@ -337,7 +429,7 @@ def export_contacts_to_vcard(
     try:
         # Busca todos os contatos da conta
         contacts = (
-            db.query(models.Account)
+            db.query(models.Account.phone, models.Account.pushname)
             .order_by(models.Account.id.asc())
             .all()
         )
@@ -351,8 +443,8 @@ def export_contacts_to_vcard(
         vcard_lines = []
 
         
-        for contact in contacts:
-            jid = contact.phone
+        for phone, pushname in contacts:
+            jid = phone
             
             # Ignora grupos se include_groups=False
             if not include_groups and ("@g.us" in jid or "broadcast" in jid):
@@ -366,7 +458,7 @@ def export_contacts_to_vcard(
                 phone_number = phone_number.split(':')[0]
             
             # Obtém o nome (pushname ou nome salvo)
-            display_name = contact.pushname if contact.pushname and contact.pushname.strip() else phone_number
+            display_name = pushname if pushname and pushname.strip() else phone_number
             
             # Gera vCard para este contato
             vcard_lines.append("BEGIN:VCARD")
@@ -477,8 +569,17 @@ def get_all_imported_accounts(
     
     db = SessionLocal()
     try:
-        # Query base
-        query = db.query(models.Account)
+        # Query base (campos exatos)
+        query = db.query(
+            models.Account.phone,
+            models.Account.pushname,
+            models.Account.env,
+            models.Account.is_logged_in,
+            models.Account.has_restriction,
+            models.Account.is_initialized,
+            models.Account.created_at,
+            models.Account.updated_at,
+        )
         
         # Aplica filtros
         if only_initialized:
@@ -491,21 +592,32 @@ def get_all_imported_accounts(
             query = query.filter(models.Account.has_restriction == False)
         
         # Ordena por data de criação (mais recentes primeiro)
-        accounts = query.order_by(models.Account.created_at.desc()).all()
+        rows = query.order_by(models.Account.created_at.desc()).all()
         
         # Converte para lista de dicionários
         result = []
-        for account in accounts:
-            result.append({
-                "phone": account.phone,
-                "pushname": account.pushname,
-                "env": account.env,
-                "is_logged_in": account.is_logged_in,
-                "has_restriction": account.has_restriction,
-                "is_initialized": account.is_initialized,
-                "created_at": account.created_at.isoformat() if account.created_at else None,
-                "updated_at": account.updated_at.isoformat() if account.updated_at else None,
-            })
+        for (
+            phone,
+            pushname,
+            env_val,
+            is_logged_in,
+            has_restriction,
+            is_initialized,
+            created_at,
+            updated_at,
+        ) in rows:
+            result.append(
+                {
+                    "phone": phone,
+                    "pushname": pushname,
+                    "env": env_val,
+                    "is_logged_in": is_logged_in,
+                    "has_restriction": has_restriction,
+                    "is_initialized": is_initialized,
+                    "created_at": created_at.isoformat() if created_at else None,
+                    "updated_at": updated_at.isoformat() if updated_at else None,
+                }
+            )
         
         logger.info(f"Carregadas {len(result)} contas do banco de dados")
         return result

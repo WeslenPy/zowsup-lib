@@ -27,7 +27,7 @@ from zowsuplib.app.message import MessageDefault
 from zowsuplib.app.network_env import NetworkEnv
 from zowsuplib.app.yowbot_layer import SendLayer
 from zowsuplib.app.yowbot_values import YowBotType
-from zowsuplib.app.db import SessionLocal
+from zowsuplib.app.db import SessionLocal, record_group
 from zowsuplib.common.utils import Utils
 from zowsuplib.settings.conf import settings
 from pathlib import Path
@@ -234,8 +234,8 @@ class ZowsupClient:
         # Verifica se a conta já existe no banco de dados
         db_session = SessionLocal()
         try:
-            existing_account = db_session.query(models.Account).filter_by(phone=phone).one_or_none()
-            if existing_account is not None:
+            existing_id = db_session.query(models.Account.id).filter_by(phone=phone).scalar()
+            if existing_id is not None:
                 logger.info(f"Conta {phone} já existe no banco de dados, pulando importação")
                 return phone
         except Exception as e:
@@ -526,6 +526,10 @@ class ZowsupClient:
     def _get_cmd_result(self, cmd_id: str, wait_time: int):
         return self._dispatcher.wait_result(cmd_id, wait_time)
 
+    @staticmethod
+    def _extract_group_id(data: Dict[str, Any]) -> Optional[str]:
+        return data.get("groupId") 
+
     def _command_account_init(self, params: list, options: Dict[str, Any]):
         """
         Implementa o fluxo antigo de account.init sem YowBot.
@@ -607,7 +611,8 @@ class ZowsupClient:
 
         if auto_connect:
             logger.debug(f"{self._log_prefix} auto_connect=True, conectando automaticamente")
-            self.connect()
+            self.connect(wait_login=True)
+            self.initialize()
 
     # ------------------------------------------------------------------ #
     # Ciclo de vida / conexão
@@ -706,6 +711,19 @@ class ZowsupClient:
             logger.warning(f"{self._log_prefix} Não foi possível desativar notificações de mensagem: {exc}")
 
         return self.connect(wait_login=True, retry_with_env_rotation=retry_with_env_rotation)
+
+    def disable_message_notifications(self) -> None:
+        """
+        Desativa as notificações de mensagem.
+        """
+        self.send_layer.disableMessageNotifications()
+        logger.info(f"{self._log_prefix} Notificações de mensagem desativadas")
+    def enable_message_notifications(self) -> None:
+        """
+        Reativa as notificações de mensagem.
+        """
+        self.send_layer.enableMessageNotifications()
+        logger.info(f"{self._log_prefix} Notificações de mensagem reativadas")
 
     def connect_in_thread(self, *, wait_login: bool = True, retry_with_env_rotation: bool = True) -> threading.Thread:
         """
@@ -1211,14 +1229,14 @@ class ZowsupClient:
 
         return CommandResponse(data=result)
 
-    def create_group(self, subject: str, participants: str) -> CommandResponse:
+    def create_group(self, subject: str, participants: list[str]) -> CommandResponse:
         """
         Cria um grupo com o assunto e participantes informados.
 
         - subject: nome do grupo
         - participants: string com jids separados por vírgula
         """
-        cmd_id, err = self._execute_command("group.create", [subject, participants], {})
+        cmd_id, err = self._execute_command("group.create", [subject, ",".join(participants)], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("group.create")
@@ -1228,6 +1246,89 @@ class ZowsupClient:
         result, err2 = self._get_cmd_result(cmd_id, wait_time)
         if err2 is not None:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        # Persistência de grupo + participantes (owner + lista recebida)
+        group_id = self._extract_group_id(result or {})
+        try:
+            if group_id:
+                record_group(
+                    group_jid=group_id,
+                    creator_phone=self.account_id,
+                    participants=[self.account_id] + participants,
+                    subject=subject,
+                )
+        except Exception as exc:
+            logger.error(f"{self._log_prefix} Erro ao registrar grupo no banco: {exc}")
+        return CommandResponse(data=result)
+
+    def get_group_invite(self, group_id: str) -> CommandResponse:
+        """
+        Obtém o código de convite de um grupo.
+
+        Args:
+            group_id: ID ou JID completo do grupo
+
+        Returns:
+            CommandResponse com dados retornados pela API, incluindo o código de convite (invite/code/inviteCode).
+        """
+        cmd_id, err = self._execute_command("group.getinvite", [group_id], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+
+        wait_time = self._default_wait_time("group.getinvite")
+        if cmd_id == "JUSTWAIT":
+            time.sleep(wait_time)
+            return CommandResponse()
+
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        if isinstance(result, dict):
+            code = result.get("code") or result.get("invite") or result.get("inviteCode")
+            if code:
+                result["link"] = f"https://chat.whatsapp.com/{code}"
+                
+        return CommandResponse(data=result)
+
+    def join_group_with_code(self, invite_code: str) -> CommandResponse:
+        """
+        Entra em um grupo usando o código/link de convite.
+
+        Args:
+            invite_code: hash de convite ou link completo. Se for link, o hash será extraído.
+
+        Returns:
+            CommandResponse com o resultado da operação.
+        """
+        code = invite_code
+        if "chat.whatsapp.com/" in invite_code:
+            code = invite_code.split("chat.whatsapp.com/")[-1].strip()
+
+        cmd_id, err = self._execute_command("group.join", [code], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+
+        wait_time = self._default_wait_time("group.join")
+        if cmd_id == "JUSTWAIT":
+            time.sleep(wait_time)
+            return CommandResponse()
+
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        # Tenta registrar o participante no grupo retornado
+        try:
+            group_id = None
+            if isinstance(result, dict):
+                group_id = self._extract_group_id(result)
+            if group_id:
+                record_group(
+                    group_jid=group_id,
+                    creator_phone=None,
+                    participants=[self.account_id],
+                    subject=None,
+                )
+        except Exception as exc:
+            logger.error(f"{self._log_prefix} Erro ao registrar participação no grupo: {exc}")
         return CommandResponse(data=result)
 
     def list_groups(self) -> CommandResponse:
@@ -1779,18 +1880,18 @@ class ZowsupClient:
             ValueError se nenhuma conta master existir.
         """
         session = SessionLocal()
-        account = None
+        row = None
         try:
-            account = (
-                session.query(models.Account)
+            row = (
+                session.query(models.Account.phone, models.Account.env)
                 .filter_by(master=True)
                 .order_by(models.Account.id.desc())
                 .first()
             )
             # Fallback: última conta logada caso não exista master
-            if account is None:
-                account = (
-                    session.query(models.Account)
+            if row is None:
+                row = (
+                    session.query(models.Account.phone, models.Account.env)
                     .filter_by(is_logged_in=True)
                     .order_by(models.Account.updated_at.desc())
                     .first()
@@ -1798,13 +1899,14 @@ class ZowsupClient:
         finally:
             session.close()
 
-        if account is None:
+        if row is None:
             raise ValueError("Nenhuma conta master ou conta logada encontrada no banco de dados")
 
-        resolved_env = env or account.env or settings.default_env
+        account_phone, account_env = row
+        resolved_env = env or account_env or settings.default_env
 
         return cls(
-            account_id=account.phone,
+            account_id=account_phone,
             env=resolved_env,
             proxy=proxy,
             auto_connect=auto_connect,

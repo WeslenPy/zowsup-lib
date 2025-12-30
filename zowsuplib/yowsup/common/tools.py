@@ -209,16 +209,16 @@ class StorageTools:
 
         db = SessionLocal()
         try:
-            account = db.query(models.Account).filter_by(phone=phone).one_or_none()
-            if account is None:
+            account_id = db.query(models.Account.id).filter_by(phone=phone).scalar()
+            if account_id is None:
                 account = models.Account(phone=phone)
                 db.add(account)
-                db.commit()
-                db.refresh(account)
+                db.flush()
+                account_id = account.id
 
             row = (
                 db.query(models.ProfileConfig)
-                .filter_by(account_id=account.id, name=cls.NAME_CONFIG)
+                .filter_by(account_id=account_id, name=cls.NAME_CONFIG)
                 .one_or_none()
             )
 
@@ -226,7 +226,7 @@ class StorageTools:
 
             if row is None:
                 row = models.ProfileConfig(
-                    account_id=account.id,
+                    account_id=account_id,
                     name=cls.NAME_CONFIG,
                     data=data,
                 )
@@ -262,13 +262,13 @@ class StorageTools:
 
         db = SessionLocal()
         try:
-            account = db.query(models.Account).filter_by(phone=phone).one_or_none()
-            if not account:
+            account_id = db.query(models.Account.id).filter_by(phone=phone).scalar()
+            if not account_id:
                 return None
 
             row = (
                 db.query(models.ProfileConfig)
-                .filter_by(account_id=account.id, name=cls.NAME_CONFIG)
+                .filter_by(account_id=account_id, name=cls.NAME_CONFIG)
                 .one_or_none()
             )
             if row is None:
@@ -317,8 +317,8 @@ class MimeTools:
     mimetypes.init() # Load default mime.types
     try:
         mimetypes.init([MIME_FILE]) # Append whatsapp mime.types
-    except:
-        logger.warning("Mime types supported can't be read. System mimes will be used. Cause: " + e.message)
+    except Exception as e:
+        logger.warning("Mime types supported can't be read. System mimes will be used. Cause: " + str(e))
 
     @staticmethod
     def getMIME(filepath):

@@ -11,7 +11,11 @@ build
 config.conf
 poetry.lock
 .venv
-
+accounts_unblocked.txt
+t_import.py
+test_gp.py
+teste.py
+great_conversation.py
 .env
 accounts.txt
 *.vcf
