@@ -586,7 +586,20 @@ class ZowsupClient:
         
         # Cria config isolada por conta (sem AppConfig)
         self.config = self._build_account_config()
-        device_env_name = env or self.config.default_env
+        # Resolve env: prioridade para argumento, depois env salvo na Account, depois default
+        account_env = None
+        if env is None:
+            try:
+                with SessionLocal() as _db:
+                    account_env = (
+                        _db.query(models.Account.env)
+                        .filter_by(phone=account_id)
+                        .scalar()
+                    )
+            except Exception as exc:
+                logger.warning(f"{self._log_prefix} Não foi possível ler env da conta no DB: {exc}")
+
+        device_env_name = env or account_env or self.config.default_env
         device_env = DeviceEnv(device_env_name, random=True)
 
         if proxy and proxy.upper() != "DIRECT":
