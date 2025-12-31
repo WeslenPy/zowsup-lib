@@ -567,7 +567,7 @@ class ZowsupClient:
         *,
         env: Optional[str] = None,
         proxy: Optional[str] = None,
-        auto_connect: bool = True,
+        auto_connect: bool = False,
     ) -> None:
         """
         Cria um novo cliente de alto nível completamente isolado.
@@ -619,6 +619,7 @@ class ZowsupClient:
         self._auto_reply_enabled = False
         self._auto_reply_config: Optional[Dict[str, Any]] = None
         self._original_callback = self.bot.callback
+        self._last_login_error: Optional[str] = None
 
         logger.info(f"{self._log_prefix} Cliente inicializado com sucesso (isolado)")
 
@@ -663,6 +664,7 @@ class ZowsupClient:
             return True
 
         logger.info(f"{self._log_prefix} Iniciando conexão (wait_login={wait_login}, retry_with_env_rotation={retry_with_env_rotation})")
+        self._last_login_error = None
         
         # Configura callback para detectar erros de handshake
         if retry_with_env_rotation:
@@ -688,9 +690,14 @@ class ZowsupClient:
         if ok:
             current_env_name = self._get_current_env_name()
             self._mark_env_success(current_env_name)
+            self._last_login_error = None
         
         if not ok:
             logger.warning(f"{self._log_prefix} Login timeout após {wait_time}s")
+            if getattr(self.send_layer, "_handshake_error_detected", False):
+                self._last_login_error = "handshake_failed"
+            else:
+                self._last_login_error = "timeout_or_unknown"
         else:
             logger.info(f"{self._log_prefix} Login concluído com sucesso")
         return ok
@@ -724,6 +731,15 @@ class ZowsupClient:
             logger.warning(f"{self._log_prefix} Não foi possível desativar notificações de mensagem: {exc}")
 
         return self.connect(wait_login=True, retry_with_env_rotation=retry_with_env_rotation)
+
+    def get_last_login_error(self) -> Optional[str]:
+        """
+        Retorna o último erro de login detectado:
+        - None: último login bem-sucedido
+        - "handshake_failed": erro de handshake
+        - "timeout_or_unknown": não conectou dentro do tempo ou erro não identificado
+        """
+        return self._last_login_error
 
     def disable_message_notifications(self) -> None:
         """

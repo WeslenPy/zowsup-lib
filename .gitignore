@@ -3,6 +3,8 @@
 todo
 *.egg-info
 tp
+test*.py
+*journal
 tests
 dist
 build
