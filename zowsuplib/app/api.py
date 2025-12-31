@@ -1564,12 +1564,12 @@ class ZowsupClient:
         Nota: Se a conta já foi inicializada anteriormente, este método não
         executará a inicialização novamente e retornará sucesso imediatamente.
         """
-        # from zowsuplib.app.db import is_account_initialized
+        from zowsuplib.app.db import is_account_initialized
 
-        # # Verifica se a conta já foi inicializada
-        # if is_account_initialized(self.bot.botId):
-        #     logger.info(f"Conta {self.bot.botId} já foi inicializada anteriormente. Pulando inicialização.")
-        #     return CommandResponse(data={"message": "Conta já inicializada", "skipped": True})
+        # Verifica se a conta já foi inicializada
+        if is_account_initialized(self.bot.botId):
+            logger.info(f"Conta {self.bot.botId} já foi inicializada anteriormente. Pulando inicialização.")
+            return CommandResponse(data={"message": "Conta já inicializada", "skipped": True})
 
         self._bind_sysvar_context()
 
