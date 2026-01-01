@@ -144,6 +144,10 @@ class SendLayer(YowInterfaceLayer):
         self._liveness_check_interval = 30  # segundos
         self._liveness_timeout = 320  # segundos sem tráfego para forçar reconnect
         self._last_activity_ts = time.time()
+        # Marca se ocorreu stream:error conflict
+        self._last_stream_conflict = False
+        # Armazena último erro IQ (ex: 463 account_reachout_restricted)
+        self._last_iq_error: Optional[str] = None
 
     # ------------------------------------------------------------------ #
     # Liveness / watchdog
@@ -682,6 +686,19 @@ class SendLayer(YowInterfaceLayer):
             return 
         
         if isinstance(entity,ErrorIqProtocolEntity):
+            # Captura erros IQ específicos
+            error_code = str(entity.code) if hasattr(entity, "code") and entity.code else None
+            error_text = str(entity.text) if hasattr(entity, "text") and entity.text else None
+            
+            # Detecta erro 463 (account_reachout_restricted)
+            if error_code == "463" and error_text == "account_reachout_restricted":
+                self._last_iq_error = f"iq_error_463_account_reachout_restricted"
+                logger.warning(f"IQ Error 463: account_reachout_restricted detected")
+            elif error_code:
+                # Armazena erro IQ genérico
+                self._last_iq_error = f"iq_error_{error_code}_{error_text or 'unknown'}"
+                logger.debug(f"IQ Error detected: code={error_code}, text={error_text}")
+            
             self.setCmdError(entity.getId(),entity.code)
             return 
                         
@@ -917,6 +934,33 @@ class SendLayer(YowInterfaceLayer):
             if entity.code=="503":
                 self.detect503 = True      
                 self.bot._stack.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_DISCONNECT))                
+        # Detecta conflito (sessão substituída)
+        try:
+            # Verifica se é um erro de tipo "conflict" usando getErrorType()
+            if hasattr(entity, "getErrorType"):
+                error_type = entity.getErrorType()
+                if error_type == "conflict":
+                    self._last_stream_conflict = True
+                    logger.warning("Stream error: conflict detected (session replaced)")
+            
+            # Verifica atributos diretos
+            if hasattr(entity, "reason") and entity.reason == "conflict":
+                self._last_stream_conflict = True
+            if hasattr(entity, "type") and entity.type == "replaced":
+                self._last_stream_conflict = True
+            # Alguns parsers deixam em atributos dict-like:
+            if hasattr(entity, "type") and getattr(entity, "type", None) == "conflict":
+                self._last_stream_conflict = True
+            
+            # Verifica nos dados do erro (para casos como <conflict type="replaced" />)
+            if hasattr(entity, "getErrorData"):
+                error_data = entity.getErrorData()
+                if error_data and "conflict" in error_data:
+                    self._last_stream_conflict = True
+                    logger.warning("Stream error: conflict detected in error data")
+        except Exception as e:
+            logger.debug(f"Erro ao processar stream:error: {e}")
+            pass
    
     @ProtocolEntityCallback("ack")
     def onAck(self, entity):               

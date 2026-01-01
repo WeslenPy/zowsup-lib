@@ -227,7 +227,10 @@ class AxolotlManager(object):
         # see https://github.com/tgalal/yowsup/issues/2732
         logger.debug(f"group_encrypt(groupid={groupid}, message=[omitted])")
         group_cipher = self._get_group_cipher(groupid, self._username)
-        return group_cipher.encrypt(message + self._generate_random_padding())
+        try:
+            return group_cipher.encrypt(message + self._generate_random_padding())
+        except NoSessionException as e:
+            raise exceptions.NoSessionException(str(e) if str(e) else "No sender key for group")
 
     def group_decrypt(self, groupid, participantid, data):
         logger.debug(f"group_decrypt(groupid={groupid}, participantid={participantid}, data=[omitted])")

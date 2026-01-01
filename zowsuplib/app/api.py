@@ -665,6 +665,10 @@ class ZowsupClient:
 
         logger.info(f"{self._log_prefix} Iniciando conexão (wait_login={wait_login}, retry_with_env_rotation={retry_with_env_rotation})")
         self._last_login_error = None
+        if hasattr(self.send_layer, "_last_stream_conflict"):
+            self.send_layer._last_stream_conflict = False
+        if hasattr(self.send_layer, "_last_iq_error"):
+            self.send_layer._last_iq_error = None
         
         # Configura callback para detectar erros de handshake
         if retry_with_env_rotation:
@@ -694,8 +698,14 @@ class ZowsupClient:
         
         if not ok:
             logger.warning(f"{self._log_prefix} Login timeout após {wait_time}s")
-            if getattr(self.send_layer, "_handshake_error_detected", False):
+            # Verifica erros IQ primeiro (podem ocorrer durante a conexão)
+            iq_error = getattr(self.send_layer, "_last_iq_error", None)
+            if iq_error:
+                self._last_login_error = iq_error
+            elif getattr(self.send_layer, "_handshake_error_detected", False):
                 self._last_login_error = "handshake_failed"
+            elif getattr(self.send_layer, "_last_stream_conflict", False):
+                self._last_login_error = "conflict_replaced"
             else:
                 self._last_login_error = "timeout_or_unknown"
         else:
@@ -737,9 +747,25 @@ class ZowsupClient:
         Retorna o último erro de login detectado:
         - None: último login bem-sucedido
         - "handshake_failed": erro de handshake
+        - "conflict_replaced": sessão substituída por outra conexão
+        - "iq_error_463_account_reachout_restricted": conta com restrição de alcance (erro IQ 463)
+        - "iq_error_<code>_<text>": outros erros IQ detectados
         - "timeout_or_unknown": não conectou dentro do tempo ou erro não identificado
         """
+        # Verifica se há erro IQ mais recente que o erro de login
+        iq_error = getattr(self.send_layer, "_last_iq_error", None)
+        if iq_error:
+            return iq_error
         return self._last_login_error
+    
+    def get_last_iq_error(self) -> Optional[str]:
+        """
+        Retorna o último erro IQ detectado (pode ocorrer durante ou após o login):
+        - None: nenhum erro IQ detectado
+        - "iq_error_463_account_reachout_restricted": conta com restrição de alcance
+        - "iq_error_<code>_<text>": outros erros IQ detectados
+        """
+        return getattr(self.send_layer, "_last_iq_error", None)
 
     def disable_message_notifications(self) -> None:
         """
@@ -1198,6 +1224,50 @@ class ZowsupClient:
 
         return CommandResponse(data=result)
 
+    def send_text_to_self(
+        self,
+        text: str,
+        *,
+        wait_for_id: bool = False,
+        wait_msg_id_timeout: Optional[int] = None,
+        use_direct_layer: bool = True,
+        **options: Any,
+    ) -> CommandResponse:
+        """
+        Envia uma mensagem de texto para o próprio número da conta.
+        
+        Útil para:
+        - Testar a conta
+        - Criar notas pessoais
+        - Verificar se a conta está funcionando corretamente
+        
+        Args:
+            text: conteúdo da mensagem
+            wait_for_id: se True, retorna o ID da mensagem atribuído pelo WhatsApp
+            wait_msg_id_timeout: timeout (segundos) para obter o ID (quando wait_for_id=True)
+            use_direct_layer: se True, usa SendLayer diretamente (mais rápido, bypass do comando)
+            options: opções adicionais repassadas para a camada de envio
+        
+        Returns:
+            CommandResponse com o resultado. Se wait_for_id=True, contém 'message_id'.
+        
+        Example:
+            # Enviar mensagem para si próprio
+            client.send_text_to_self("Nota pessoal: lembrar de fazer algo")
+            
+            # Enviar e obter o ID da mensagem
+            response = client.send_text_to_self("Teste", wait_for_id=True)
+            print(f"Mensagem enviada com ID: {response.data['message_id']}")
+        """
+        return self.send_text(
+            to=self.account_id,
+            text=text,
+            wait_for_id=wait_for_id,
+            wait_msg_id_timeout=wait_msg_id_timeout,
+            use_direct_layer=use_direct_layer,
+            **options,
+        )
+
     def send_media(
         self,
         to: str,
@@ -1258,14 +1328,14 @@ class ZowsupClient:
 
         return CommandResponse(data=result)
 
-    def create_group(self, subject: str, participants: list[str]) -> CommandResponse:
+    def create_group(self, subject: str, participants: list[str]=[]) -> CommandResponse:
         """
         Cria um grupo com o assunto e participantes informados.
 
         - subject: nome do grupo
         - participants: string com jids separados por vírgula
         """
-        cmd_id, err = self._execute_command("group.create", [subject, ",".join(participants)], {})
+        cmd_id, err = self._execute_command("group.create", [subject, ",".join(participants) if participants else ""], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("group.create")

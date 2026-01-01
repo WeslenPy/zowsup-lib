@@ -330,7 +330,18 @@ class AxolotlSendLayer(AxolotlBaseLayer):
 
         if not retryCount:
             messageData = protoNode.getData()
-            ciphertext = self.manager.group_encrypt(groupJid, messageData)
+            try:
+                ciphertext = self.manager.group_encrypt(groupJid, messageData)
+            except exceptions.NoSessionException as e:
+                # Sender key não existe, criar antes de criptografar
+                logger.warning(f"Sender key não encontrado para grupo {groupJid}, criando... (erro: {e})")
+                self.manager.group_create_skmsg(groupJid)
+                # Tentar criptografar novamente
+                try:
+                    ciphertext = self.manager.group_encrypt(groupJid, messageData)
+                except exceptions.NoSessionException as e2:
+                    logger.error(f"Falha ao criptografar mensagem para grupo {groupJid} mesmo após criar sender key: {e2}")
+                    raise
             mediaType = protoNode["mediatype"]
             encEntities.append(EncProtocolEntity(EncProtocolEntity.TYPE_SKMSG, 2, ciphertext, mediaType))
 
