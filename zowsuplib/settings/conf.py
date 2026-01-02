@@ -33,7 +33,7 @@ class Settings(BaseSettings):
         env="ZOWSUP_DB_URL",
     )
     db_pool_size: int = Field(
-        default=20,
+        default=100,
         description="Base pool size for SQLAlchemy engine (ignored for SQLite).",
         env="ZOWSUP_DB_POOL_SIZE",
     )
@@ -64,7 +64,6 @@ class Settings(BaseSettings):
     http_proxy: Optional[str] = Field(default=None, env=["ZOWSUP_HTTP_PROXY", "http_proxy", "HTTP_PROXY"])
     https_proxy: Optional[str] = Field(default=None, env=["ZOWSUP_HTTPS_PROXY", "https_proxy", "HTTPS_PROXY"])
 
-    # Flags de debug para forçar breakpoint (ex.: ZOWSUP_DEBUG_BREAK_FLAGS=WA_NOISE_HANDSHAKE)
     debug_break_flags: Set[str] = Field(default_factory=set, env="ZOWSUP_DEBUG_BREAK_FLAGS")
 
     @field_validator("debug_break_flags", mode="before")

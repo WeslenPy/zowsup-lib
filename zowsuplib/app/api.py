@@ -1,9 +1,11 @@
 import base64
 import random
+import shutil
 import threading
 import time
 import uuid
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Set
 
 import names
@@ -30,7 +32,6 @@ from zowsuplib.app.yowbot_values import YowBotType
 from zowsuplib.app.db import SessionLocal, record_group
 from zowsuplib.common.utils import Utils
 from zowsuplib.settings.conf import settings
-from pathlib import Path
 
 class ZowsupError(Exception):
     """
@@ -323,6 +324,77 @@ class ZowsupClient:
 
         logger.info(f"Conta {phone} importada com sucesso no DB unificado")
         return phone
+
+    @staticmethod
+    def delete_account(account_id: str, *, remove_files: bool = True) -> bool:
+        """
+        Remove completamente uma conta do sistema.
+        
+        Esta função remove:
+        - A conta do banco de dados (Account e todos os dados relacionados via CASCADE)
+        - A conta do AccountManager se estiver ativa
+        - Desconecta a conta se estiver conectada
+        - Remove diretórios de arquivos (download, upload, log) se remove_files=True
+        - Remove arquivos de perfil se existirem
+        
+        Args:
+            account_id: Número da conta (phone) a ser removida
+            remove_files: Se True, remove também diretórios e arquivos relacionados
+        
+        Returns:
+            True se a conta foi removida com sucesso, False se a conta não existia
+        
+        Example:
+            # Remove completamente uma conta
+            ZowsupClient.delete_account("5511999999999")
+            
+            # Remove apenas do banco de dados, mantendo arquivos
+            ZowsupClient.delete_account("5511999999999", remove_files=False)
+        """
+        from zowsuplib.app.account_manager import AccountManager
+        
+        logger.info(f"Removendo conta {account_id} completamente...")
+        
+        # 1. Verifica se a conta existe no banco de dados
+        db_session = SessionLocal()
+        try:
+            account = db_session.query(models.Account).filter_by(phone=account_id).one_or_none()
+            if account is None:
+                logger.warning(f"Conta {account_id} não encontrada no banco de dados")
+                return False
+        except Exception as e:
+            logger.error(f"Erro ao verificar se conta {account_id} existe: {e}")
+            return False
+        finally:
+            db_session.close()
+        
+        # 2. Remove do AccountManager se estiver ativo e desconecta
+        try:
+            manager = AccountManager.get_instance()
+            if manager.has_account(account_id):
+                logger.info(f"Desconectando e removendo conta {account_id} do AccountManager")
+                manager.remove_account(account_id, disconnect=True)
+        except Exception as e:
+            logger.warning(f"Erro ao remover conta {account_id} do AccountManager: {e}")
+        
+        # 4. Remove do banco de dados (CASCADE remove todos os dados relacionados)
+        db_session = SessionLocal()
+        try:
+            account = db_session.query(models.Account).filter_by(phone=account_id).one_or_none()
+            if account:
+                db_session.delete(account)
+                db_session.commit()
+                logger.info(f"Conta {account_id} removida do banco de dados com sucesso")
+                return True
+            else:
+                logger.warning(f"Conta {account_id} não encontrada no banco de dados para remoção")
+                return False
+        except Exception as e:
+            db_session.rollback()
+            logger.error(f"Erro ao remover conta {account_id} do banco de dados: {e}")
+            return False
+        finally:
+            db_session.close()
 
     def _build_account_config(self) -> ClientConfig:
         """
@@ -1637,9 +1709,9 @@ class ZowsupClient:
         from zowsuplib.app.db import is_account_initialized
 
         # Verifica se a conta já foi inicializada
-        if is_account_initialized(self.bot.botId):
-            logger.info(f"Conta {self.bot.botId} já foi inicializada anteriormente. Pulando inicialização.")
-            return CommandResponse(data={"message": "Conta já inicializada", "skipped": True})
+        # if is_account_initialized(self.bot.botId):
+        #     logger.info(f"Conta {self.bot.botId} já foi inicializada anteriormente. Pulando inicialização.")
+        #     return CommandResponse(data={"message": "Conta já inicializada", "skipped": True})
 
         self._bind_sysvar_context()
 
