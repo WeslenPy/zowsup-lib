@@ -319,7 +319,17 @@ class YowBot:
 
     @BotCmd("msg.sendmedia","send media message")
     def sendMediaMsg(self,params,options):                    
-        return self.sendLayer.sendMediaMsg(params,options)  
+        return self.sendLayer.sendMediaMsg(params,options)
+
+    @BotCmd("status.send","send status (text)")
+    def sendStatus(self,params,options):
+        """Envia status de texto para status@broadcast."""
+        return self.sendLayer.sendStatus(params,options)
+
+    @BotCmd("status.sendmedia","send status media (image/video)")
+    def sendStatusMedia(self,params,options):
+        """Envia status de mídia (imagem/vídeo) para status@broadcast."""
+        return self.sendLayer.sendStatusMedia(params,options)  
     
     @BotCmd("msg.revoke","revoke message")
     def revokeMsg(self,params,options):

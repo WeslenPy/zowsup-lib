@@ -1561,19 +1561,38 @@ class SendLayer(YowInterfaceLayer):
                     if not is_valid:
                         logger.error(f"Número {phone_num} não é válido no WhatsApp (não encontrado na sincronização)")
                         self._mark_number_invalid(phone_num)
+                        # Remove o contato que foi adicionado antes da sincronização se for inválido
+                        try:
+                            if hasattr(self.db._store, 'removeContact'):
+                                self.db._store.removeContact(jid_container[0])
+                                logger.debug(f"Contato inválido {jid_container[0]} removido do banco")
+                        except Exception as e:
+                            logger.warning(f"Erro ao remover contato inválido: {e}")
                         # Não tenta enviar para número inválido
                         return
                     
                     # Atualiza o JID se encontrou um diferente
                     current_jid = jid_container[0]
+                    original_jid = current_jid
+                    
                     if jid_found and jid_found != current_jid:
                         logger.info(f"JID atualizado: {current_jid} -> {jid_found}")
                         jid_container[0] = jid_found
                         # Atualiza cmdParams com o JID correto
                         cmdParams[0] = jid_found.split('@')[0] if '@' in jid_found else jid_found
                         current_jid = jid_found
+                        
+                        # Se o JID mudou, remove o antigo e adiciona o novo
+                        try:
+                            if hasattr(self.db._store, 'removeContact'):
+                                self.db._store.removeContact(original_jid)
+                                logger.debug(f"Contato antigo {original_jid} removido do banco")
+                        except Exception as e:
+                            logger.warning(f"Erro ao remover contato antigo: {e}")
                     
-                    logger.info(f"Contato {current_jid} sincronizado e validado com sucesso")
+                    # O contato já foi salvo pelo syncContacts, mas garante que está com o JID correto
+                    # (syncContacts salva todos os contatos válidos automaticamente)
+                    logger.info(f"Contato {current_jid} sincronizado e validado com sucesso (já salvo pelo syncContacts)")
                     
                     # Aguarda delay human-like antes de confiar
                     trust_delay = self._human_like_delay(base_delay=2.0, variation=1.5)
@@ -1683,10 +1702,12 @@ class SendLayer(YowInterfaceLayer):
                 raise ValueError(error_msg)
             
             # Aplica rate limiting (anti-banimento)
+            # Para status@broadcast, não aplica rate limiting (status são diferentes)
             # Para grupos, usa delay menor; para contatos individuais, delay maior
-            is_group = normalized_to.endswith("@g.us")
-            min_delay = .5 if is_group else 1.0  # Grupos podem ter delay menor
-            self._check_rate_limit(normalized_to, min_delay_seconds=min_delay)
+            if normalized_to != "status@broadcast" and not normalized_to.endswith("@broadcast"):
+                is_group = normalized_to.endswith("@g.us")
+                min_delay = .5 if is_group else 1.0  # Grupos podem ter delay menor
+                self._check_rate_limit(normalized_to, min_delay_seconds=min_delay)
             
             logger.debug(f"Enviando mensagem para {normalized_to} (original: {to})")
             
@@ -1837,12 +1858,23 @@ class SendLayer(YowInterfaceLayer):
                 context_info=context_info,
                 invite_link_group_type_v2=0
             )   
-        else:        
+        else:
+            # Suporta opções de status (text_color, background_color, font)
+            # Compatível com o padrão whatsmeow para envio de status
+            text_argb = options.get("text_color") or options.get("text_argb")
+            background_argb = options.get("background_color") or options.get("background_argb")
+            font = options.get("font")
+            preview_type = options.get("preview_type", 0)
+            invite_link_group_type_v2 = options.get("invite_link_group_type_v2", 0)
+            
             return ExtendedTextAttributes(
                 text=message,
-                preview_type=0,
+                preview_type=preview_type,
                 context_info=context_info,
-                invite_link_group_type_v2=0,
+                invite_link_group_type_v2=invite_link_group_type_v2,
+                text_argb=text_argb,
+                background_argb=background_argb,
+                font=font
             )            
 
     def _send_broadcast_message(self, messageEntity, options):
@@ -2389,6 +2421,8 @@ class SendLayer(YowInterfaceLayer):
             caption = options["caption"] if "caption" in options else None
             fileName = options["fileName"] if "fileName" in options else None
 
+            entity = None  # Inicializa entity como None
+
             try:
                 if mediaType=="image":
                     if filePath.startswith("http://") or filePath.startswith("https://"):
@@ -2431,7 +2465,36 @@ class SendLayer(YowInterfaceLayer):
                     entity = DocumentDownloadableMediaMessageProtocolEntity(
                         document_attrs=attr_media,
                         message_meta_attrs=MessageMetaAttributes(id=self.bot.idType,recipient= Jid.normalize(to))
-                    )                                    
+                    )
+
+                if mediaType=="sticker":
+                    # Opções para sticker (is_animated, is_avatar, etc.)
+                    is_animated = options.get("is_animated", False) if "is_animated" in options else False
+                    is_avatar = options.get("is_avatar", False) if "is_avatar" in options else False
+                    is_ai_sticker = options.get("is_ai_sticker", False) if "is_ai_sticker" in options else False
+                    is_lottie = options.get("is_lottie", False) if "is_lottie" in options else False
+                    
+                    if filePath.startswith("http://") or filePath.startswith("https://"):
+                        attr_media = StickerAttributes.from_url(
+                            filePath, "sticker", resultRequestMediaConnIqProtocolEntity,
+                            is_animated=is_animated, is_avatar=is_avatar,
+                            is_ai_sticker=is_ai_sticker, is_lottie=is_lottie
+                        )
+                    else:
+                        attr_media = StickerAttributes.from_filepath(
+                            filePath, "sticker", resultRequestMediaConnIqProtocolEntity,
+                            is_animated=is_animated, is_avatar=is_avatar,
+                            is_ai_sticker=is_ai_sticker, is_lottie=is_lottie
+                        )
+                    entity = StickerDownloadableMediaMessageProtocolEntity(
+                        sticker_attrs=attr_media,
+                        message_meta_attrs=MessageMetaAttributes(id=self.bot.idType,recipient= Jid.normalize(to))
+                    )
+
+                # Verifica se entity foi definido
+                if entity is None:
+                    logger.error(f"Tipo de mídia '{mediaType}' não suportado ou entity não foi criado")
+                    return None
 
                 logger.info(f"Send Media {mediaType} Msg (ID={entity.getId()})")                
 
@@ -2472,12 +2535,60 @@ class SendLayer(YowInterfaceLayer):
             logger.error("Request upload for file failed")
 
         mediaType = cmdParams[1]
-        if not mediaType in ["image","video","audio","document"]:
+        if not mediaType in ["image","video","audio","document","sticker"]:
             logger.info(f"sendmedia type {mediaType} is not supported now")
 
         entity = RequestMediaConnIqProtocolEntity()
         successFn = lambda successEntity, originalEntity: onRequestMediaConnResult( cmdParams, successEntity, originalEntity)
         errorFn = lambda errorEntity, originalEntity: onRequestMediaConnError(cmdParams, errorEntity, originalEntity)
+        self._sendIq(entity, successFn, errorFn)
+
+    def sendStatus(self, cmdParams, options):
+        """
+        Envia status de texto para status@broadcast.
+        
+        Args:
+            cmdParams: [to, text] - to deve ser "status@broadcast"
+            options: Opções adicionais (text_color, background_color, font, etc.)
+        """
+        # Garante que está enviando para status@broadcast
+        if len(cmdParams) < 2:
+            raise ValueError("sendStatus requer [to, text]")
+        
+        to = cmdParams[0]
+        text = cmdParams[1]
+        
+        # Normaliza para status@broadcast se necessário
+        if to != "status@broadcast" and not to.endswith("@broadcast"):
+            logger.warning(f"sendStatus: destinatário '{to}' não é status@broadcast, ajustando")
+            to = "status@broadcast"
+        
+        # Usa sendMsgDirect com as opções de status
+        return self.sendMsgDirect([to, text], options)
+
+    def sendStatusMedia(self, cmdParams, options):
+        """
+        Envia status de mídia (imagem/vídeo) para status@broadcast.
+        
+        Args:
+            cmdParams: [to, mediaType, filePath] - to deve ser "status@broadcast"
+            options: Opções adicionais (caption, etc.)
+        """
+        # Garante que está enviando para status@broadcast
+        if len(cmdParams) < 3:
+            raise ValueError("sendStatusMedia requer [to, mediaType, filePath]")
+        
+        to = cmdParams[0]
+        mediaType = cmdParams[1]
+        filePath = cmdParams[2]
+        
+        # Normaliza para status@broadcast se necessário
+        if to != "status@broadcast" and not to.endswith("@broadcast"):
+            logger.warning(f"sendStatusMedia: destinatário '{to}' não é status@broadcast, ajustando")
+            to = "status@broadcast"
+        
+        # Usa sendMediaMsgDirect
+        return self.sendMediaMsgDirect([to, mediaType, filePath], options)
         self._sendIq(entity, successFn, errorFn)
 
     def revokeMsg(self,cmdParams,options):
@@ -2529,13 +2640,44 @@ class SendLayer(YowInterfaceLayer):
         entity = GetSyncIqProtocolEntity(nums,mode = options["mode"])    
 
         def on_success(entity, original_iq_entity):  
-            logger.info("syncContacts success with %d contacts" % len(entity.inNumbers))          
+            logger.info("syncContacts success with %d contacts" % len(entity.inNumbers))
+            
+            # Salva todos os contatos válidos no banco de dados
+            saved_count = 0
+            try:
+                # Salva contatos de inNumbers (números que têm você nos contatos)
+                for number, jid in entity.inNumbers.items():
+                    try:
+                        saved_jid = self.db._store.addContact(jid)
+                        if saved_jid:
+                            saved_count += 1
+                            logger.debug(f"Contato {jid} (número {number}) salvo no banco via syncContacts")
+                    except Exception as e:
+                        logger.warning(f"Erro ao salvar contato {jid} (número {number}): {e}")
+                
+                # Salva contatos de outNumbers (números que você tem nos contatos)
+                for number, jid in entity.outNumbers.items():
+                    try:
+                        # Verifica se já não foi salvo em inNumbers
+                        if jid not in entity.inNumbers.values():
+                            saved_jid = self.db._store.addContact(jid)
+                            if saved_jid:
+                                saved_count += 1
+                                logger.debug(f"Contato {jid} (número {number}) salvo no banco via syncContacts")
+                    except Exception as e:
+                        logger.warning(f"Erro ao salvar contato {jid} (número {number}): {e}")
+                
+                if saved_count > 0:
+                    logger.info(f"syncContacts: {saved_count} contatos salvos no banco de dados")
+            except Exception as e:
+                logger.error(f"Erro ao salvar contatos no banco durante syncContacts: {e}", exc_info=True)
                         
             self.setCmdResult(entity.getId(),{
                 "count": len(entity.inNumbers),
                 "valid": entity.inNumbers,
                 "invalid": entity.outNumbers,
-                "jids": list(entity.inNumbers.values())
+                "jids": list(entity.inNumbers.values()),
+                "saved_count": saved_count
             })              
 
         def on_error(entity, original_iq):            

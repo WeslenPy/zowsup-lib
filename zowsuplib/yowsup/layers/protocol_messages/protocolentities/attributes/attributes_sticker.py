@@ -1,4 +1,11 @@
 import time
+import os
+import requests
+from pathlib import Path
+from zowsuplib.settings.conf import settings
+from .....common.tools import ImageTools
+from .....layers.protocol_messages.protocolentities.attributes.attributes_downloadablemedia import DownloadableMediaMessageAttributes
+
 class StickerAttributes(object):
     def __init__(self, downloadablemedia_attributes, width, height, png_thumbnail=None,is_animated=False,sticker_sent_ts=None,is_avatar=False,is_ai_sticker=False,is_lottie=False):
         self._downloadablemedia_attributes = downloadablemedia_attributes
@@ -109,6 +116,79 @@ class StickerAttributes(object):
 
     @sticker_sent_ts.setter
     def sticker_sent_ts(self, value):
-        self._sticker_sent_ts = value         
+        self._sticker_sent_ts = value
+
+    @staticmethod
+    def from_filepath(filepath, mediaType="sticker", resultRequestMediaConnIqProtocolEntity=None,
+                     dimensions=None, png_thumbnail=None, is_animated=False, is_avatar=False, 
+                     is_ai_sticker=False, is_lottie=False):
+        """
+        Cria StickerAttributes a partir de um arquivo local.
+        
+        Args:
+            filepath: Caminho do arquivo do sticker
+            mediaType: Tipo de mídia (padrão: "sticker")
+            resultRequestMediaConnIqProtocolEntity: Entidade de conexão de mídia
+            dimensions: Tupla (width, height) - se None, será detectado automaticamente
+            png_thumbnail: Thumbnail PNG (bytes) - se None, será gerado automaticamente
+            is_animated: Se o sticker é animado
+            is_avatar: Se é um sticker de avatar
+            is_ai_sticker: Se é um sticker gerado por IA
+            is_lottie: Se é um sticker Lottie
+        """
+        assert os.path.exists(filepath), f"Arquivo não encontrado: {filepath}"
+        
+        # Obtém dimensões se não fornecidas
+        if not dimensions:
+            dimensions = ImageTools.getImageDimensions(filepath)
+        
+        width, height = dimensions if dimensions else (512, 512)  # Default para stickers
+        
+        # Gera thumbnail PNG se não fornecido (sticker usa PNG, não JPEG)
+        if not png_thumbnail:
+            # Para stickers, podemos usar o mesmo método de preview mas converter para PNG
+            # Por enquanto, deixamos None e o WhatsApp pode gerar
+            png_thumbnail = None
+        
+        return StickerAttributes(
+            DownloadableMediaMessageAttributes.from_file(filepath, mediaType, resultRequestMediaConnIqProtocolEntity),
+            width, height, png_thumbnail, is_animated, None, is_avatar, is_ai_sticker, is_lottie
+        )
+
+    @staticmethod
+    def from_url(url, mediaType="sticker", resultRequestMediaConnIqProtocolEntity=None,
+                dimensions=None, png_thumbnail=None, is_animated=False, is_avatar=False,
+                is_ai_sticker=False, is_lottie=False):
+        """
+        Cria StickerAttributes a partir de uma URL.
+        
+        Args:
+            url: URL do sticker
+            mediaType: Tipo de mídia (padrão: "sticker")
+            resultRequestMediaConnIqProtocolEntity: Entidade de conexão de mídia
+            dimensions: Tupla (width, height) - se None, será detectado automaticamente
+            png_thumbnail: Thumbnail PNG (bytes) - se None, será gerado automaticamente
+            is_animated: Se o sticker é animado
+            is_avatar: Se é um sticker de avatar
+            is_ai_sticker: Se é um sticker gerado por IA
+            is_lottie: Se é um sticker Lottie
+        """
+        # Baixa o arquivo
+        down_res = requests.get(url=url)
+        filename = url[url.rfind("/") + 1:] if "/" in url else "sticker.webp"
+        if not filename or "." not in filename:
+            filename = "sticker.webp"
+        
+        download_dir = Path(settings.download_path)
+        filepath = str(download_dir / filename)
+        
+        with open(filepath, "wb") as file:
+            file.write(down_res.content)
+        
+        # Usa from_filepath para processar
+        return StickerAttributes.from_filepath(
+            filepath, mediaType, resultRequestMediaConnIqProtocolEntity,
+            dimensions, png_thumbnail, is_animated, is_avatar, is_ai_sticker, is_lottie
+        )
 
 

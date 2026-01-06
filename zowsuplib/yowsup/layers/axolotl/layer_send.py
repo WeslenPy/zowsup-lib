@@ -1,3 +1,4 @@
+from zowsuplib.yowsup.profile.profile import YowProfile
 from ...common import YowConstants
 from ...layers.axolotl.no_target_exception import NoTargetException
 from zowsuplib.proto.e2e_pb2 import Message
@@ -388,10 +389,17 @@ class AxolotlSendLayer(AxolotlBaseLayer):
             - request participants keys
             - send message with dist key only + conversation, only for this participat
         """
+
+
+        logger.debug(f"sendToGroup(node={node}, retryReceiptEntity={retryReceiptEntity})")
+
+
+
         retry_info = f"[retry_count={retryReceiptEntity.getRetryCount()}, retry_jid={retryReceiptEntity.getRetryJid()}]" if retryReceiptEntity is not None else "[None]"
         logger.debug(f"sendToGroup(node=[omitted], retryReceiptEntity={retry_info})")
 
         groupJid = node["to"]        
+        logger.debug(f"groupJid={groupJid}")
         ownJid = self.getLayerInterface(YowAuthenticationProtocolLayer).getUsername(True)
         senderKeyRecord = self.manager.load_senderkey(node["to"])
 
@@ -403,16 +411,27 @@ class AxolotlSendLayer(AxolotlBaseLayer):
 
             return self.ensureSessionsAndSendToGroup(node, jids)
 
-        if groupJid=="status@broadcast":            
-            q = "SELECT recipient_id from identities WHERE recipient_id <> -1"        
-            c = self._manager._store.identityKeyStore.dbConn.cursor()        
-            c.execute(q)
-            results = c.fetchall()
-            jids = []
-            for item in results:
-                if isinstance(item[0],int):
-                    jids.append(str(item[0])+"@s.whatsapp.net")            
-            self.ensureSessionsAndSendToGroup(node, jids)   
+        if groupJid=="status@broadcast":
+            # Para status@broadcast, obtém todos os contatos conhecidos
+
+            profile: YowProfile = self.getProp("profile")
+            logger.debug("Tentando obter identidades como fallback para status@broadcast")
+            identity_store = profile.axolotl_manager._store
+
+            logger.debug(f"identity_store: {identity_store}")
+            logger.info(f"profile: {profile}")
+        
+            jids = identity_store.getAllContact()
+
+            logger.debug(f"jids: {jids}")
+            
+            if jids:
+                logger.info(f"Enviando status para {len(jids)} contatos via status@broadcast")
+                self.ensureSessionsAndSendToGroup(node, jids)
+            else:
+                logger.warning("Nenhum contato encontrado para status@broadcast, enviando sem destinatários específicos")
+                # Envia mesmo assim - o WhatsApp pode lidar com isso (pode ser que não tenha contatos ainda)
+                self.ensureSessionsAndSendToGroup(node, [])   
 
         elif groupJid.endswith("@broadcast"):
             jids = self._manager._store.findParticipantsByBcid(groupJid)            

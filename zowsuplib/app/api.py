@@ -565,6 +565,8 @@ class ZowsupClient:
         handlers: Dict[str, Callable[[list, Dict[str, Any]], Any]] = {
             "msg.send": self.send_layer.sendMsg,
             "msg.sendmedia": self.send_layer.sendMediaMsg,
+            "status.send": self.send_layer.sendStatus,
+            "status.sendmedia": self.send_layer.sendStatusMedia,
             "group.create": self.send_layer.createGroup,
             "group.list": self.send_layer.listGroups,
             "group.add": self.send_layer.groupAdd,
@@ -716,6 +718,8 @@ class ZowsupClient:
             return 10
         if command_name in ("md.link", "mdlink"):
             return 60
+        if command_name in ("status.send", "status.sendmedia"):
+            return 30  # Timeout padrão para status
 
         return 120
 
@@ -1353,20 +1357,28 @@ class ZowsupClient:
         **options: Any,
     ) -> CommandResponse:
         """
-        Envia uma mensagem de mídia (imagem, vídeo, áudio ou documento).
+        Envia uma mensagem de mídia (imagem, vídeo, áudio, documento ou sticker).
 
-        - to: número de destino
-        - media_type: "image", "video", "audio" ou "document"
-        - file_path_or_url: caminho local ou URL do arquivo
-        - wait_for_id: se True, retorna o ID da mensagem
-        - wait_msg_id_timeout: timeout (segundos) para obter o ID
-        - caption: legenda opcional
-        - options: opções adicionais repassadas para a camada de envio
+        Args:
+            to: número de destino
+            media_type: "image", "video", "audio", "document" ou "sticker"
+            file_path_or_url: caminho local ou URL do arquivo
+            wait_for_id: se True, retorna o ID da mensagem
+            wait_msg_id_timeout: timeout (segundos) para obter o ID
+            caption: legenda opcional (não aplicável para stickers)
+            options: opções adicionais:
+                - Para stickers:
+                  - is_animated: bool - se o sticker é animado (padrão: False)
+                  - is_avatar: bool - se é um sticker de avatar (padrão: False)
+                  - is_ai_sticker: bool - se é um sticker gerado por IA (padrão: False)
+                  - is_lottie: bool - se é um sticker Lottie (padrão: False)
+                - Para documentos:
+                  - fileName: str - nome do arquivo
         """
         self._bind_sysvar_context()
 
-        if media_type not in ("image", "video", "audio", "document"):
-            raise ValueError("media_type deve ser um de: image, video, audio, document")
+        if media_type not in ("image", "video", "audio", "document", "sticker"):
+            raise ValueError("media_type deve ser um de: image, video, audio, document, sticker")
 
         opts = dict(options)
         if caption is not None:
@@ -1393,13 +1405,168 @@ class ZowsupClient:
         if cmd_id == "JUSTWAIT":
             logger.info(f"Command msg.sendmedia retornou JUSTWAIT, aguardando {wait_time} segundos")
             time.sleep(wait_time)
-            return CommandResponse()
+        
+        return CommandResponse()
 
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
-
-        return CommandResponse(data=result)
+    def send_status(
+        self,
+        text: Optional[str] = None,
+        media_type: Optional[str] = None,
+        file_path_or_url: Optional[str] = None,
+        *,
+        wait_for_id: bool = False,
+        wait_msg_id_timeout: Optional[int] = None,
+        text_color: Optional[int] = None,
+        background_color: Optional[int] = None,
+        font: Optional[int] = None,
+        **options: Any,
+    ) -> CommandResponse:
+        """
+        Envia um status (story) para o WhatsApp.
+        
+        Pode enviar status de texto (com cores e fonte) ou status de mídia (imagem/vídeo).
+        O status é enviado para status@broadcast, que é o destinatário padrão para status no WhatsApp.
+        
+        Args:
+            text: Texto do status (obrigatório se media_type não for fornecido)
+            media_type: Tipo de mídia ("image" ou "video") - obrigatório se text não for fornecido
+            file_path_or_url: Caminho local ou URL do arquivo de mídia (obrigatório se media_type for fornecido)
+            wait_for_id: Se True, retorna o ID da mensagem
+            wait_msg_id_timeout: Timeout (segundos) para obter o ID
+            text_color: Cor do texto em formato ARGB (ex: 0xFFFFFFFF para branco)
+            background_color: Cor de fundo em formato ARGB (ex: 0xFF000000 para preto)
+            font: Tipo de fonte (0=SANS_SERIF, 1=SERIF, 2=NORICAN_REGULAR, 3=BRYNDAN_WRITE, 4=BEBASNEUE_REGULAR, 5=OSWALD_HEAVY)
+            options: Opções adicionais:
+                - caption: Legenda para mídia
+                - preview_type: Tipo de preview (0=NONE, 1=VIDEO)
+                - invite_link_group_type_v2: Tipo de grupo para convites (0=DEFAULT)
+        
+        Returns:
+            CommandResponse com o resultado. Se wait_for_id=True, contém 'message_id'.
+        
+        Example:
+            # Status de texto simples
+            client.send_status("Meu status de texto")
+            
+            # Status de texto com cores e fonte
+            client.send_status(
+                "Status colorido",
+                text_color=0xFFFFFFFF,      # Texto branco
+                background_color=0xFF000000, # Fundo preto
+                font=2                      # Fonte NORICAN_REGULAR
+            )
+            
+            # Status de imagem
+            client.send_status(
+                media_type="image",
+                file_path_or_url="/path/to/image.jpg"
+            )
+            
+            # Status de vídeo
+            client.send_status(
+                media_type="video",
+                file_path_or_url="/path/to/video.mp4",
+                caption="Meu vídeo de status"
+            )
+        """
+        self._bind_sysvar_context()
+        
+        STATUS_BROADCAST = "status@broadcast"
+        
+        # Validação: deve ter texto OU mídia
+        if not text and not media_type:
+            raise ValueError("Deve fornecer 'text' ou 'media_type' com 'file_path_or_url'")
+        
+        if media_type and not file_path_or_url:
+            raise ValueError("'file_path_or_url' é obrigatório quando 'media_type' é fornecido")
+        
+        if media_type and media_type not in ("image", "video"):
+            raise ValueError("media_type deve ser 'image' ou 'video' para status")
+        
+        opts = dict(options)
+        
+        # Se for status de texto, adiciona opções de cor e fonte
+        if text:
+            if text_color is not None:
+                opts["text_color"] = text_color
+            if background_color is not None:
+                opts["background_color"] = background_color
+            if font is not None:
+                opts["font"] = font
+            opts["preview_type"] = opts.get("preview_type", 0)
+            opts["invite_link_group_type_v2"] = opts.get("invite_link_group_type_v2", 0)
+        
+        # Se for status de mídia, adiciona caption se fornecido
+        if media_type and "caption" in options:
+            opts["caption"] = options["caption"]
+        
+        if wait_for_id:
+            timeout = wait_msg_id_timeout or self._default_wait_time("status.send")
+            opts["waitMsgId"] = str(timeout)
+            opts["ctxId"] = str(uuid.uuid4())
+            
+            if text:
+                # Status de texto
+                if self.send_layer is not None:
+                    try:
+                        msg_id = self.send_layer.sendStatus([STATUS_BROADCAST, text], opts)
+                        if msg_id == "TIMEOUT":
+                            raise ZowsupError(-999, "Timeout ao aguardar ID do status")
+                        return CommandResponse(data={"message_id": msg_id})
+                    except Exception as e:
+                        logger.error(f"Erro ao enviar status via SendLayer direto: {e}")
+                
+                cmd_id, err = self._execute_command("status.send", [STATUS_BROADCAST, text], opts)
+            else:
+                # Status de mídia
+                if self.send_layer is not None:
+                    try:
+                        msg_id = self.send_layer.sendStatusMedia([STATUS_BROADCAST, media_type, file_path_or_url], opts)
+                        if msg_id == "TIMEOUT":
+                            raise ZowsupError(-999, "Timeout ao aguardar ID do status")
+                        return CommandResponse(data={"message_id": msg_id})
+                    except Exception as e:
+                        logger.error(f"Erro ao enviar status de mídia via SendLayer direto: {e}")
+                
+                cmd_id, err = self._execute_command("status.sendmedia", [STATUS_BROADCAST, media_type, file_path_or_url], opts)
+            
+            if err is not None:
+                raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+            
+            if cmd_id == "TIMEOUT":
+                raise ZowsupError(-999, "Timeout ao aguardar ID do status")
+            
+            return CommandResponse(data={"message_id": cmd_id})
+        
+        # Envio sem aguardar ID
+        if text:
+            if self.send_layer is not None:
+                try:
+                    self.send_layer.sendStatus([STATUS_BROADCAST, text], opts)
+                    return CommandResponse()
+                except Exception as e:
+                    logger.error(f"Erro ao enviar status via SendLayer direto: {e}")
+            
+            cmd_id, err = self._execute_command("status.send", [STATUS_BROADCAST, text], opts)
+        else:
+            if self.send_layer is not None:
+                try:
+                    self.send_layer.sendStatusMedia([STATUS_BROADCAST, media_type, file_path_or_url], opts)
+                    return CommandResponse()
+                except Exception as e:
+                    logger.error(f"Erro ao enviar status de mídia via SendLayer direto: {e}")
+            
+            cmd_id, err = self._execute_command("status.sendmedia", [STATUS_BROADCAST, media_type, file_path_or_url], opts)
+        
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        
+        wait_time = self._default_wait_time("status.send")
+        if cmd_id == "JUSTWAIT":
+            logger.info(f"Command status.send retornou JUSTWAIT, aguardando {wait_time} segundos")
+            time.sleep(wait_time)
+        
+        return CommandResponse()
 
     def create_group(self, subject: str, participants: list[str]=[]) -> CommandResponse:
         """
@@ -1543,11 +1710,11 @@ class ZowsupClient:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
 
-    def sync_contacts(self, numbers: str) -> CommandResponse:
+    def sync_contacts(self, numbers: list[str]) -> CommandResponse:
         """
         Sincroniza contatos informados (string de números separados por vírgula).
         """
-        cmd_id, err = self._execute_command("contact.sync", [numbers], {})
+        cmd_id, err = self._execute_command("contact.sync", [",".join(numbers)], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("contact.sync")

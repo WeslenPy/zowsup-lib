@@ -16,6 +16,7 @@ from zowsuplib.axolotl.invalidkeyidexception import InvalidKeyIdException
 from zowsuplib.axolotl.nosessionexception import NoSessionException
 from zowsuplib.axolotl.protocol.senderkeydistributionmessage import SenderKeyDistributionMessage
 from zowsuplib.axolotl.state.axolotlstore import AxolotlStore
+from zowsuplib.yowsup.axolotl.store.sqlaxolotlstore import SqlAxolotlStore
 from ..axolotl.store.sqlite.liteaxolotlstore import LiteAxolotlStore
 from ..axolotl import exceptions
 import random
@@ -40,7 +41,7 @@ class AxolotlManager(object):
         :type username: str
         """
         self._username = username # type: str
-        self._store = store # type: LiteAxolotlStore
+        self._store:SqlAxolotlStore = store # type: LiteAxolotlStore
         self._identity = self._store.getIdentityKeyPair() # type: IdentityKeyPair
         self._registration_id = self._store.getLocalRegistrationId() # type: int | None
 
