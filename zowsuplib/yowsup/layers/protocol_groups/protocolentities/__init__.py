@@ -6,6 +6,7 @@ from .iq_groups_leave_success import SuccessLeaveGroupsIqProtocolEntity
 from .iq_groups_list        import ListGroupsIqProtocolEntity
 from .iq_groups_info        import InfoGroupsIqProtocolEntity
 from .iq_groups_subject     import SubjectGroupsIqProtocolEntity
+from .iq_groups_description import DescriptionGroupsIqProtocolEntity
 from .iq_groups_participants import ParticipantsGroupsIqProtocolEntity
 from .iq_groups_participants_add import AddParticipantsIqProtocolEntity
 from .iq_groups_participants_promote import PromoteParticipantsIqProtocolEntity

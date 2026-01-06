@@ -587,6 +587,7 @@ class ZowsupClient:
             "group.getinvite": self.send_layer.getGroupInvite,
             "group.join": self.send_layer.joinGroupWithCode,
             "group.setsubject": self.send_layer.setGroupSubject,
+            "group.setdescription": self.send_layer.setGroupDescription,
             "group.setsettings": self.send_layer.setGroupSettings,
             "group.remove": self.send_layer.groupRemove,
             "group.promote": self.send_layer.groupPromote,
@@ -758,7 +759,7 @@ class ZowsupClient:
         if command_name in ("status.send", "status.sendmedia"):
             return 30  # Timeout padrão para status
         if command_name in ("group.create", "group.add", "group.list", "group.info", 
-                           "group.getinvite", "group.join", "group.setsubject", 
+                           "group.getinvite", "group.join", "group.setsubject", "group.setdescription",
                            "group.setsettings", "group.remove", "group.promote", "group.demote", 
                            "group.leave", "group.seticon"):
             return 30
@@ -1777,6 +1778,67 @@ class ZowsupClient:
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("group.setsubject")
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def set_group_description(
+        self, 
+        group_id: str, 
+        description: str, 
+        previous_id: Optional[str] = None,
+        new_id: Optional[str] = None
+    ) -> CommandResponse:
+        """
+        Define a descrição do grupo (seguindo padrão whatsmeow).
+        
+        Args:
+            group_id: ID do grupo (pode ser apenas o ID ou JID completo)
+            description: Nova descrição do grupo (string vazia para deletar)
+            previous_id: ID da descrição anterior (opcional, será obtido automaticamente se None)
+            new_id: Novo ID para a descrição (opcional, será gerado automaticamente se None)
+        
+        Returns:
+            CommandResponse com status e description
+        
+        Example:
+            # Definir descrição
+            client.set_group_description("120363403793561395@g.us", "Esta é a descrição do grupo")
+            
+            # Deletar descrição
+            client.set_group_description("120363403793561395@g.us", "")
+            
+            # Com IDs explícitos
+            client.set_group_description(
+                "120363403793561395@g.us", 
+                "Nova descrição",
+                previous_id="ABC123",
+                new_id="XYZ789"
+            )
+        """
+        logger.debug(f"{self._log_prefix} set_group_description(group_id={group_id}, description={description}, previous_id={previous_id}, new_id={new_id})")
+        
+        # Se previous_id não foi fornecido, tenta obter das informações do grupo
+        if previous_id is None:
+            try:
+                group_info = self.get_group_info(group_id)
+                # Nota: O WhatsApp pode retornar topic_id nas informações do grupo
+                # Por enquanto, deixamos None e o método na SendLayer pode tentar obter
+                previous_id = group_info.data.get("topic_id") if group_info.data else None
+            except Exception as e:
+                logger.debug(f"Could not get previous topic ID from group info: {e}")
+        
+        options = {}
+        if previous_id:
+            options["previous_id"] = previous_id
+        if new_id:
+            options["new_id"] = new_id
+        
+        cmd_id, err = self._execute_command("group.setdescription", [group_id, description], options)
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("group.setdescription")
         result, err2 = self._get_cmd_result(cmd_id, wait_time)
         if err2 is not None:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))

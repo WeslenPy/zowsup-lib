@@ -7,6 +7,23 @@ from zowsuplib.yowsup.common import YowConstants
 from zowsuplib.yowsup.layers import EventCallback, YowLayerEvent
 from zowsuplib.yowsup.layers.noise.layer import YowNoiseLayer
 
+
+#import group iq
+from zowsuplib.yowsup.layers.protocol_groups.protocolentities.iq_groups_subject import SubjectGroupsIqProtocolEntity
+from zowsuplib.yowsup.layers.protocol_groups.protocolentities.iq_groups_create import CreateGroupsIqProtocolEntity
+from zowsuplib.yowsup.layers.protocol_groups.protocolentities.iq_groups_info import InfoGroupsIqProtocolEntity
+from zowsuplib.yowsup.layers.protocol_groups.protocolentities.iq_groups_leave import LeaveGroupsIqProtocolEntity
+from zowsuplib.yowsup.layers.protocol_groups.protocolentities.iq_groups_list import ListGroupsIqProtocolEntity
+from zowsuplib.yowsup.layers.protocol_groups.protocolentities.iq_groups_participants import ParticipantsGroupsIqProtocolEntity
+from zowsuplib.yowsup.layers.protocol_groups.protocolentities.iq_groups_participants_add import AddParticipantsIqProtocolEntity
+from zowsuplib.yowsup.layers.protocol_groups.protocolentities.iq_groups_participants_promote import PromoteParticipantsIqProtocolEntity
+from zowsuplib.yowsup.layers.protocol_groups.protocolentities.iq_groups_participants_demote import DemoteParticipantsIqProtocolEntity
+from zowsuplib.yowsup.layers.protocol_groups.protocolentities.iq_groups_participants_remove import RemoveParticipantsIqProtocolEntity
+from zowsuplib.yowsup.layers.protocol_groups.protocolentities.iq_groups_participants_add_success import SuccessAddParticipantsIqProtocolEntity
+from zowsuplib.yowsup.layers.protocol_groups.protocolentities.iq_groups_participants_add_failure import FailureAddParticipantsIqProtocolEntity
+from zowsuplib.yowsup.layers.protocol_groups.protocolentities.iq_groups_participants_remove_success import SuccessRemoveParticipantsIqProtocolEntity
+
+
 # Constante para detecção de erros de handshake
 HANDSHAKE_FAILED_EVENT = YowNoiseLayer.EVENT_HANDSHAKE_FAILED
 from zowsuplib.yowsup.layers.axolotl.protocolentities.iq_keys_get_result import ResultGetKeysIqProtocolEntity
@@ -3012,6 +3029,49 @@ class SendLayer(YowInterfaceLayer):
         group_jid = Jid.normalize(cmdParams[0])
         subject = cmdParams[1]
         entity = SubjectGroupsIqProtocolEntity(group_jid, subject)
+        self._sendIq(entity, on_success, on_error)
+        return entity.getId()
+    
+    def setGroupDescription(self, cmdParams, options):
+        """Define a descrição do grupo (seguindo padrão whatsmeow)"""
+        group_jid = Jid.normalize(cmdParams[0])
+        description = cmdParams[1] if len(cmdParams) > 1 else ""
+        
+        # Obtém previous_id e new_id das opções ou gera/obtém automaticamente
+        previous_id = options.get("previous_id") or options.get("prev_id")
+        new_id = options.get("new_id")
+        
+        # Se previous_id não foi fornecido, tenta obter das informações do grupo
+        if not previous_id:
+            try:
+                # Busca informações do grupo para obter o topic_id atual
+                # Nota: Isso requer uma chamada síncrona, então vamos fazer de forma assíncrona
+                # Por enquanto, deixamos None e o WhatsApp pode lidar com isso
+                pass
+            except Exception as e:
+                logger.warning(f"Could not get previous topic ID: {e}")
+        
+        # Se new_id não foi fornecido, gera um novo ID de mensagem
+        if not new_id:
+            # Gera um ID no formato do WhatsApp (32 caracteres hexadecimais)
+            import random
+            import string
+            new_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=32))
+        
+        def on_success(entity, original_iq_entity):
+            logger.info("setGroupDescription success")
+            self.setCmdResult(entity.getId(), {"status": "ok", "description": description})
+        
+        def on_error(entity, original_iq):
+            logger.error("setGroupDescription error")
+            self.setCmdError(entity.getId(), entity.code)
+        
+        entity = DescriptionGroupsIqProtocolEntity(
+            group_jid, 
+            description, 
+            new_id=new_id, 
+            previous_id=previous_id
+        )
         self._sendIq(entity, on_success, on_error)
         return entity.getId()
     
