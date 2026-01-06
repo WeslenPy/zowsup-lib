@@ -568,7 +568,6 @@ class SendLayer(YowInterfaceLayer):
         # Durante login, simplesmente ignora AccountSync (será processado depois naturalmente)
         logger.debug("AccountSync adiado durante login será processado após login completar")
         # Não faz nada - a notificação será processada naturalmente quando chegar novamente
-        return
 
         if isinstance(entity, LinkCodeCompanionRegNotificationProtocolEntity):
             logger.info(f"Notification: Received a LinkCodeCompanionReg, stage={entity.stage}")
