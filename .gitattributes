@@ -1,0 +1,3 @@
+*.proto  binary
+*.argo   binary
+*.bin    binary

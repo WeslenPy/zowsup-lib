@@ -72,9 +72,14 @@ include = ["*"]
 namespaces = true
 
 [tool.setuptools.package-data]
-"proto" = ["*.proto"]
-"consonance" = ["proto/*.proto", "config/templates/*.json"]
-"zowsuplib" = ["data/*", "data/**/*"]
+"zowsuplib" = [
+    "data/*.argo",
+    "data/*.json",
+    "data/*",
+    "proto/*.proto",
+    "consonance/proto/*.proto",
+    "consonance/config/templates/*.json"
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
