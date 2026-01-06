@@ -178,6 +178,9 @@ class DownloadableMediaMessageAttributes(MediaAttributes):
         mimetype = MimeTools.getMIME(filepath) 
         file_length = os.path.getsize(filepath)
 
+        if "audio" in mimetype:
+            mimetype = "audio/ogg; codecs=opus"
+
         with open(filepath, 'rb') as f:
             data = f.read()
 
