@@ -49,4 +49,15 @@ class AudioDownloadableMediaMessageProtocolEntity(DownloadableMediaMessageProtoc
     def streaming_sidecar(self, value):
         self.media_specific_attributes.streaming_sidecar = value
 
+    @property
+    def waveform(self):
+        return self.media_specific_attributes.waveform
+
+    @waveform.setter
+    def waveform(self, value):
+        """
+        :type value: bytes
+        """
+        self.media_specific_attributes.waveform = value
+
 

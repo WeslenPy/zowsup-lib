@@ -1232,7 +1232,9 @@ class SendLayer(YowInterfaceLayer):
                 msg.type = wsend_pb2.Message.Type.Value("AUDIO") 
                 self.parseMediaCommonAttributes(msg.audio_message,messageProtocolEntity.downloadablemedia_specific_attributes)
                 msg.audio_message.seconds= messageProtocolEntity.seconds
-                msg.audio_message.ptt = messageProtocolEntity.ptt                                                                
+                msg.audio_message.ptt = messageProtocolEntity.ptt
+                if messageProtocolEntity.waveform is not None:
+                    msg.audio_message.waveform = messageProtocolEntity.waveform                                                                
 
                 self.messageCallback(msg)     
 

@@ -414,14 +414,28 @@ class AttributesConverter(object):
             m.seconds = audio_attributes.seconds
         if audio_attributes.ptt is not None:
             m.ptt = audio_attributes.ptt
+        if audio_attributes.waveform is not None:
+            m.waveform = audio_attributes.waveform
+        if audio_attributes.streaming_sidecar is not None:
+            m.streaming_sidecar = audio_attributes.streaming_sidecar
 
         return self.downloadablemedia_to_proto(audio_attributes.downloadablemedia_attributes, m)
 
     def proto_to_audio(self, proto):
+        waveform = None
+        if proto.HasField("waveform"):
+            waveform = proto.waveform
+        
+        streaming_sidecar = None
+        if proto.HasField("streaming_sidecar"):
+            streaming_sidecar = proto.streaming_sidecar
+        
         return AudioAttributes(
             self.proto_to_downloadablemedia(proto),
             proto.seconds,
-            proto.ptt
+            proto.ptt,
+            streaming_sidecar,
+            waveform
         )
 
     def video_to_proto(self, video_attributes):

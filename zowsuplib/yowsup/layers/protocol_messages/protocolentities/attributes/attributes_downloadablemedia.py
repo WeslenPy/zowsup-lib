@@ -9,6 +9,7 @@ from .....layers.protocol_messages.mediacipher import MediaCipher
 from .....common.tools import WATools
 import requests
 import base64
+from loguru import logger
 
 
 class DownloadableMediaMessageAttributes(MediaAttributes):
@@ -177,6 +178,14 @@ class DownloadableMediaMessageAttributes(MediaAttributes):
 
         mimetype = MimeTools.getMIME(filepath) 
         file_length = os.path.getsize(filepath)
+        
+        logger.info(f"from_file mimetype: {mimetype}")
+
+        if "audio" in mimetype:
+            mimetype = "audio/ogg; codecs=opus"
+
+
+        logger.info(f"from_file mimetype: {mimetype}")
 
         with open(filepath, 'rb') as f:
             data = f.read()
@@ -185,6 +194,7 @@ class DownloadableMediaMessageAttributes(MediaAttributes):
         res =  DownloadableMediaMessageAttributes.from_buffer(data,mediaType,resultRequestMediaConnIqProtocolEntity,context_info)
 
         res.mimetype = mimetype
+
         res.file_length = file_length
 
         return res
