@@ -586,6 +586,12 @@ class ZowsupClient:
             "group.info": self.send_layer.groupInfo,
             "group.getinvite": self.send_layer.getGroupInvite,
             "group.join": self.send_layer.joinGroupWithCode,
+            "group.setsubject": self.send_layer.setGroupSubject,
+            "group.setsettings": self.send_layer.setGroupSettings,
+            "group.remove": self.send_layer.groupRemove,
+            "group.promote": self.send_layer.groupPromote,
+            "group.demote": self.send_layer.groupDemote,
+            "group.leave": self.send_layer.leaveGroup,
             "contact.sync": self.send_layer.syncContacts,
             "account.init": self._command_account_init,
             "integrity.check": self.send_layer.integrityCheck,
@@ -750,7 +756,10 @@ class ZowsupClient:
             return 60
         if command_name in ("status.send", "status.sendmedia"):
             return 30  # Timeout padrão para status
-
+        if command_name in ("group.create", "group.add", "group.list", "group.info", 
+                           "group.getinvite", "group.join", "group.setsubject", 
+                           "group.setsettings", "group.remove", "group.promote", "group.demote", "group.leave"):
+            return 30
         if command_name in ("login",):
             return 120
 
@@ -1725,6 +1734,161 @@ class ZowsupClient:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("group.add")
         # Aguarda resultado via evento (orientado a eventos)
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def get_group_info(self, group_id: str) -> CommandResponse:
+        """
+        Obtém informações de um grupo.
+        
+        Args:
+            group_id: ID do grupo (pode ser apenas o ID ou JID completo)
+        
+        Returns:
+            CommandResponse com groupId, subject, participants
+        """
+        logger.debug(f"{self._log_prefix} get_group_info(group_id={group_id})")
+        cmd_id, err = self._execute_command("group.info", [group_id], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("group.info")
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def set_group_subject(self, group_id: str, subject: str) -> CommandResponse:
+        """
+        Define o assunto/nome do grupo.
+        
+        Args:
+            group_id: ID do grupo (pode ser apenas o ID ou JID completo)
+            subject: Novo nome/assunto do grupo
+        
+        Returns:
+            CommandResponse com status e subject
+        """
+        logger.debug(f"{self._log_prefix} set_group_subject(group_id={group_id}, subject={subject})")
+        cmd_id, err = self._execute_command("group.setsubject", [group_id, subject], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("group.setsubject")
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def set_group_settings(self, group_id: str, action: str, value: Optional[str] = None) -> CommandResponse:
+        """
+        Define configurações do grupo.
+        
+        Args:
+            group_id: ID do grupo (pode ser apenas o ID ou JID completo)
+            action: Ação a executar. Valores possíveis:
+                - "locked": Apenas administradores podem alterar informações
+                - "unlocked": Todos podem alterar informações
+                - "announcement": Apenas administradores podem enviar mensagens
+                - "not_announcement": Todos podem enviar mensagens
+                - "member_add_mode": Define quem pode adicionar membros (valor necessário)
+                - "membership_approval_mode": Define modo de aprovação de membros (valor necessário)
+            value: Valor opcional para algumas ações (ex: "member_add_mode", "membership_approval_mode")
+        
+        Returns:
+            CommandResponse com status
+        """
+        logger.debug(f"{self._log_prefix} set_group_settings(group_id={group_id}, action={action}, value={value})")
+        params = [group_id, action]
+        if value is not None:
+            params.append(value)
+        cmd_id, err = self._execute_command("group.setsettings", params, {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("group.setsettings")
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def group_remove(self, group_id: str, participant_phones: str) -> CommandResponse:
+        """
+        Remove participantes de um grupo.
+        
+        Args:
+            group_id: ID do grupo (pode ser apenas o ID ou JID completo)
+            participant_phones: String com phones separados por vírgula (ex: "5511999999999,5511888888888")
+        
+        Returns:
+            CommandResponse com successCount, successJids, errorCount, errorJids
+        """
+        logger.debug(f"{self._log_prefix} group_remove(group_id={group_id}, participants={participant_phones})")
+        cmd_id, err = self._execute_command("group.remove", [group_id, participant_phones], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("group.remove")
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def group_promote(self, group_id: str, participant_phones: str) -> CommandResponse:
+        """
+        Promove participantes a administradores do grupo.
+        
+        Args:
+            group_id: ID do grupo (pode ser apenas o ID ou JID completo)
+            participant_phones: String com phones separados por vírgula (ex: "5511999999999,5511888888888")
+        
+        Returns:
+            CommandResponse com status
+        """
+        logger.debug(f"{self._log_prefix} group_promote(group_id={group_id}, participants={participant_phones})")
+        cmd_id, err = self._execute_command("group.promote", [group_id, participant_phones], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("group.promote")
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def group_demote(self, group_id: str, participant_phones: str) -> CommandResponse:
+        """
+        Remove privilégios de administrador de participantes do grupo.
+        
+        Args:
+            group_id: ID do grupo (pode ser apenas o ID ou JID completo)
+            participant_phones: String com phones separados por vírgula (ex: "5511999999999,5511888888888")
+        
+        Returns:
+            CommandResponse com status
+        """
+        logger.debug(f"{self._log_prefix} group_demote(group_id={group_id}, participants={participant_phones})")
+        cmd_id, err = self._execute_command("group.demote", [group_id, participant_phones], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("group.demote")
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def group_leave(self, group_id: str) -> CommandResponse:
+        """
+        Sai de um grupo.
+        
+        Args:
+            group_id: ID do grupo (pode ser apenas o ID ou JID completo)
+        
+        Returns:
+            CommandResponse com status
+        """
+        logger.debug(f"{self._log_prefix} group_leave(group_id={group_id})")
+        cmd_id, err = self._execute_command("group.leave", [group_id], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("group.leave")
         result, err2 = self._get_cmd_result(cmd_id, wait_time)
         if err2 is not None:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))

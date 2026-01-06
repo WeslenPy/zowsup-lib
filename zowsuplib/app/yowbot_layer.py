@@ -2921,14 +2921,6 @@ class SendLayer(YowInterfaceLayer):
         self._sendIq(entity,on_success,on_error)
         return entity.getId()
     
-    def groupPromote(self,cmdParams,options):
-        entity = PromoteParticipantsIqProtocolEntity(
-            group_jid = Jid.normalize(cmdParams[0]),
-            participantList=Jid.normalize(cmdParams[1]).split(",")            
-        )
-        self.toLower(entity)
-        return entity.getId()
-    
     def checkDevice(self,cmdParams,options):
         def on_success(entity, original_iq_entity):  
             logger.info("checkDevice success")            
@@ -2941,21 +2933,6 @@ class SendLayer(YowInterfaceLayer):
         return entity.getId()
 
 
-    def groupDemote(self,cmdParams,options):
-        entity = DemoteParticipantsIqProtocolEntity(
-            group_jid = Jid.normalize(cmdParams[0]),
-            participantList=Jid.normalize(cmdParams[1]).split(",")            
-        )
-        self.toLower(entity)
-        return entity.getId()
-
-    def groupRemove(self,cmdParams,options):
-        entity = RemoveParticipantsIqProtocolEntity(
-            group_jid = Jid.normalize(cmdParams[0]),
-            participantList=Jid.normalize(cmdParams[1]).split(",")            
-        )
-        self.toLower(entity)
-        return entity.getId()
 
     def groupApprove(self,cmdParams,options):
         if len(cmdParams)>=3:
@@ -2993,6 +2970,95 @@ class SendLayer(YowInterfaceLayer):
 
         groupJid = cmdParams[0]        
         entity = LeaveGroupsIqProtocolEntity([Jid.normalize(groupJid)])
+        self._sendIq(entity, on_success, on_error)
+        return entity.getId()
+    
+    def setGroupSubject(self, cmdParams, options):
+        """Define o assunto/nome do grupo"""
+        def on_success(entity, original_iq_entity):
+            logger.info("setGroupSubject success")
+            self.setCmdResult(entity.getId(), {"status": "ok", "subject": cmdParams[1]})
+        
+        def on_error(entity, original_iq):
+            logger.error("setGroupSubject error")
+            self.setCmdError(entity.getId(), entity.code)
+        
+        group_jid = Jid.normalize(cmdParams[0])
+        subject = cmdParams[1]
+        entity = SubjectGroupsIqProtocolEntity(group_jid, subject)
+        self._sendIq(entity, on_success, on_error)
+        return entity.getId()
+    
+    def setGroupSettings(self, cmdParams, options):
+        """Define configurações do grupo (locked/unlocked, announcement, etc.)"""
+        def on_success(entity, original_iq_entity):
+            logger.info("setGroupSettings success")
+            self.setCmdResult(entity.getId(), {"status": "ok"})
+        
+        def on_error(entity, original_iq):
+            logger.error("setGroupSettings error")
+            self.setCmdError(entity.getId(), entity.code)
+        
+        group_jid = Jid.normalize(cmdParams[0])
+        action = cmdParams[1]  # "locked", "unlocked", "announcement", "not_announcement", etc.
+        value = cmdParams[2] if len(cmdParams) > 2 else None
+        entity = SetGroupsIqProtocolEntity(group_jid, action, value)
+        self._sendIq(entity, on_success, on_error)
+        return entity.getId()
+    
+    def groupRemove(self, cmdParams, options):
+        """Remove participantes do grupo"""
+        def on_success(entity, original_iq_entity):
+            logger.info("groupRemove success")
+            self.setCmdResult(entity.getId(), {
+                "successCount": len(entity.successList) if hasattr(entity, 'successList') else 0,
+                "successJids": entity.successList if hasattr(entity, 'successList') else [],
+                "errorCount": len(entity.errorList) if hasattr(entity, 'errorList') else 0,
+                "errorJids": entity.errorList if hasattr(entity, 'errorList') else []
+            })
+        
+        def on_error(entity, original_iq):
+            logger.error("groupRemove error")
+            self.setCmdError(entity.getId(), entity.code)
+        
+        entity = RemoveParticipantsIqProtocolEntity(
+            group_jid=Jid.normalize(cmdParams[0]),
+            participantList=Jid.normalize(cmdParams[1]).split(",")
+        )
+        self._sendIq(entity, on_success, on_error)
+        return entity.getId()
+    
+    def groupPromote(self, cmdParams, options):
+        """Promove participantes a administradores"""
+        def on_success(entity, original_iq_entity):
+            logger.info("groupPromote success")
+            self.setCmdResult(entity.getId(), {"status": "ok"})
+        
+        def on_error(entity, original_iq):
+            logger.error("groupPromote error")
+            self.setCmdError(entity.getId(), entity.code)
+        
+        entity = PromoteParticipantsIqProtocolEntity(
+            group_jid=Jid.normalize(cmdParams[0]),
+            participantList=Jid.normalize(cmdParams[1]).split(",")
+        )
+        self._sendIq(entity, on_success, on_error)
+        return entity.getId()
+    
+    def groupDemote(self, cmdParams, options):
+        """Remove privilégios de administrador de participantes"""
+        def on_success(entity, original_iq_entity):
+            logger.info("groupDemote success")
+            self.setCmdResult(entity.getId(), {"status": "ok"})
+        
+        def on_error(entity, original_iq):
+            logger.error("groupDemote error")
+            self.setCmdError(entity.getId(), entity.code)
+        
+        entity = DemoteParticipantsIqProtocolEntity(
+            group_jid=Jid.normalize(cmdParams[0]),
+            participantList=Jid.normalize(cmdParams[1]).split(",")
+        )
         self._sendIq(entity, on_success, on_error)
         return entity.getId()
     

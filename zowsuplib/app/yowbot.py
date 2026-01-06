@@ -454,6 +454,14 @@ class YowBot:
     @BotCmd("group.info","show group information")
     def groupInfo(self,params,options):
         return self.sendLayer.groupInfo(params,options)
+    
+    @BotCmd("group.setsubject","set group subject/name")
+    def setGroupSubject(self,params,options):
+        return self.sendLayer.setGroupSubject(params,options)
+    
+    @BotCmd("group.setsettings","set group settings (locked/unlocked, announcement, etc.)")
+    def setGroupSettings(self,params,options):
+        return self.sendLayer.setGroupSettings(params,options)
 
     @BotCmd("group.list","list all groups")
     def listGroups(self,params,options):
