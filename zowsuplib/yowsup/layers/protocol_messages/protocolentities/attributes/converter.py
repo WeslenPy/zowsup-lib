@@ -507,7 +507,7 @@ class AttributesConverter(object):
         if sticker_attributes.is_lottie is not None:
             m.is_lottie = sticker_attributes.is_lottie
         if sticker_attributes.sticker_sent_ts is not None:
-            m.sticker_sent_ts = sticker_attributes.sticker_sent_ts        
+            m.sticker_sent_ts = int(sticker_attributes.sticker_sent_ts)        
 
         return self.downloadablemedia_to_proto(sticker_attributes.downloadablemedia_attributes, m)
 

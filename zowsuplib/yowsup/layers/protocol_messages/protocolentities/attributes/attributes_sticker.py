@@ -13,7 +13,7 @@ class StickerAttributes(object):
         self._height = height
         self._png_thumbnail = png_thumbnail
         self._is_animated = is_animated
-        self._sticker_sent_ts =  sticker_sent_ts if sticker_sent_ts is not None else time.time() * 1000 # in milliseconds
+        self._sticker_sent_ts =  int(sticker_sent_ts) if sticker_sent_ts is not None else int(time.time() * 1000) # in milliseconds
         self._is_avatar =  is_avatar
         self._is_ai_sticker = is_ai_sticker
         self._is_lottie = is_lottie

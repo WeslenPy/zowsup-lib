@@ -23,7 +23,7 @@ class MediaMessageProtocolEntity(ProtomessageProtocolEntity):
     TYPE_MEDIA_LIST = "list"
     TYPE_MEDIA_LIST_RESPONSE = "list_response"
     TYPE_PRODUCT = "product"
-    TYPE_MEDIA_STICKER = "1p_sticker"
+    TYPE_MEDIA_STICKER_1P = "1p_sticker"
     TYPE_MEDIA_AVATAR_STICKER = "avatar_sticker"
 
     TYPES_MEDIA = (
@@ -31,7 +31,7 @@ class MediaMessageProtocolEntity(ProtomessageProtocolEntity):
         TYPE_MEDIA_CONTACT, TYPE_MEDIA_LOCATION, TYPE_MEDIA_DOCUMENT,
         TYPE_MEDIA_GIF, TYPE_MEDIA_PTT, TYPE_MEDIA_URL, TYPE_MEDIA_STICKER,
         TYPE_MEDIA_BUTTONS_RESPONSE,TYPE_MEDIA_LIST,TYPE_MEDIA_LIST_RESPONSE,
-        TYPE_PRODUCT,TYPE_MEDIA_STICKER,TYPE_MEDIA_AVATAR_STICKER
+        TYPE_PRODUCT,TYPE_MEDIA_STICKER,TYPE_MEDIA_AVATAR_STICKER,TYPE_MEDIA_STICKER_1P
     )
 
     def __init__(self, media_type, message_attrs, message_meta_attrs):
