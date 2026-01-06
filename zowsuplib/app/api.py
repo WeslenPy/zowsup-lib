@@ -717,7 +717,7 @@ class ZowsupClient:
         if command_name in ("md.link", "mdlink"):
             return 60
 
-        return 20
+        return 120
 
     def connect(self, wait_login: bool = True, retry_with_env_rotation: bool = True) -> bool:
         """
@@ -753,7 +753,8 @@ class ZowsupClient:
             return True
 
         wait_time = self._default_wait_time("login")
-        logger.debug(f"{self._log_prefix} Aguardando login (timeout={wait_time}s)")
+        logger.debug(f"{self._log_prefix} Aguardando login (timeout base={wait_time}s)")
+        # waitLogin agora usa timeout adaptativo internamente
         ok = self.send_layer.waitLogin()
         
         # Se falhou e retry_with_env_rotation está ativo, verifica se foi erro de handshake

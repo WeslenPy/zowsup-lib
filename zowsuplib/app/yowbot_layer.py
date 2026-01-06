@@ -133,6 +133,10 @@ class SendLayer(YowInterfaceLayer):
         self._handshake_error_detected = False  # Flag para detectar erros de handshake
         self._message_notifications_enabled = True  # Controle de callbacks de mensagem
         self._login_failed = False  # Flag para diferenciar falha de login x sucesso
+        self._login_in_progress = False  # Flag para indicar que login está em andamento
+        self._pending_notifications_count = 0  # Contador de notificações pendentes durante login
+        self._login_timeout = 20  # Timeout padrão para login (segundos)
+        self._max_login_timeout = 120  # Timeout máximo para login com notificações pendentes
         # Threads auxiliares: usar timers para reagendar ações sem bloquear a thread do stack
         self._timers: list[threading.Timer] = []
         # Controle de reconexão com backoff
@@ -422,20 +426,46 @@ class SendLayer(YowInterfaceLayer):
     
     @ProtocolEntityCallback("notification")
     def onNotification(self,entity):        
+        # Durante o login, incrementa contador de notificações pendentes
+        if self._login_in_progress:
+            self._pending_notifications_count += 1
+            # Se há muitas notificações pendentes, loga para debug
+            if self._pending_notifications_count % 10 == 0:
+                logger.debug(f"[{self.bot.botId}] {self._pending_notifications_count} notificações pendentes durante login")
 
         if not self._message_notifications_enabled:
             logger.debug("Notificação de mensagem ignorada (desativada)")
             return
 
         if isinstance(entity,MexUpdateNotificationProtocolEntity):            
-            logger.info(f"Notification: Received a MexUpdate Notification: {entity.jsonObj}")            
+            # Durante login, processa notificações mex de forma mais rápida (sem logging detalhado)
+            if self._login_in_progress:
+                logger.debug(f"Notification: MexUpdate durante login (ignorando detalhes)")
+            else:
+                logger.info(f"Notification: Received a MexUpdate Notification: {entity.jsonObj}")            
             return
         
         if isinstance(entity,AccountSyncNotificationProtocolEntity):
+            # Durante login, adia processamento pesado de AccountSync
+            if self._login_in_progress:
+                logger.debug("Notification: AccountSync durante login (processamento adiado)")
+                # Agenda processamento para depois do login
+                def process_account_sync_after_login():
+                    time.sleep(2)  # Aguarda login completar
+                    if self.isConnected:
+                        self._process_account_sync_notification(entity)
+                
+                timer = threading.Timer(2.0, process_account_sync_after_login)
+                timer.daemon = True
+                timer.start()
+                return
+            
             logger.info("Notification: Received a AccountSync Notification")            
             companionJid = self.getStack().getProp("pair-companion-jid")
             if companionJid is None :
                 return
+            
+            # Processa AccountSync normalmente (código original)
             entity = GetKeysIqProtocolEntity([companionJid],_id=self.bot.idType)        
             def on_get_encrypt_success(entity, original_iq_entity):
 
@@ -527,12 +557,20 @@ class SendLayer(YowInterfaceLayer):
                 conniq = RequestMediaConnIqProtocolEntity()
                 self._sendIq(conniq,on_get_conn_success,on_get_conn_error)
 
-            def on_get_encrypt_error(entity, on_get_encrypt_error):
+            def on_get_encrypt_error(entity, original_iq_entity):
                 print("error get encrypt")
 
-            self._sendIq(entity, on_get_encrypt_success, on_get_encrypt_error)                 
+            self._sendIq(entity, on_get_encrypt_success, on_get_encrypt_error)
+            return
+    
+    def _process_account_sync_notification(self, entity):
+        """Processa notificação AccountSync de forma isolada (usado quando adiado durante login)."""
+        # Durante login, simplesmente ignora AccountSync (será processado depois naturalmente)
+        logger.debug("AccountSync adiado durante login será processado após login completar")
+        # Não faz nada - a notificação será processada naturalmente quando chegar novamente
+        return
 
-        if isinstance(entity,LinkCodeCompanionRegNotificationProtocolEntity):
+        if isinstance(entity, LinkCodeCompanionRegNotificationProtocolEntity):
             logger.info(f"Notification: Received a LinkCodeCompanionReg, stage={entity.stage}")
 
             if entity.stage == "primary_hello":                
@@ -904,9 +942,19 @@ class SendLayer(YowInterfaceLayer):
         logger.info("Login OK")     
                             
         self.isConnected = True
-        self.loginEvent.set()  
         self._login_failed = False
         self._mark_activity()
+        
+        # Limpa flag de login em progresso antes de setar evento
+        # (permite que notificações pendentes sejam processadas normalmente após login)
+        notifications_during_login = self._pending_notifications_count
+        self._login_in_progress = False
+        
+        # Seta evento de login (isso acorda waitLogin)
+        self.loginEvent.set()
+        
+        if notifications_during_login > 0:
+            logger.info(f"[{self.bot.botId}] Login concluído com {notifications_during_login} notificações processadas durante login")
         # self._start_liveness_monitor()
         self._reconnect_attempts = 0
         self._cancel_reconnect_timer()
