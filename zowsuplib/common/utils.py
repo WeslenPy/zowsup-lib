@@ -23,6 +23,23 @@ import zlib
 import base64,time
 from loguru import logger
 
+import tempfile
+import shutil
+
+try:
+    from importlib.resources import files, as_file
+    IMPORTLIB_AVAILABLE = True
+except ImportError:
+    # Python < 3.9 fallback
+    try:
+        from importlib_resources import files, as_file
+        IMPORTLIB_AVAILABLE = True
+    except ImportError:
+        IMPORTLIB_AVAILABLE = False
+
+# Cache para arquivos temporários extraídos de recursos do pacote
+_temp_file_cache = {}
+
 
 class PathStatic:
     """
@@ -35,17 +52,106 @@ class PathStatic:
     DATA_DIR = BASE_DIR / "data"
 
     @classmethod
-    def data_file(cls, name: str) -> Path:
+    def _is_installed_package(cls) -> bool:
+        """
+        Detecta se a biblioteca está instalada como pacote (em site-packages)
+        ou se está sendo executada diretamente do código-fonte.
+        """
+        base_str = str(cls.BASE_DIR)
+        # Verifica se está em site-packages ou dist-packages
+        return 'site-packages' in base_str or 'dist-packages' in base_str
+    
+    @classmethod
+    def data_file(cls, name: str) -> str:
         """
         Retorna o caminho absoluto para um arquivo em zowsuplib/data.
-        Faz fallback para path relativo ao cwd caso não exista no pacote.
+        Funciona tanto quando executado diretamente quanto quando instalado como pacote.
+        
+        Quando instalado como pacote, sempre usa importlib.resources para acessar os arquivos
+        de dados incluídos no pacote, garantindo que funcione mesmo quando o pacote está
+        em um arquivo zip (wheel). O arquivo é copiado para um local temporário para
+        garantir acesso persistente.
         """
+        is_installed = cls._is_installed_package()
+        
+        # Se está instalado como pacote, sempre usa importlib.resources
+        # (mesmo que o arquivo exista no caminho direto, pode estar em um zip)
+        if is_installed and IMPORTLIB_AVAILABLE:
+            try:
+                import zowsuplib.data as data_pkg
+                resource_path = files(data_pkg) / name
+                if resource_path.is_file():
+                    # Verifica se já temos uma cópia temporária em cache
+                    if name in _temp_file_cache:
+                        cached_path = Path(_temp_file_cache[name])
+                        if cached_path.exists():
+                            return str(cached_path.resolve())
+                    
+                    # Extrai o arquivo para um local temporário persistente
+                    # (necessário porque alguns decoders precisam de um caminho de arquivo real)
+                    with as_file(resource_path) as file_path:
+                        # Copia para um arquivo temporário com nome fixo (baseado no nome do arquivo)
+                        # para evitar recriar múltiplas vezes
+                        temp_dir = Path(tempfile.gettempdir()) / "zowsuplib_data"
+                        temp_dir.mkdir(exist_ok=True)
+                        temp_file = temp_dir / name
+                        
+                        # Copia apenas se não existir ou se o arquivo fonte for mais recente
+                        if not temp_file.exists() or file_path.stat().st_mtime > temp_file.stat().st_mtime:
+                            shutil.copy2(file_path, temp_file)
+                        
+                        _temp_file_cache[name] = str(temp_file)
+                        return str(temp_file.resolve())
+            except (ImportError, ModuleNotFoundError, FileNotFoundError, OSError) as e:
+                logger.warning(f"Não foi possível acessar {name} via importlib.resources: {e}")
+        
+        # Modo de desenvolvimento: tenta encontrar no diretório local
         candidate = cls.DATA_DIR / name
         if candidate.exists():
-            return candidate.as_posix()
-        # fallback para execução em diretórios alternativos
+            return str(candidate.resolve())
+        
+        # Se não encontrou localmente e importlib está disponível, tenta usar importlib.resources
+        if IMPORTLIB_AVAILABLE:
+            try:
+                import zowsuplib.data as data_pkg
+                resource_path = files(data_pkg) / name
+                if resource_path.is_file():
+                    # Verifica se já temos uma cópia temporária em cache
+                    if name in _temp_file_cache:
+                        cached_path = Path(_temp_file_cache[name])
+                        if cached_path.exists():
+                            return str(cached_path.resolve())
+                    
+                    # Extrai o arquivo para um local temporário persistente
+                    with as_file(resource_path) as file_path:
+                        temp_dir = Path(tempfile.gettempdir()) / "zowsuplib_data"
+                        temp_dir.mkdir(exist_ok=True)
+                        temp_file = temp_dir / name
+                        
+                        if not temp_file.exists() or file_path.stat().st_mtime > temp_file.stat().st_mtime:
+                            shutil.copy2(file_path, temp_file)
+                        
+                        _temp_file_cache[name] = str(temp_file)
+                        return str(temp_file.resolve())
+            except (ImportError, ModuleNotFoundError, FileNotFoundError, OSError) as e:
+                logger.debug(f"Não foi possível acessar {name} via importlib.resources: {e}")
+        
+        # Fallback: tenta no diretório de trabalho atual
         cwd_candidate = Path.cwd() / "data" / name
-        return cwd_candidate.as_posix()
+        if cwd_candidate.exists():
+            return str(cwd_candidate.resolve())
+        
+        # Se nenhum arquivo foi encontrado, levanta exceção em vez de retornar caminho inválido
+        # Isso evita que o ArgoMessageDecoder tente ler um arquivo inexistente
+        searched_paths = [
+            str(cls.DATA_DIR / name),
+            str(cwd_candidate),
+        ]
+        raise FileNotFoundError(
+            f"Arquivo de dados '{name}' não encontrado. "
+            f"Procurou em: {', '.join(searched_paths)}. "
+            f"Verifique se o pacote foi instalado corretamente com os arquivos de dados."
+        )
 
 class Utils:
 
