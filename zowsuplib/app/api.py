@@ -592,6 +592,7 @@ class ZowsupClient:
             "group.promote": self.send_layer.groupPromote,
             "group.demote": self.send_layer.groupDemote,
             "group.leave": self.send_layer.leaveGroup,
+            "group.seticon": self.send_layer.setGroupIcon,
             "contact.sync": self.send_layer.syncContacts,
             "account.init": self._command_account_init,
             "integrity.check": self.send_layer.integrityCheck,
@@ -758,7 +759,8 @@ class ZowsupClient:
             return 30  # Timeout padrão para status
         if command_name in ("group.create", "group.add", "group.list", "group.info", 
                            "group.getinvite", "group.join", "group.setsubject", 
-                           "group.setsettings", "group.remove", "group.promote", "group.demote", "group.leave"):
+                           "group.setsettings", "group.remove", "group.promote", "group.demote", 
+                           "group.leave", "group.seticon"):
             return 30
         if command_name in ("login",):
             return 120
@@ -1889,6 +1891,34 @@ class ZowsupClient:
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("group.leave")
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def set_group_icon(self, group_id: str, icon_path_or_url: str) -> CommandResponse:
+        """
+        Define o ícone do grupo.
+        
+        Args:
+            group_id: ID do grupo (pode ser apenas o ID ou JID completo)
+            icon_path_or_url: Caminho do arquivo local ou URL da imagem
+        
+        Returns:
+            CommandResponse com status
+        
+        Example:
+            # Usando URL
+            client.set_group_icon("120363403793561395@g.us", "https://example.com/icon.jpg")
+            
+            # Usando arquivo local
+            client.set_group_icon("120363403793561395@g.us", "/path/to/icon.jpg")
+        """
+        logger.debug(f"{self._log_prefix} set_group_icon(group_id={group_id}, icon={icon_path_or_url})")
+        cmd_id, err = self._execute_command("group.seticon", [group_id, icon_path_or_url], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("group.seticon")
         result, err2 = self._get_cmd_result(cmd_id, wait_time)
         if err2 is not None:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))

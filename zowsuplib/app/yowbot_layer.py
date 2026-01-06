@@ -2947,18 +2947,44 @@ class SendLayer(YowInterfaceLayer):
         )        
         self.toLower(entity)
 
-    def setGroupIcon(self,cmdParams,options):
+    def setGroupIcon(self, cmdParams, options):
+        """Define o ícone do grupo a partir de URL ou arquivo local"""
+        def on_success(entity, original_iq_entity):
+            logger.info("setGroupIcon success")
+            self.setCmdResult(entity.getId(), {"status": "ok"})
+        
+        def on_error(entity, original_iq):
+            logger.error("setGroupIcon error")
+            self.setCmdError(entity.getId(), entity.code if hasattr(entity, 'code') else "Unknown error")
+        
         group_jid = Jid.normalize(cmdParams[0])
-        url = cmdParams[1]        
-        with PILOptionalModule(failMessage = "No PIL library installed, try install pillow") as imp:
+        icon_source = cmdParams[1]  # Pode ser URL ou caminho de arquivo
+        
+        with PILOptionalModule(failMessage="No PIL library installed, try install pillow") as imp:
             Image = imp("Image")
-            src = Image.open(io.BytesIO(requests.get(url).content)).convert("RGB")
+            
+            # Se for URL, baixa; se for arquivo, abre diretamente
+            if icon_source.startswith(("http://", "https://")):
+                image_data = requests.get(icon_source).content
+                src = Image.open(io.BytesIO(image_data)).convert("RGB")
+            else:
+                # Assume que é um caminho de arquivo local
+                if not os.path.exists(icon_source):
+                    raise FileNotFoundError(f"Arquivo não encontrado: {icon_source}")
+                src = Image.open(icon_source).convert("RGB")
+            
             picture = io.BytesIO()
             preview = io.BytesIO()
-            src.resize((640, 640)).save(picture,format="jpeg")
-            src.resize((96, 96)).save(preview,format="jpeg")                                    
-            entity = SetPictureIqProtocolEntity("s.whatsapp.net", preview.getvalue(), picture.getvalue(),target=Jid.normalize(group_jid))   
-            self.toLower(entity)
+            src.resize((640, 640)).save(picture, format="jpeg")
+            src.resize((96, 96)).save(preview, format="jpeg")
+            
+            entity = SetPictureIqProtocolEntity(
+                "s.whatsapp.net", 
+                preview.getvalue(), 
+                picture.getvalue(),
+                target=Jid.normalize(group_jid)
+            )
+            self._sendIq(entity, on_success, on_error)
             return entity.getId()        
             
     def leaveGroup(self,cmdParams,options):
