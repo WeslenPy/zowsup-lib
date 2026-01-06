@@ -143,6 +143,9 @@ class DownloadableMediaMessageAttributes(MediaAttributes):
             if mediaType=="history-sync":
                 enc_data = MediaCipher().encrypt_history_sync(data,media_key)
 
+            if mediaType=="sticker":
+                enc_data = MediaCipher().encrypt_sticker(data,media_key)
+
             file_enc_sha256 = hashlib.sha256(enc_data).digest()     
 
             b64Hash = WATools.getDataHashForUpload(enc_data)

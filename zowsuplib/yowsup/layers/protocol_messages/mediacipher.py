@@ -15,9 +15,14 @@ class MediaCipher(object):
     INFO_DOCUMENT = b"WhatsApp Document Keys"
     INFO_HISTORY_SYNC = b"WhatsApp History Keys"
     INFO_APP_STATE= b"WhatsApp App State Keys"
+    INFO_STICKER = b"WhatsApp Sticker Pack Keys"
 
     def encrypt_image(self, plaintext, ref_key):
         return self.encrypt(plaintext, ref_key, self.INFO_IMAGE)
+
+    def encrypt_sticker(self,ciphertext,ref_key):
+        return self.encrypt(ciphertext,ref_key,self.INFO_STICKER) 
+
 
     def encrypt_audio(self, ciphertext, ref_key):
         return self.encrypt(ciphertext, ref_key, self.INFO_AUDIO)
@@ -50,8 +55,11 @@ class MediaCipher(object):
         return self.decrypt(ciphertext, ref_key, self.INFO_HISTORY_SYNC)
     
     def decrypt_app_state(self,ciphertext,ref_key):
-            return self.decrypt(ciphertext, ref_key, self.INFO_APP_STATE)
+        return self.decrypt(ciphertext, ref_key, self.INFO_APP_STATE)
     
+    def decrypt_sticker(self,ciphertext,ref_key):
+        return self.decrypt(ciphertext, ref_key, self.INFO_STICKER)
+
 
     def encrypt(self, plaintext, ref_key, media_info):
         derived = HKDFv3().deriveSecrets(ref_key, media_info, 112)

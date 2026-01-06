@@ -73,13 +73,21 @@ namespaces = true
 
 [tool.setuptools.package-data]
 "zowsuplib" = [
-    "*.types",
+    # Arquivos de dados (data/)
     "data/*.zip",
     "data/*.argo",
     "data/*.json",
     "data/*",
+    
+    # Arquivos protobuf (.proto) - necessários para referência e geração de código
     "proto/*.proto",
     "consonance/proto/*.proto",
+    "axolotl/protobuf/*.proto",
+    
+    # Arquivos de tipos MIME - usado por MimeTools.getMIME()
+    "yowsup/common/*.types",
+    
+    # Templates JSON (se houver)
     "consonance/config/templates/*.json"
 ]
 
