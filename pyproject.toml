@@ -73,6 +73,7 @@ namespaces = true
 
 [tool.setuptools.package-data]
 "zowsuplib" = [
+    "*.types",
     "data/*.zip",
     "data/*.argo",
     "data/*.json",
