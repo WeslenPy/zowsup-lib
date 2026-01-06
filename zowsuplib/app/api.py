@@ -564,6 +564,7 @@ class ZowsupClient:
             self._stack.loop()
             logger.info(f"{self._log_prefix} LOOP ENDED")
         except Exception as exc:  # pragma: no cover - defensivo
+            logger.exception(exc)
             logger.error(f"{self._log_prefix} Erro no loop do stack: {exc}", exc_info=True)
             try:
                 self.disconnect()

@@ -319,11 +319,41 @@ class MimeTools:
     try:
         mimetypes.init([MIME_FILE]) # Append whatsapp mime.types
     except Exception as e:
-        logger.warning("Mime types supported can't be read. System mimes will be used. Cause: " + str(e))
+        logger.warning("Mime types supported can't be read. System mimes will be used. Cause: " +str(e))
+
+    # Mapeamento manual para tipos MIME não reconhecidos automaticamente
+    _MANUAL_MIME_TYPES = {
+        '.webp': 'image/webp',
+        '.webm': 'video/webm',
+        '.was': 'application/was',  # WhatsApp Audio Sticker
+    }
 
     @staticmethod
     def getMIME(filepath):
+        # Tenta primeiro com mimetypes padrão
         mimeType = mimetypes.guess_type(filepath)[0]
+        
+        # Se não encontrou, tenta mapeamento manual por extensão
+        if mimeType is None:
+            filepath_lower = filepath.lower()
+            for ext, mime in MimeTools._MANUAL_MIME_TYPES.items():
+                if filepath_lower.endswith(ext):
+                    mimeType = mime
+                    break
+        
+        # Se ainda não encontrou, tenta adicionar ao mimetypes dinamicamente
+        if mimeType is None:
+            # Extrai extensão do arquivo
+            ext = os.path.splitext(filepath)[1].lower()
+            if ext:
+                # Adiciona tipos comuns de stickers/imagens
+                if ext == '.webp':
+                    mimetypes.add_type('image/webp', ext)
+                    mimeType = 'image/webp'
+                elif ext == '.webm':
+                    mimetypes.add_type('video/webm', ext)
+                    mimeType = 'video/webm'
+        
         if mimeType is None:
             raise Exception("Unsupported/unrecognized file type for: "+filepath);
         return mimeType
