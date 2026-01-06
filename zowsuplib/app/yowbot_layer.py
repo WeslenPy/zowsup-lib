@@ -449,9 +449,15 @@ class SendLayer(YowInterfaceLayer):
             # Durante login, adia processamento pesado de AccountSync
             if self._login_in_progress:
                 logger.debug("Notification: AccountSync durante login (processamento adiado)")
-                # Agenda processamento para depois do login
+                # Agenda processamento para depois do login usando Timer (orientado a eventos)
+                # Não usa sleep - aguarda o evento de login completar
                 def process_account_sync_after_login():
-                    time.sleep(2)  # Aguarda login completar
+                    # Aguarda login completar verificando o flag (orientado a eventos)
+                    max_wait = 10  # Máximo 10 segundos esperando login
+                    waited = 0
+                    while waited < max_wait and self._login_in_progress:
+                        time.sleep(0.5)  # Polling leve (500ms)
+                        waited += 0.5
                     if self.isConnected:
                         self._process_account_sync_notification(entity)
                 

@@ -188,14 +188,20 @@ class YowBot:
         self.disconnect()
 
     def callDirect(self,name,params,options):
+        """
+        Executa um comando e retorna o cmdId.
+        Sempre cria evento para aguardar resultados (100% orientado a eventos).
+        """
         cmdId = None
         fn = self.cmdList[name] if name in self.cmdList else None   
         if fn is not None:            
             try:
                 cmdId = fn(self,params,options) 
-                if cmdId not in self.cmdEventMap:
-                    #非直返结果
-                    self.cmdEventMap[cmdId] = {"event":threading.Event()}
+                # Sempre cria evento para aguardar resultados (100% orientado a eventos)
+                # Mesmo "JUSTWAIT" pode ter resultados assíncronos
+                if cmdId is not None and cmdId not in ("TIMEOUT",):
+                    if cmdId not in self.cmdEventMap:
+                        self.cmdEventMap[cmdId] = {"event":threading.Event()}
             except ParamsNotEnoughException:
                 return None,{"code":-1,"msg":"Params Not Enough"}
                         
@@ -227,18 +233,28 @@ class YowBot:
             return None,{"code":-4,"msg":"cmdId not found"}
 
     def getCmdResult(self,cmdId,waitTime):
+        """
+        Aguarda resultado de um comando via evento (100% orientado a eventos).
+        
+        Se o evento não existir ainda, cria um para aguardar resultados assíncronos.
+        """
         if cmdId in self.cmdEventMap:
-            obj =self.cmdEventMap[cmdId]
-            if obj["event"].wait(waitTime):
-                del self.cmdEventMap[cmdId]
-                if "error" not in obj :
-                    return obj["result"],None
-                else:
-                    return None,obj["error"]        
-            else:
-                return None,{"code":-999,"msg":"timeout"}                
+            obj = self.cmdEventMap[cmdId]
         else:
-            return None,{"code":-4,"msg":"cmdId not found"}
+            # Cria evento se não existir (para comandos que retornam JUSTWAIT ou resultados assíncronos)
+            obj = {"event": threading.Event()}
+            self.cmdEventMap[cmdId] = obj
+        
+        if obj["event"].wait(waitTime):
+            del self.cmdEventMap[cmdId]
+            if "error" not in obj:
+                return obj.get("result"), None
+            else:
+                return None, obj["error"]        
+        else:
+            # Timeout: remove evento se não houve resultado
+            self.cmdEventMap.pop(cmdId, None)
+            return None, {"code":-999,"msg":"timeout"}
         
     def setCmdError(self,cmdId,error):
         if cmdId in self.cmdEventMap: 

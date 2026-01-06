@@ -98,7 +98,9 @@ class _CommandDispatcher:
         if cmd_id is None:
             return None, {"code": -3, "msg": "No CmdId Return"}
 
-        if cmd_id not in ("JUSTWAIT", "TIMEOUT"):
+        # Sempre cria evento para aguardar resultados (100% orientado a eventos)
+        # Mesmo "JUSTWAIT" pode ter resultados assíncronos
+        if cmd_id not in ("TIMEOUT",):
             with self._lock:
                 if cmd_id not in self._events:
                     self._events[cmd_id] = {"event": threading.Event()}
@@ -120,13 +122,23 @@ class _CommandDispatcher:
             self._events[cmd_id] = obj
 
     def wait_result(self, cmd_id: str, wait_time: int):
+        """
+        Aguarda resultado de um comando via evento (100% orientado a eventos).
+        
+        Se o evento não existir ainda, cria um para aguardar resultados assíncronos.
+        """
         with self._lock:
             obj = self._events.get(cmd_id)
-        if obj is None:
-            return None, {"code": -4, "msg": "cmdId not found"}
-
+            if obj is None:
+                # Cria evento se não existir (para comandos que retornam JUSTWAIT)
+                obj = {"event": threading.Event()}
+                self._events[cmd_id] = obj
+        
         event = obj["event"]
         if not event.wait(wait_time):
+            # Timeout: remove evento se não houve resultado
+            with self._lock:
+                self._events.pop(cmd_id, None)
             return None, {"code": -999, "msg": "timeout"}
 
         with self._lock:
@@ -608,17 +620,34 @@ class ZowsupClient:
         """
         Implementa o fluxo antigo de account.init sem YowBot.
         """
-        name = params[0] if params else None
-        time.sleep(1)
-        self.send_layer.getConfig(params, options)
-        time.sleep(2)
-        self._set_self_name(name)
+        # Gera um cmd_id único para este comando
+        cmd_id = str(uuid.uuid4())
+        
+        # Executa a inicialização de forma assíncrona para não bloquear
+        def _init_async():
+            try:
+                name = params[0] if params else None
+                time.sleep(1)  # Delay operacional para estabilização
+                self.send_layer.getConfig(params, options)
+                time.sleep(2)  # Delay operacional para estabilização
+                self._set_self_name(name)
 
-        if self.account_id:
-            from zowsuplib.app.db import update_account_status
-
-            update_account_status(self.account_id, is_initialized=True)
-        return "JUSTWAIT"
+                if self.account_id:
+                    from zowsuplib.app.db import update_account_status
+                    update_account_status(self.account_id, is_initialized=True)
+                
+                # Define resultado após completar (orientado a eventos)
+                result = {"status": "ok", "message": "Account initialized successfully"}
+                self._set_cmd_result(cmd_id, result)
+            except Exception as e:
+                logger.error(f"{self._log_prefix} Erro ao inicializar conta: {e}", exc_info=True)
+                self._set_cmd_error(cmd_id, {"code": -1, "msg": str(e)})
+        
+        # Executa em thread separada para não bloquear
+        thread = threading.Thread(target=_init_async, daemon=True)
+        thread.start()
+        
+        return cmd_id
 
     def _set_self_name(self, name: Optional[str] = None) -> None:
         """
@@ -721,7 +750,10 @@ class ZowsupClient:
         if command_name in ("status.send", "status.sendmedia"):
             return 30  # Timeout padrão para status
 
-        return 120
+        if command_name in ("login",):
+            return 120
+
+        return 20
 
     def connect(self, wait_login: bool = True, retry_with_env_rotation: bool = True) -> bool:
         """
@@ -1284,17 +1316,14 @@ class ZowsupClient:
 
             return CommandResponse(data={"message_id": cmd_id})
 
-        # Comportamento padrão: igual ao CLI, apenas aguarda alguns segundos
+        # Comportamento padrão: aguarda resultado via evento (100% orientado a eventos)
         cmd_id, err = self._execute_command("msg.send", [to, text], options)
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
 
         wait_time = self._default_wait_time("msg.send")
-        if cmd_id == "JUSTWAIT":
-            logger.info(f"Command msg.send retornou JUSTWAIT, aguardando {wait_time} segundos")
-            time.sleep(wait_time)
-            return CommandResponse()
-
+        # Sempre aguarda resultado via evento, mesmo se retornou JUSTWAIT
+        # (o comando pode ainda retornar um resultado assíncrono)
         result, err2 = self._get_cmd_result(cmd_id, wait_time)
         if err2 is not None:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
@@ -1402,11 +1431,12 @@ class ZowsupClient:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
 
         wait_time = self._default_wait_time("msg.sendmedia")
-        if cmd_id == "JUSTWAIT":
-            logger.info(f"Command msg.sendmedia retornou JUSTWAIT, aguardando {wait_time} segundos")
-            time.sleep(wait_time)
+        # Aguarda resultado via evento (orientado a eventos)
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         
-        return CommandResponse()
+        return CommandResponse(data=result)
 
     def send_status(
         self,
@@ -1562,11 +1592,12 @@ class ZowsupClient:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         
         wait_time = self._default_wait_time("status.send")
-        if cmd_id == "JUSTWAIT":
-            logger.info(f"Command status.send retornou JUSTWAIT, aguardando {wait_time} segundos")
-            time.sleep(wait_time)
+        # Aguarda resultado via evento (orientado a eventos)
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         
-        return CommandResponse()
+        return CommandResponse(data=result)
 
     def create_group(self, subject: str, participants: list[str]=[]) -> CommandResponse:
         """
@@ -1579,9 +1610,7 @@ class ZowsupClient:
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("group.create")
-        if cmd_id == "JUSTWAIT":
-            time.sleep(wait_time)
-            return CommandResponse()
+        # Aguarda resultado via evento (orientado a eventos)
         result, err2 = self._get_cmd_result(cmd_id, wait_time)
         if err2 is not None:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
@@ -1614,10 +1643,7 @@ class ZowsupClient:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
 
         wait_time = self._default_wait_time("group.getinvite")
-        if cmd_id == "JUSTWAIT":
-            time.sleep(wait_time)
-            return CommandResponse()
-
+        # Aguarda resultado via evento (orientado a eventos)
         result, err2 = self._get_cmd_result(cmd_id, wait_time)
         if err2 is not None:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
@@ -1647,10 +1673,7 @@ class ZowsupClient:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
 
         wait_time = self._default_wait_time("group.join")
-        if cmd_id == "JUSTWAIT":
-            time.sleep(wait_time)
-            return CommandResponse()
-
+        # Aguarda resultado via evento (orientado a eventos)
         result, err2 = self._get_cmd_result(cmd_id, wait_time)
         if err2 is not None:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
@@ -1678,9 +1701,7 @@ class ZowsupClient:
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("group.list")
-        if cmd_id == "JUSTWAIT":
-            time.sleep(wait_time)
-            return CommandResponse()
+        # Aguarda resultado via evento (orientado a eventos)
         result, err2 = self._get_cmd_result(cmd_id, wait_time)
         if err2 is not None:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
@@ -1702,9 +1723,7 @@ class ZowsupClient:
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("group.add")
-        if cmd_id == "JUSTWAIT":
-            time.sleep(wait_time)
-            return CommandResponse()
+        # Aguarda resultado via evento (orientado a eventos)
         result, err2 = self._get_cmd_result(cmd_id, wait_time)
         if err2 is not None:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
@@ -1718,15 +1737,13 @@ class ZowsupClient:
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("contact.sync")
-        if cmd_id == "JUSTWAIT":
-            time.sleep(wait_time)
-            return CommandResponse()
+        # Aguarda resultado via evento (orientado a eventos)
         result, err2 = self._get_cmd_result(cmd_id, wait_time)
         if err2 is not None:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
 
-    def integrity_check(self, phones: list) -> CommandResponse:
+    def integrity_check(self, phones: list[str]) -> CommandResponse:
         """
         Executa a checagem de integridade (BizIntegrityQuery) para IDs separados por vírgula.
         """
@@ -1738,9 +1755,7 @@ class ZowsupClient:
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("integrity.check")
-        if cmd_id == "JUSTWAIT":
-            time.sleep(wait_time)
-            return CommandResponse()
+        # Aguarda resultado via evento (orientado a eventos)
         result, err2 = self._get_cmd_result(cmd_id, wait_time)
         if err2 is not None:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
@@ -1888,9 +1903,7 @@ class ZowsupClient:
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("account.init")
-        if cmd_id == "JUSTWAIT":
-            time.sleep(wait_time)
-            return CommandResponse()
+        # Aguarda resultado via evento (orientado a eventos)
         result, err2 = self._get_cmd_result(cmd_id, wait_time)
         if err2 is not None:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
