@@ -3036,8 +3036,18 @@ class SendLayer(YowInterfaceLayer):
                         "creationTime": group.getCreationTime(),
                         "participants": group.getParticipants(),
                     })
-                    groups_admins.extend(group.getGroupAdmins(account_jid=self.bot.botId))
+                    # getGroupAdmins retorna lista de objetos Group quando account_jid é fornecido
+                    admin_groups = group.getGroupAdmins(account_jid=self.bot.botId)
+                    # Converte objetos Group para dicionários
+                    for admin_group in admin_groups:
+                        groups_admins.append({
+                            "group_id": admin_group.getId(),
+                            "subject": admin_group.getSubject(),
+                            "creator": admin_group.getCreator(),
+                            "owner": admin_group.getOwner(),
+                        })
 
+                        
                     logger.info(f"Groups admins: {groups_admins}")
 
 
