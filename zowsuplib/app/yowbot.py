@@ -417,7 +417,11 @@ class YowBot:
     
     @BotCmd("account.getemail", "get account email")
     def getEmail(self,params,options):
-        return self.sendLayer.getEmail(params,options)  
+        return self.sendLayer.getEmail(params,options)
+    
+    @BotCmd("account.info", "get account information")
+    def getAccountInfo(self,params,options):
+        return self.sendLayer.getAccountInfo(params,options)  
     
     @BotCmd("account.verifyemail", "request email verification")
     def verifyEmail(self,params,options):

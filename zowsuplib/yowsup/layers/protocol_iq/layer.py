@@ -102,7 +102,11 @@ class YowIqProtocolLayer(YowProtocolLayer):
                 else:                                  
                     self.toUpper(ResultSetPictureIqProtocolEntity.fromProtocolTreeNode(node))                
             elif node.getChild("result") is not None:
-                self.toUpper(WmexResultIqProtocolEntity.fromProtocolTreeNode(node))           
+                self.toUpper(WmexResultIqProtocolEntity.fromProtocolTreeNode(node))
+            elif node.getChild("sync") is not None:
+                # AppState Sync result
+                from zowsuplib.yowsup.layers.protocol_iq.protocolentities.iq_app_sync_state_result import AppSyncStateResultIqProtocolEntity
+                self.toUpper(AppSyncStateResultIqProtocolEntity.fromProtocolTreeNode(node))
             else:
                 #不知道是啥，打印出来                     
                 self.__logger.info(node)

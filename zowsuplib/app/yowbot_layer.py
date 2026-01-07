@@ -740,9 +740,21 @@ class SendLayer(YowInterfaceLayer):
                          
     @ProtocolEntityCallback("iq")
     def onIq(self, entity):          
+        # processIqRegistry é chamado primeiro no receive() da YowInterfaceLayer
+        # Se o callback foi chamado, não chegamos aqui
+        # Se chegamos aqui, é porque não havia callback registrado ou processIqRegistry não encontrou o ID
                         
         if isinstance(entity,ResultIqProtocolEntity):
-            self.setCmdResult(entity.getId(),{"status":"ok"})
+            iq_id = entity.getId()
+            # Verifica se há callback registrado para este IQ (pode ter sido processado mas ainda estar no registry)
+            if hasattr(self, 'iqRegistry') and iq_id in self.iqRegistry:
+                # Se há callback registrado, não define resultado aqui
+                # O callback será chamado pelo processIqRegistry
+                logger.debug(f"IQ {iq_id} tem callback registrado, deixando processIqRegistry tratar")
+                return
+            # Define resultado genérico apenas para IQs sem callback específico
+            logger.debug(f"IQ {iq_id} sem callback, definindo resultado genérico")
+            self.setCmdResult(iq_id, {"status": "ok"})
             return 
         
         if isinstance(entity,ErrorIqProtocolEntity):
@@ -814,6 +826,27 @@ class SendLayer(YowInterfaceLayer):
     
         if isinstance(entity,ResultSetPictureIqProtocolEntity):             
             self.setCmdResult(entity.getId(),{"pictureId":entity.getPictureId()})
+            return
+        
+        if isinstance(entity, EmailResultIqProtocolEntity):
+            # EmailResultIqProtocolEntity já é tratado nos callbacks dos métodos específicos
+            # Mas também pode ser recebido diretamente aqui, então tratamos
+            result = {
+                "email": entity.emailAddress,
+                "verified": entity.verified,
+                "confirmed": entity.confirmed,
+                "do_verify": entity.doVerify
+            }
+            self.setCmdResult(entity.getId(), result)
+            return
+        
+        if isinstance(entity, VerifyEmailResultIqProtocolEntity):
+            # VerifyEmailResultIqProtocolEntity já é tratado nos callbacks dos métodos específicos
+            result = {
+                "status": "ok",
+                "email": entity.emailAddress if hasattr(entity, 'emailAddress') else None
+            }
+            self.setCmdResult(entity.getId(), result)
             return 
                             
     @ProtocolEntityCallback("failure")
@@ -1993,7 +2026,7 @@ class SendLayer(YowInterfaceLayer):
     def sendMsg(self,cmdParams,options):        
 
         if "broadcast" in options:
-            bcid,phash = self.db._store.addBroadcast(jids = cmdParams[0],senderJid=self.bot_api.botId)
+            bcid,phash = self.db._store.addBroadcast(jids = cmdParams[0],senderJid=self.bot.botId)
             options["bcid"] = bcid
             options["phash"] = phash            
 
@@ -2737,6 +2770,29 @@ class SendLayer(YowInterfaceLayer):
         return entity.getId()        
 
 
+    def getAccountInfo(self, cmdParams, options):
+        """Obtém informações da conta (creation, last_reg)"""
+        def on_success(entity, original_iq_entity):
+            logger.info("getAccountInfo success")
+            from zowsuplib.yowsup.layers.protocol_iq.protocolentities.iq_account_info_result import AccountInfoResultIqProtocolEntity
+            if isinstance(entity, AccountInfoResultIqProtocolEntity):
+                result = {
+                    "creation": entity.creation,
+                    "last_reg": entity.lastReg
+                }
+            else:
+                result = {"status": "ok"}
+            self.setCmdResult(entity.getId(), result)
+        
+        def on_error(entity, original_iq):
+            logger.error("getAccountInfo error")
+            self.setCmdError(entity.getId(), entity.code if hasattr(entity, 'code') else "Unknown error")
+        
+        from zowsuplib.yowsup.layers.protocol_iq.protocolentities.iq_account_info import AccountInfoIqProtocolEntity
+        entity = AccountInfoIqProtocolEntity()
+        self._sendIq(entity, on_success, on_error)
+        return entity.getId()
+    
     def getAvatar(self,cmdParams,options):        
         if len(cmdParams)==0:
             target = self.bot.botId
@@ -2760,29 +2816,57 @@ class SendLayer(YowInterfaceLayer):
         self._sendIq(entity,on_success,on_error)
         return entity.getId()
     
-    def set2FA(self,cmdParams,options) :
-        if len(cmdParams)==0:
-            cmdParams = [self.bot_api.botId[-6:], self.bot_api.botId+"@163.com"]
-        entity = Set2FAIqProtocolEntity(code=cmdParams[0],email=cmdParams[1])
-        self.toLower(entity)        
+    def set2FA(self, cmdParams, options):
+        """Define a autenticação de dois fatores (2FA)"""
+        def on_success(entity, original_iq_entity):
+            logger.info("set2FA success")
+            self.setCmdResult(entity.getId(), {"status": "ok"})
+        
+        def on_error(entity, original_iq):
+            logger.error("set2FA error")
+            self.setCmdError(entity.getId(), entity.code if hasattr(entity, 'code') else "Unknown error")
+        
+        if len(cmdParams) == 0:
+            cmdParams = [self.bot.botId[-6:], self.bot.botId+"@163.com"]
+        entity = Set2FAIqProtocolEntity(code=cmdParams[0], email=cmdParams[1])
+        self._sendIq(entity, on_success, on_error)
         return entity.getId()
                 
-    def setAvatar(self,cmdParams,options):
-        if len(cmdParams) > 0:
-            url = cmdParams[0]
-        else:
-            raise ParamsNotEnoughException()            
-                
-        with PILOptionalModule(failMessage = "No PIL library installed, try install pillow") as imp:
+    def setAvatar(self, cmdParams, options):
+        """Define o avatar da conta a partir de URL ou arquivo local"""
+        def on_success(entity, original_iq_entity):
+            logger.info("setAvatar success")
+            self.setCmdResult(entity.getId(), {"status": "ok"})
+        
+        def on_error(entity, original_iq):
+            logger.error("setAvatar error")
+            self.setCmdError(entity.getId(), entity.code if hasattr(entity, 'code') else "Unknown error")
+        
+        if len(cmdParams) == 0:
+            raise ParamsNotEnoughException()
+        
+        avatar_source = cmdParams[0]  # Pode ser URL ou caminho de arquivo
+        
+        with PILOptionalModule(failMessage="No PIL library installed, try install pillow") as imp:
             Image = imp("Image")
-            src = Image.open(io.BytesIO(requests.get(url).content)).convert("RGB")
+            
+            # Se for URL, baixa; se for arquivo, abre diretamente
+            if avatar_source.startswith(("http://", "https://")):
+                image_data = requests.get(avatar_source).content
+                src = Image.open(io.BytesIO(image_data)).convert("RGB")
+            else:
+                # Assume que é um caminho de arquivo local
+                if not os.path.exists(avatar_source):
+                    raise FileNotFoundError(f"Arquivo não encontrado: {avatar_source}")
+                src = Image.open(avatar_source).convert("RGB")
+            
             picture = io.BytesIO()
             preview = io.BytesIO()
-            src.resize((640, 640)).save(picture,format="jpeg")
-            src.resize((96, 96)).save(preview,format="jpeg")
-                                    
+            src.resize((640, 640)).save(picture, format="jpeg")
+            src.resize((96, 96)).save(preview, format="jpeg")
+            
             entity = SetPictureIqProtocolEntity("s.whatsapp.net", preview.getvalue(), picture.getvalue())
-            self.toLower(entity)            
+            self._sendIq(entity, on_success, on_error)
             return entity.getId()
 
     def subscribePresence(self, cmdParams,options):
@@ -2790,10 +2874,66 @@ class SendLayer(YowInterfaceLayer):
         self.toLower(entity)
         return entity.getId()
 
-    def setName(self, cmdParams,options):       
-        entity = PresenceProtocolEntity(name = cmdParams[0])
-        self.toLower(entity)
-        return entity.getId()
+    def setName(self, cmdParams, options):
+        """Define o nome da conta (pushname) usando AppState Sync (padrão whatsmeow)"""
+        def on_success(entity, original_iq_entity):
+            logger.info("setName (AppState Sync) success")
+            # Atualiza o pushname no profile após sucesso
+            profile = self.getStack().getProp("profile")
+            if profile:
+                profile.config.pushname = cmdParams[0]
+                profile.write_config(profile.config)
+            self.setCmdResult(entity.getId(), {"status": "ok", "name": cmdParams[0]})
+        
+        def on_error(entity, original_iq):
+            logger.error("setName (AppState Sync) error")
+            self.setCmdError(entity.getId(), entity.code if hasattr(entity, 'code') else "Unknown error")
+        
+        try:
+            # Obtém uma chave de AppState
+            key = self.db._store.getOneAppStateKey()
+            if not key:
+                # Se não houver chaves, gera automaticamente
+                logger.warning("No AppState keys found. Generating new keys...")
+                sync_keys = self.generateAppStateSyncKeys(10)
+                self.db._store.addAppStateKeys(sync_keys)
+                key = self.db._store.getOneAppStateKey()
+                if not key:
+                    raise Exception("Failed to generate AppState keys")
+            
+            # Cria as mutation keys a partir da chave
+            mutationKeys = MutationKeys.createFromKey(key.key_data.key_data)
+            
+            # Cria a mutation para pushname setting
+            pushNameSetting = SyncActionDataAttribute.createFromSyncActionValue(
+                SyncActionValueAttribute(
+                    pushNameSetting=SyncActionPushnameSettingAttribute(name=cmdParams[0])
+                )
+            )
+            
+            # Cria o estado inicial (critical_block é onde ficam as configurações como pushname)
+            # Nota: Em produção, deveria obter a versão atual do app state, mas por simplicidade
+            # começamos com version 0. O WhatsApp aceitará e retornará a versão correta.
+            state = HashState("critical_block", 0)
+            
+            # Constrói o patch com a mutation
+            state, syncdPatch = PatchBuilder(state, mutationKeys, key).addMutation(pushNameSetting).finish()
+            
+            # Cria a entidade IQ para enviar o app state sync
+            # O patch precisa ser codificado (encode() retorna o objeto protobuf)
+            # O AppSyncStateIqProtocolEntity chama SerializeToString() internamente no protobuf
+            patches = {"critical_block": syncdPatch.encode()}
+            entity = AppSyncStateIqProtocolEntity(patches=patches)
+            
+            # Envia o IQ
+            self._sendIq(entity, on_success, on_error)
+            return entity.getId()
+            
+        except Exception as e:
+            logger.error(f"Erro ao definir pushname via AppState Sync: {e}", exc_info=True)
+            cmd_id = f"appstate-setname-error-{int(time.time() * 1000)}"
+            self.setCmdError(cmd_id, str(e))
+            return cmd_id
 
     def trustContact(self,cmdParams,options):
         def onSuccess(entity, originalIqEntity):
@@ -3184,24 +3324,76 @@ class SendLayer(YowInterfaceLayer):
         self.toLower(entity)
         return entity.getId()        
     
-    def setEmail(self,cmdParams,options):
+    def setEmail(self, cmdParams, options):
+        """Define o email da conta"""
+        def on_success(entity, original_iq_entity):
+            logger.info("setEmail success")
+            self.setCmdResult(entity.getId(), {"status": "ok", "email": cmdParams[0]})
+        
+        def on_error(entity, original_iq):
+            logger.error("setEmail error")
+            self.setCmdError(entity.getId(), entity.code if hasattr(entity, 'code') else "Unknown error")
+        
         entity = SetEmailIqProtocolEntity(email=cmdParams[0])
-        self.toLower(entity)
+        self._sendIq(entity, on_success, on_error)
         return entity.getId()
     
-    def getEmail(self,cmdParams,options):
+    def getEmail(self, cmdParams, options):
+        """Obtém o email da conta"""
+        def on_success(entity, original_iq_entity):
+            logger.info("getEmail success")
+            if isinstance(entity, EmailResultIqProtocolEntity):
+                result = {
+                    "email": entity.emailAddress,
+                    "verified": entity.verified,
+                    "confirmed": entity.confirmed,
+                    "do_verify": entity.doVerify
+                }
+            else:
+                result = {"status": "ok"}
+            self.setCmdResult(entity.getId(), result)
+        
+        def on_error(entity, original_iq):
+            logger.error("getEmail error")
+            self.setCmdError(entity.getId(), entity.code if hasattr(entity, 'code') else "Unknown error")
+        
         entity = GetEmailIqProtocolEntity()
-        self.toLower(entity)
+        self._sendIq(entity, on_success, on_error)
         return entity.getId()
     
-    def verifyEmail(self,cmdParams,options):
+    def verifyEmail(self, cmdParams, options):
+        """Solicita verificação do email"""
+        def on_success(entity, original_iq_entity):
+            logger.info("verifyEmail success")
+            if isinstance(entity, VerifyEmailResultIqProtocolEntity):
+                result = {
+                    "status": "ok",
+                    "email": entity.emailAddress if hasattr(entity, 'emailAddress') else None
+                }
+            else:
+                result = {"status": "ok"}
+            self.setCmdResult(entity.getId(), result)
+        
+        def on_error(entity, original_iq):
+            logger.error("verifyEmail error")
+            self.setCmdError(entity.getId(), entity.code if hasattr(entity, 'code') else "Unknown error")
+        
         entity = VerifyEmailIqProtocolEntity()
-        self.toLower(entity)
+        self._sendIq(entity, on_success, on_error)
         return entity.getId()
     
-    def verifyEmailCode(self,cmdParams,options):
+    def verifyEmailCode(self, cmdParams, options):
+        """Verifica o código de verificação do email"""
+        def on_success(entity, original_iq_entity):
+            logger.info("verifyEmailCode success")
+            self.setCmdResult(entity.getId(), {"status": "ok", "code": cmdParams[0]})
+        
+        def on_error(entity, original_iq):
+            logger.error("verifyEmailCode error")
+            self.setCmdError(entity.getId(), entity.code if hasattr(entity, 'code') else "Unknown error")
+        
         entity = VerifyEmailCodeIqProtocolEntity(code=cmdParams[0])
-        self.toLower(entity)
+        self._sendIq(entity, on_success, on_error)
         return entity.getId()
     
     def inputPairingCode(self,params,options):

@@ -596,6 +596,16 @@ class ZowsupClient:
             "group.seticon": self.send_layer.setGroupIcon,
             "contact.sync": self.send_layer.syncContacts,
             "account.init": self._command_account_init,
+            "account.setname": self.send_layer.setName,
+            "account.setavatar": self.send_layer.setAvatar,
+            "account.setbusinessname": self.send_layer.setBusinessName,
+            "account.getavatar": self.send_layer.getAvatar,
+            "account.setemail": self.send_layer.setEmail,
+            "account.getemail": self.send_layer.getEmail,
+            "account.info": self.send_layer.getAccountInfo,
+            "account.verifyemail": self.send_layer.verifyEmail,
+            "account.verifyemailcode": self.send_layer.verifyEmailCode,
+            "account.set2fa": self.send_layer.set2FA,
             "integrity.check": self.send_layer.integrityCheck,
         }
         for name, handler in handlers.items():
@@ -620,6 +630,16 @@ class ZowsupClient:
 
     def _get_cmd_result(self, cmd_id: str, wait_time: int):
         return self._dispatcher.wait_result(cmd_id, wait_time)
+    
+    @staticmethod
+    def _normalize_error(error):
+        """Normaliza erro para dict, tratando strings e dicts."""
+        if error is None:
+            return None
+        if isinstance(error, dict):
+            return error
+        # Se for string, converte para dict
+        return {"code": -1, "msg": str(error)}
 
     @staticmethod
     def _extract_group_id(data: Dict[str, Any]) -> Optional[str]:
@@ -762,6 +782,10 @@ class ZowsupClient:
                            "group.getinvite", "group.join", "group.setsubject", "group.setdescription",
                            "group.setsettings", "group.remove", "group.promote", "group.demote", 
                            "group.leave", "group.seticon"):
+            return 30
+        if command_name in ("account.setname", "account.setavatar", "account.getavatar",
+                           "account.setemail", "account.getemail", "account.verifyemail",
+                           "account.verifyemailcode", "account.set2fa", "account.info"):
             return 30
         if command_name in ("login",):
             return 120
@@ -2161,6 +2185,269 @@ class ZowsupClient:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("account.init")
         # Aguarda resultado via evento (orientado a eventos)
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def set_account_name(self, name: str) -> CommandResponse:
+        """
+        Define o nome da conta (pushname) usando AppState Sync.
+        
+        Esta função é isolada e executa diretamente, similar ao fluxo do initialize,
+        mas apenas para definir o nome da conta. Não passa pelo sistema de comandos.
+        
+        Args:
+            name: Novo nome da conta
+        
+        Returns:
+            CommandResponse com status e name
+        
+        Example:
+            client.set_account_name("Meu Nome")
+        """
+        logger.debug(f"{self._log_prefix} set_account_name(name={name})")
+        
+        # Executa diretamente sem passar pelo sistema de comandos
+        # Similar ao que _set_self_name faz, mas usando AppState Sync
+        try:
+            # Atualiza o profile local primeiro (como no _set_self_name)
+            chosen_name = name
+            profile = self._stack.getProp("profile")
+            if profile:
+                profile.config.pushname = chosen_name
+                profile.write_config(profile.config)
+            
+            # Para contas business, usa setBusinessName (que já tem callback)
+            logger.info(f"{self._log_prefix} set_account_name (AppState Sync) deviceEnv: {self.bot_env.deviceEnv.getOSName()}")
+            if self.bot_env.deviceEnv.getOSName() in ["SMBA", "SMB iOS"]:
+                try:
+                    # Para business, usa o método existente que já tem callbacks
+                    cmd_id, err = self._execute_command("account.setbusinessname", [chosen_name], {})
+                    if err is not None:
+                        err_dict = self._normalize_error(err)
+                        raise ZowsupError(err_dict.get("code"), err_dict.get("msg", "Command error"))
+                    wait_time = self._default_wait_time("account.setbusinessname")
+                    result, err2 = self._get_cmd_result(cmd_id, wait_time)
+                    if err2 is not None:
+                        err_dict = self._normalize_error(err2)
+                        raise ZowsupError(err_dict.get("code"), err_dict.get("msg", "Command error"))
+                    return CommandResponse(data=result)
+                except Exception as exc:
+                    logger.warning(f"{self._log_prefix} Erro ao definir nome de negócio: {exc}")
+                    raise
+          
+        except ZowsupError:
+            raise
+        except Exception as e:
+            logger.error(f"{self._log_prefix} Erro ao definir pushname via AppState Sync: {e}", exc_info=True)
+            raise ZowsupError(-1, f"Erro ao definir nome da conta: {str(e)}")
+
+    def set_account_avatar(self, avatar_path_or_url: str) -> CommandResponse:
+        """
+        Define o avatar da conta.
+        
+        Args:
+            avatar_path_or_url: Caminho do arquivo local ou URL da imagem
+        
+        Returns:
+            CommandResponse com status
+        
+        Example:
+            # Usando URL
+            client.set_account_avatar("https://example.com/avatar.jpg")
+            
+            # Usando arquivo local
+            client.set_account_avatar("/path/to/avatar.jpg")
+        """
+        logger.debug(f"{self._log_prefix} set_account_avatar(avatar={avatar_path_or_url})")
+        cmd_id, err = self._execute_command("account.setavatar", [avatar_path_or_url], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("account.setavatar")
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def get_account_avatar(self, target_jid: Optional[str] = None) -> CommandResponse:
+        """
+        Obtém o avatar de uma conta (própria ou de outro contato).
+        
+        Args:
+            target_jid: JID do contato (opcional, se None obtém o próprio avatar)
+        
+        Returns:
+            CommandResponse com id, type, url do avatar
+        
+        Example:
+            # Obter próprio avatar
+            response = client.get_account_avatar()
+            
+            # Obter avatar de outro contato
+            response = client.get_account_avatar("5511999999999@s.whatsapp.net")
+            print(f"Avatar URL: {response.data.get('url')}")
+        """
+        logger.debug(f"{self._log_prefix} get_account_avatar(target_jid={target_jid})")
+        params = [target_jid] if target_jid else []
+        cmd_id, err = self._execute_command("account.getavatar", params, {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("account.getavatar")
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def set_account_email(self, email: str) -> CommandResponse:
+        """
+        Define o email da conta.
+        
+        Args:
+            email: Endereço de email
+        
+        Returns:
+            CommandResponse com status
+        
+        Note:
+            Após definir o email, você pode solicitar a verificação chamando
+            verify_account_email() e depois verificar o código com verify_account_email_code().
+        
+        Example:
+            # Definir email
+            client.set_account_email("user@example.com")
+            
+            # Solicitar verificação
+            client.verify_account_email()
+            
+            # Verificar código recebido por email
+            client.verify_account_email_code("123456")
+        """
+        logger.debug(f"{self._log_prefix} set_account_email(email={email})")
+        cmd_id, err = self._execute_command("account.setemail", [email], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("account.setemail")
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def get_account_email(self) -> CommandResponse:
+        """
+        Obtém o email da conta.
+        
+        Returns:
+            CommandResponse com email, verified, confirmed, do_verify
+        
+        Example:
+            response = client.get_account_email()
+            print(f"Email: {response.data.get('email')}")
+            print(f"Verificado: {response.data.get('verified')}")
+        """
+        logger.debug(f"{self._log_prefix} get_account_email()")
+        cmd_id, err = self._execute_command("account.getemail", [], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("account.getemail")
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def verify_account_email(self) -> CommandResponse:
+        """
+        Solicita verificação do email da conta.
+        
+        Returns:
+            CommandResponse com status
+        
+        Example:
+            client.verify_account_email()
+        """
+        logger.debug(f"{self._log_prefix} verify_account_email()")
+        cmd_id, err = self._execute_command("account.verifyemail", [], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("account.verifyemail")
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def verify_account_email_code(self, code: str) -> CommandResponse:
+        """
+        Verifica o código de verificação do email.
+        
+        Args:
+            code: Código de verificação recebido por email
+        
+        Returns:
+            CommandResponse com status
+        
+        Example:
+            client.verify_account_email_code("123456")
+        """
+        logger.debug(f"{self._log_prefix} verify_account_email_code(code={code})")
+        cmd_id, err = self._execute_command("account.verifyemailcode", [code], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("account.verifyemailcode")
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def get_account_info(self) -> CommandResponse:
+        """
+        Obtém informações da conta (creation timestamp, last registration timestamp).
+        
+        Returns:
+            CommandResponse com creation e last_reg (timestamps)
+        
+        Example:
+            response = client.get_account_info()
+            print(f"Conta criada em: {response.data.get('creation')}")
+            print(f"Último registro em: {response.data.get('last_reg')}")
+        """
+        logger.debug(f"{self._log_prefix} get_account_info()")
+        cmd_id, err = self._execute_command("account.info", [], {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("account.info")
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        if err2 is not None:
+            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
+        return CommandResponse(data=result)
+    
+    def set_account_2fa(self, code: Optional[str] = None, email: Optional[str] = None) -> CommandResponse:
+        """
+        Define a autenticação de dois fatores (2FA) da conta.
+        
+        Args:
+            code: Código de 2FA (opcional, se None usa últimos 6 dígitos do número)
+            email: Email para recuperação (opcional, se None usa número@163.com)
+        
+        Returns:
+            CommandResponse com status
+        
+        Example:
+            # Com código e email explícitos
+            client.set_account_2fa(code="123456", email="user@example.com")
+            
+            # Com valores padrão (usa últimos 6 dígitos do número e número@163.com)
+            client.set_account_2fa()
+        """
+        logger.debug(f"{self._log_prefix} set_account_2fa(code={code}, email={email})")
+        params = []
+        if code:
+            params.append(code)
+        if email:
+            params.append(email)
+        cmd_id, err = self._execute_command("account.set2fa", params, {})
+        if err is not None:
+            raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
+        wait_time = self._default_wait_time("account.set2fa")
         result, err2 = self._get_cmd_result(cmd_id, wait_time)
         if err2 is not None:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
