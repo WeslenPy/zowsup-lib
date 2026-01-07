@@ -95,3 +95,8 @@ namespaces = true
 testpaths = ["tests"]
 pythonpath = "."
 addopts = '-p no:warnings'
+
+[dependency-groups]
+dev = [
+    "ffmpeg-python (>=0.2.0,<0.3.0)"
+]

@@ -1,10 +1,11 @@
-from .....common.tools import ImageTools
+from .....common.tools import ImageTools, DownloadTools
 from .....layers.protocol_messages.protocolentities.attributes.attributes_downloadablemedia \
     import DownloadableMediaMessageAttributes
 import os
 import requests
 from pathlib import Path
 from zowsuplib.settings.conf import settings
+from loguru import logger
 
 
 class ImageAttributes(object):
@@ -87,14 +88,9 @@ class ImageAttributes(object):
     def from_url(url,mediaType=None,resultRequestMediaConnIqProtocolEntity=None, 
         dimensions=None, caption=None, jpeg_thumbnail=None):
 
-        #多一个下载流程
-        down_res = requests.get(url=url)
-        download_dir = Path(settings.download_path)
-        filepath = str(download_dir / "image.jpg")
-        with open(filepath,"wb") as file:
-            file.write(down_res.content)             
+        # Usa a função auxiliar para download seguro
+        filepath = DownloadTools.download_file_from_url(url, default_extension=".jpg", prefix="image")
 
-        assert os.path.exists(filepath)
         if not jpeg_thumbnail:
             jpeg_thumbnail = ImageTools.generatePreviewFromImage(filepath)
         dimensions = dimensions or ImageTools.getImageDimensions(filepath)

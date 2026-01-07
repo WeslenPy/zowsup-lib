@@ -337,6 +337,86 @@ class ZowsupClient:
         logger.info(f"Conta {phone} importada com sucesso no DB unificado")
         return phone
 
+    def export_to_six_parts(self) -> str:
+        """
+        Exporta a conta atual para o formato six_parts (6-parts-account-data).
+        
+        O formato six_parts é uma string com 6 campos separados por vírgula:
+            phone,pk1,sk1,pk2,sk2,sixth
+        
+        Onde:
+            - phone: número de telefone da conta
+            - pk1: chave pública 1 (do client_static_keypair) em base64
+            - sk1: chave privada 1 (do client_static_keypair) em base64
+            - pk2: chave pública 2 (da identidade Axolotl) em base64 (sem o primeiro byte)
+            - sk2: chave privada 2 (da identidade Axolotl) em base64
+            - sixth: base64(phone.encode() + "#".encode() + config.id)
+        
+        Returns:
+            String no formato six_parts: "phone,pk1,sk1,pk2,sk2,sixth"
+        
+        Raises:
+            ZowsupError: Se não for possível carregar a configuração ou as chaves
+        
+        Example:
+            client = ZowsupClient(account_id="5511999999999")
+            six_parts = client.export_to_six_parts()
+            print(six_parts)  # "5511999999999,ABC123...,DEF456...,GHI789...,JKL012...,MNO345..."
+            
+            # Salvar em arquivo
+            with open("account_backup.txt", "w") as f:
+                f.write(six_parts)
+        """
+        from zowsuplib.yowsup.config.manager import ConfigManager
+        from zowsuplib.yowsup.axolotl.factory import AxolotlManagerFactory
+        
+        logger.debug(f"{self._log_prefix} export_to_six_parts()")
+        
+        try:
+            # Carrega a configuração do perfil
+            config_manager = ConfigManager()
+            config = config_manager.load(self.account_id, profile_only=True)
+            
+            if config is None:
+                raise ZowsupError(-1, f"Configuração não encontrada para a conta {self.account_id}")
+            
+            if config.client_static_keypair is None:
+                raise ZowsupError(-1, f"client_static_keypair não encontrado para a conta {self.account_id}")
+            
+            # Obtém as chaves do client_static_keypair
+            kp = config.client_static_keypair
+            pk1 = base64.b64encode(kp.public.data).decode('utf-8')
+            sk1 = base64.b64encode(kp.private.data).decode('utf-8')
+            
+            # Obtém as chaves de identidade do Axolotl
+            db = AxolotlManagerFactory().get_manager(self.account_id, self.account_id)
+            
+            if db.identity is None or db.identity.publicKey is None or db.identity.privateKey is None:
+                raise ZowsupError(-1, f"Chaves de identidade não encontradas para a conta {self.account_id}")
+            
+            # pk2: remove o primeiro byte (tipo) da chave pública
+            pk2 = base64.b64encode(db.identity.publicKey.serialize()[1:]).decode('utf-8')
+            sk2 = base64.b64encode(db.identity.privateKey.serialize()).decode('utf-8')
+            
+            # sixth: base64(phone.encode() + "#".encode() + config.id)
+            if config.id is None:
+                raise ZowsupError(-1, f"ID da conta não encontrado na configuração")
+            
+            sixth_data = config.phone.encode('utf-8') + b"#" + config.id
+            sixth = base64.b64encode(sixth_data).decode('utf-8')
+            
+            # Monta a string six_parts
+            six_parts = f"{config.phone},{pk1},{sk1},{pk2},{sk2},{sixth}"
+            
+            logger.info(f"{self._log_prefix} Conta {self.account_id} exportada para formato six_parts com sucesso")
+            return six_parts
+            
+        except ZowsupError:
+            raise
+        except Exception as e:
+            logger.error(f"{self._log_prefix} Erro ao exportar conta para six_parts: {e}", exc_info=True)
+            raise ZowsupError(-1, f"Erro ao exportar conta: {str(e)}")
+
     @staticmethod
     def delete_account(account_id: str, *, remove_files: bool = True) -> bool:
         """
@@ -1775,6 +1855,8 @@ class ZowsupClient:
         wait_for_id: bool = False,
         wait_msg_id_timeout: Optional[int] = None,
         caption: Optional[str] = None,
+        ptt: bool = True,
+        waveform: Optional[bytes] = None,
         **options: Any,
     ) -> CommandResponse:
         """
@@ -1788,6 +1870,11 @@ class ZowsupClient:
             wait_msg_id_timeout: timeout (segundos) para obter o ID
             caption: legenda opcional (não aplicável para stickers)
             options: opções adicionais:
+                - Para áudio:
+                  - ptt: bool - se True, envia como mensagem de voz (push-to-talk). 
+                    Quando True, gera automaticamente waveform para visualização (padrão: False)
+                  - waveform: bytes - waveform customizado (100 bytes). Se não fornecido e ptt=True, 
+                    será gerado automaticamente
                 - Para stickers:
                   - is_animated: bool - se o sticker é animado (padrão: False)
                   - is_avatar: bool - se é um sticker de avatar (padrão: False)
@@ -1795,6 +1882,20 @@ class ZowsupClient:
                   - is_lottie: bool - se é um sticker Lottie (padrão: False)
                 - Para documentos:
                   - fileName: str - nome do arquivo
+        
+        Returns:
+            CommandResponse com o resultado. Se wait_for_id=True, contém 'message_id'.
+        
+        Examples:
+            # Enviar áudio normal
+            client.send_media("5511888888888", "audio", "audio.ogg")
+            
+            # Enviar áudio como mensagem de voz (PTT)
+            client.send_media("5511888888888", "audio", "voice.ogg", ptt=True)
+            
+            # Enviar áudio PTT com waveform customizado
+            custom_waveform = bytes([...])  # 100 bytes
+            client.send_media("5511888888888", "audio", "voice.ogg", ptt=True, waveform=custom_waveform)
         """
         self._bind_sysvar_context()
 
@@ -1804,6 +1905,10 @@ class ZowsupClient:
         opts = dict(options)
         if caption is not None:
             opts["caption"] = caption
+        if ptt:
+            opts["ptt"] = ptt
+        if waveform:
+            opts["waveform"] = waveform
 
         if wait_for_id:
             timeout = wait_msg_id_timeout or self._default_wait_time("msg.sendmedia")

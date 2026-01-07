@@ -2504,10 +2504,26 @@ class SendLayer(YowInterfaceLayer):
                     )                         
 
                 if mediaType=="audio":      
+                    # Extrai opções PTT e waveform das options
+                    ptt = options.get("ptt", False) if isinstance(options, dict) else False
+                    waveform = options.get("waveform") if isinstance(options, dict) else None
+                    
                     if filePath.startswith("http://") or filePath.startswith("https://"):
-                        attr_media = AudioAttributes.from_url(filePath,mediaType,resultRequestMediaConnIqProtocolEntity)          
+                        attr_media = AudioAttributes.from_url(
+                            filePath,
+                            mediaType,
+                            resultRequestMediaConnIqProtocolEntity,
+                            ptt=ptt,
+                            waveform=waveform
+                        )          
                     else:      
-                        attr_media = AudioAttributes.from_filepath(filePath,mediaType,resultRequestMediaConnIqProtocolEntity)          
+                        attr_media = AudioAttributes.from_filepath(
+                            filePath,
+                            mediaType,
+                            resultRequestMediaConnIqProtocolEntity,
+                            ptt=ptt,
+                            waveform=waveform
+                        )          
                     entity = AudioDownloadableMediaMessageProtocolEntity(
                         audio_attrs=attr_media,
                         message_meta_attrs=MessageMetaAttributes(id=self.bot.idType,recipient= Jid.normalize(to))

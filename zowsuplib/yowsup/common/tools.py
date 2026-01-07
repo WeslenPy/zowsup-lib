@@ -12,6 +12,8 @@ from zowsuplib.consonance.structs.keypair import KeyPair
 import re
 from loguru import logger
 from zowsuplib.settings.conf import settings
+import requests
+from urllib.parse import urlparse
 
 from .optionalmodules import PILOptionalModule, FFMpegOptionalModule
 
@@ -448,6 +450,123 @@ class VideoTools:
         # Por enquanto, retorna None para indicar que não foi possível gerar preview
         logger.debug("Usando fallback: preview não disponível")
         return None
+
+
+class DownloadTools:
+    """
+    Ferramentas auxiliares para download seguro de arquivos de URLs.
+    """
+    
+    @staticmethod
+    def download_file_from_url(url: str, default_extension: str = None, prefix: str = "download") -> str:
+        """
+        Faz download de um arquivo de uma URL e salva em um diretório seguro.
+        
+        Args:
+            url: URL do arquivo a ser baixado
+            default_extension: Extensão padrão se não conseguir detectar da URL (ex: ".ogg", ".mp4")
+            prefix: Prefixo para o nome do arquivo se não conseguir extrair da URL
+        
+        Returns:
+            Caminho completo do arquivo baixado
+        
+        Raises:
+            Exception: Se houver erro ao baixar ou salvar o arquivo
+        """
+        try:
+            # Faz o download do arquivo
+            down_res = requests.get(url, timeout=30)
+            down_res.raise_for_status()
+            
+            # Extrai o filename da URL de forma segura
+            parsed_url = urlparse(url)
+            url_path = parsed_url.path
+            
+            # Tenta extrair o filename do path da URL
+            if url_path:
+                # Remove a barra inicial se existir
+                url_path = url_path.lstrip('/')
+                # Pega a última parte do path (filename)
+                filename = os.path.basename(url_path) if url_path else None
+            else:
+                filename = None
+            
+            # Se não conseguiu extrair um filename válido da URL, gera um baseado no hash
+            if not filename or len(filename) == 0 or len(filename) > 200:
+                # Gera um hash da URL para criar um filename único
+                url_hash = hashlib.sha256(url.encode('utf-8')).hexdigest()[:32]
+                ext = default_extension or ".tmp"
+                filename = f"{prefix}_{url_hash}{ext}"
+            else:
+                # Sanitiza o filename: remove caracteres inválidos e limita tamanho
+                # Remove caracteres inválidos para Windows/Linux
+                invalid_chars = '<>:"|?*\\'
+                for char in invalid_chars:
+                    filename = filename.replace(char, '_')
+                
+                # Limita o tamanho do filename (Windows tem limite de 255 caracteres)
+                if len(filename) > 200:
+                    name, ext = os.path.splitext(filename)
+                    filename = name[:190] + (ext or default_extension or "")
+                
+                # Se não tiver extensão e foi fornecida uma padrão, adiciona
+                if default_extension and not os.path.splitext(filename)[1]:
+                    filename += default_extension
+            
+            # Determina o diretório de download
+            # Tenta usar o diretório configurado, mas se não existir ou não tiver permissão, usa temp
+            download_dir = None
+            try:
+                download_dir = Path(settings.download_path)
+                # Cria o diretório se não existir
+                download_dir.mkdir(parents=True, exist_ok=True)
+                # Testa se tem permissão de escrita
+                test_file = download_dir / ".test_write"
+                try:
+                    test_file.touch()
+                    test_file.unlink()
+                except (PermissionError, OSError):
+                    # Sem permissão, usa temp
+                    download_dir = None
+            except (PermissionError, OSError, Exception) as e:
+                logger.warning(f"Não foi possível usar diretório de download configurado: {e}, usando diretório temporário")
+                download_dir = None
+            
+            # Se não conseguiu usar o diretório configurado, usa temp
+            if download_dir is None:
+                download_dir = Path(tempfile.gettempdir()) / "zowsuplib_downloads"
+                download_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Monta o caminho completo do arquivo
+            filepath = download_dir / filename
+            
+            # Se o arquivo já existir, adiciona um sufixo numérico
+            counter = 1
+            original_filepath = filepath
+            while filepath.exists():
+                name, ext = os.path.splitext(original_filepath)
+                filepath = Path(f"{name}_{counter}{ext}")
+                counter += 1
+                if counter > 1000:  # Limite de segurança
+                    raise Exception("Muitos arquivos com o mesmo nome no diretório")
+            
+            # Salva o arquivo
+            filepath_str = str(filepath)
+            with open(filepath_str, "wb") as file:
+                file.write(down_res.content)
+            
+            logger.debug(f"Arquivo baixado de URL e salvo em: {filepath_str}")
+            return filepath_str
+            
+        except requests.RequestException as e:
+            logger.error(f"Erro ao baixar arquivo da URL {url}: {e}")
+            raise Exception(f"Erro ao baixar arquivo: {str(e)}")
+        except (PermissionError, OSError) as e:
+            logger.error(f"Erro de permissão ao salvar arquivo: {e}")
+            raise Exception(f"Erro de permissão ao salvar arquivo: {str(e)}")
+        except Exception as e:
+            logger.error(f"Erro inesperado ao processar arquivo da URL {url}: {e}", exc_info=True)
+            raise
 
 
 

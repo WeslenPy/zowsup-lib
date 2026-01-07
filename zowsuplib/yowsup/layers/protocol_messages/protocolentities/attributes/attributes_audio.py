@@ -1,12 +1,13 @@
 from .....layers.protocol_messages.protocolentities.attributes.attributes_downloadablemedia import \
     DownloadableMediaMessageAttributes
 
-from .....common.tools import AudioTools
+from .....common.tools import AudioTools, DownloadTools
 import os
 import requests
 from pathlib import Path
 from zowsuplib.settings.conf import settings
 import random
+from loguru import logger
 
 class AudioAttributes(object):
     def __init__(self, downloadablemedia_attributes, seconds, ptt, streaming_sidecar=None, waveform=None):
@@ -139,12 +140,8 @@ class AudioAttributes(object):
     def from_url(url,mediaType=None,resultRequestMediaConnIqProtocolEntity=None, 
         audioPropertis=None, ptt=False,streaming_sidecar=None, waveform=None):
 
-        down_res = requests.get(url=url)
-        filename = url[url.rfind("/",0):]
-        download_dir = Path(settings.download_path)
-        filepath = str(download_dir / filename)
-        with open(filepath,"wb") as file:
-            file.write(down_res.content)       
+        # Usa a função auxiliar para download seguro
+        filepath = DownloadTools.download_file_from_url(url, default_extension=".ogg", prefix="audio")
 
         audioPropertis = audioPropertis or AudioTools.getAudioProperties(filepath)
         seconds= audioPropertis if audioPropertis else None

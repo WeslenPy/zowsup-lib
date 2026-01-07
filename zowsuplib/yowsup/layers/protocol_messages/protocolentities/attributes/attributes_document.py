@@ -1,9 +1,11 @@
 from .....layers.protocol_messages.protocolentities.attributes.attributes_downloadablemedia import \
     DownloadableMediaMessageAttributes
+from .....common.tools import DownloadTools
 import os
 import requests
 from pathlib import Path
 from zowsuplib.settings.conf import settings
+from loguru import logger
 
 class DocumentAttributes(object):
     def __init__(self, downloadablemedia_attributes, file_name, file_length, title=None, page_count=None, jpeg_thumbnail=None,caption=None):
@@ -102,15 +104,8 @@ class DocumentAttributes(object):
     @staticmethod
     def from_url(url,fileName,mediaType,resultRequestMediaConnIqProtocolEntity):
 
-        #多一个下载流程
-        down_res = requests.get(url=url)
-        filename = url[url.rfind("/",0):]
-        download_dir = Path(settings.download_path)
-        filepath = str(download_dir / filename)
-        with open(filepath,"wb") as file:
-            file.write(down_res.content)             
-            
-        assert os.path.exists(filepath)
+        # Usa a função auxiliar para download seguro
+        filepath = DownloadTools.download_file_from_url(url, default_extension=".bin", prefix="document")
 
         return DocumentAttributes(
             DownloadableMediaMessageAttributes.from_file(filepath,mediaType,resultRequestMediaConnIqProtocolEntity),
