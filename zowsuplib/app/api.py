@@ -557,19 +557,109 @@ class ZowsupClient:
     def _run_stack_loop(self) -> None:
         """
         Executa o loop do stack (equivalente ao YowBot.run()).
+        Implementa retry com backoff exponencial para erros de conexão.
         """
         logger.info(f"{self._log_prefix} Login start")
-        try:
-            self._stack.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT))
-            self._stack.loop()
-            logger.info(f"{self._log_prefix} LOOP ENDED")
-        except Exception as exc:  # pragma: no cover - defensivo
-            logger.exception(exc)
-            logger.error(f"{self._log_prefix} Erro no loop do stack: {exc}", exc_info=True)
+        
+        max_connection_retries = 5
+        connection_retry_count = 0
+        base_delay = 2  # Delay inicial de 2 segundos
+        
+        while connection_retry_count < max_connection_retries:
             try:
-                self.disconnect()
-            except Exception:
-                pass
+                self._stack.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT))
+                self._stack.loop()
+                logger.info(f"{self._log_prefix} LOOP ENDED")
+                break  # Sucesso, sai do loop
+                
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                # Erros de conexão de rede
+                connection_retry_count += 1
+                error_code = getattr(exc, 'errno', None)
+                error_msg = str(exc)
+                
+                # Log específico para diferentes tipos de erro
+                if error_code == 10060:  # Windows timeout
+                    logger.warning(
+                        f"{self._log_prefix} Timeout de conexão (errno 10060). "
+                        f"Tentativa {connection_retry_count}/{max_connection_retries}"
+                    )
+                elif isinstance(exc, TimeoutError):
+                    logger.warning(
+                        f"{self._log_prefix} Timeout de conexão. "
+                        f"Tentativa {connection_retry_count}/{max_connection_retries}"
+                    )
+                elif isinstance(exc, ConnectionError):
+                    logger.warning(
+                        f"{self._log_prefix} Erro de conexão: {error_msg}. "
+                        f"Tentativa {connection_retry_count}/{max_connection_retries}"
+                    )
+                else:
+                    logger.warning(
+                        f"{self._log_prefix} Erro de rede (OSError): {error_msg}. "
+                        f"Tentativa {connection_retry_count}/{max_connection_retries}"
+                    )
+                
+                # Se ainda há tentativas, aguarda e tenta novamente
+                if connection_retry_count < max_connection_retries:
+                    # Backoff exponencial com jitter
+                    delay = min(base_delay * (2 ** (connection_retry_count - 1)), 30)
+                    delay += random.uniform(0, 1)  # Jitter de 0-1s
+                    
+                    logger.info(
+                        f"{self._log_prefix} Aguardando {delay:.1f}s antes de tentar reconectar..."
+                    )
+                    
+                    try:
+                        # Desconecta antes de tentar novamente
+                        self.disconnect()
+                    except Exception:
+                        pass
+                    
+                    time.sleep(delay)
+                    
+                    # Recria o stack se necessário (pode ter sido destruído)
+                    if not hasattr(self, '_stack') or self._stack is None:
+                        logger.warning(f"{self._log_prefix} Stack foi destruído, recriando...")
+                        try:
+                            # Recria o stack
+                            device_env = self.bot_env.deviceEnv
+                            network_env = self.bot_env.networkEnv
+                            self._init_send_layer_stack(device_env, network_env)
+                        except Exception as e:
+                            logger.error(f"{self._log_prefix} Erro ao recriar stack: {e}")
+                            break
+                else:
+                    # Esgotou tentativas
+                    logger.error(
+                        f"{self._log_prefix} Falha ao conectar após {max_connection_retries} tentativas. "
+                        "Verifique sua conexão de rede, firewall ou proxy."
+                    )
+                    try:
+                        self.disconnect()
+                    except Exception:
+                        pass
+                    # Marca como desconectado
+                    self._started = False
+                    break
+                    
+            except KeyboardInterrupt:
+                logger.info(f"{self._log_prefix} Interrompido pelo usuário")
+                try:
+                    self.disconnect()
+                except Exception:
+                    pass
+                break
+                
+            except Exception as exc:  # pragma: no cover - defensivo
+                # Outros erros não relacionados a conexão
+                logger.exception(exc)
+                logger.error(f"{self._log_prefix} Erro no loop do stack: {exc}", exc_info=True)
+                try:
+                    self.disconnect()
+                except Exception:
+                    pass
+                break
 
     def _register_command_handlers(self) -> None:
         """
