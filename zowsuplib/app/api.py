@@ -1640,8 +1640,8 @@ class ZowsupClient:
             file_path_or_url: Caminho local ou URL do arquivo de mídia (obrigatório se media_type for fornecido)
             wait_for_id: Se True, retorna o ID da mensagem
             wait_msg_id_timeout: Timeout (segundos) para obter o ID
-            text_color: Cor do texto em formato ARGB (ex: 0xFFFFFFFF para branco)
-            background_color: Cor de fundo em formato ARGB (ex: 0xFF000000 para preto)
+            text_color: Cor do texto em formato ARGB (int ou str hex, ex: 0xFFFFFFFF ou "0xFFFFFFFF" para branco)
+            background_color: Cor de fundo em formato ARGB (int ou str hex, ex: 0xFF000000 ou "0xFF000000" para preto)
             font: Tipo de fonte (0=SANS_SERIF, 1=SERIF, 2=NORICAN_REGULAR, 3=BRYNDAN_WRITE, 4=BEBASNEUE_REGULAR, 5=OSWALD_HEAVY)
             options: Opções adicionais:
                 - caption: Legenda para mídia
@@ -1658,9 +1658,17 @@ class ZowsupClient:
             # Status de texto com cores e fonte
             client.send_status(
                 "Status colorido",
-                text_color=0xFFFFFFFF,      # Texto branco
-                background_color=0xFF000000, # Fundo preto
+                text_color=0xFFFFFFFF,      # Texto branco (int)
+                background_color=0xFF000000, # Fundo preto (int)
                 font=2                      # Fonte NORICAN_REGULAR
+            )
+            
+            # Status de texto com cores em formato string hexadecimal
+            client.send_status(
+                "Status colorido",
+                text_color="0xFFFFFFFF",      # Texto branco (string)
+                background_color="0xFF000000",  # Fundo preto (string)
+                font=2
             )
             
             # Status de imagem
@@ -1692,12 +1700,32 @@ class ZowsupClient:
         
         opts = dict(options)
         
+        # Função auxiliar para converter string hexadecimal para int
+        def _parse_color(color_value):
+            """Converte string hexadecimal (ex: '0xFFFFFFFF') para int."""
+            if color_value is None:
+                return None
+            if isinstance(color_value, int):
+                return color_value
+            if isinstance(color_value, str):
+                # Remove espaços e converte para minúsculas
+                color_str = color_value.strip().lower()
+                # Remove prefixo 0x se presente
+                if color_str.startswith('0x'):
+                    color_str = color_str[2:]
+                # Converte hex string para int
+                try:
+                    return int(color_str, 16)
+                except ValueError:
+                    raise ValueError(f"Cor inválida: '{color_value}'. Esperado formato hexadecimal (ex: '0xFFFFFFFF' ou 'FFFFFFFF')")
+            raise TypeError(f"Tipo de cor inválido: {type(color_value)}. Esperado int ou str")
+        
         # Se for status de texto, adiciona opções de cor e fonte
         if text:
             if text_color is not None:
-                opts["text_color"] = text_color
+                opts["text_color"] = _parse_color(text_color)
             if background_color is not None:
-                opts["background_color"] = background_color
+                opts["background_color"] = _parse_color(background_color)
             if font is not None:
                 opts["font"] = font
             opts["preview_type"] = opts.get("preview_type", 0)
