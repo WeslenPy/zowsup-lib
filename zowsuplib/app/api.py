@@ -1621,7 +1621,6 @@ class ZowsupClient:
         text: Optional[str] = None,
         media_type: Optional[str] = None,
         file_path_or_url: Optional[str] = None,
-        *,
         wait_for_id: bool = False,
         wait_msg_id_timeout: Optional[int] = None,
         text_color: Optional[int] = None,
