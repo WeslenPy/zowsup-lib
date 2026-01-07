@@ -928,7 +928,7 @@ class ZowsupClient:
 
         return 20
 
-    def connect(self, wait_login: bool = True, retry_with_env_rotation: bool = True) -> bool:
+    def connect(self, wait_login: bool = True, retry_with_env_rotation: bool = False) -> bool:
         """
         Inicia o bot em thread separada e, opcionalmente, espera o login.
         
