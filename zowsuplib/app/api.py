@@ -1857,6 +1857,7 @@ class ZowsupClient:
         caption: Optional[str] = None,
         ptt: bool = True,
         waveform: Optional[bytes] = None,
+        fileName: Optional[str] = None,
         **options: Any,
     ) -> CommandResponse:
         """
@@ -1909,6 +1910,9 @@ class ZowsupClient:
             opts["ptt"] = ptt
         if waveform:
             opts["waveform"] = waveform
+        
+        if fileName:
+            opts["fileName"] = fileName
 
         if wait_for_id:
             timeout = wait_msg_id_timeout or self._default_wait_time("msg.sendmedia")
