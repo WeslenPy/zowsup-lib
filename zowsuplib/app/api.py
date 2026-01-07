@@ -683,6 +683,33 @@ class ZowsupClient:
             return error
         # Se for string, converte para dict
         return {"code": -1, "msg": str(error)}
+    
+    @staticmethod
+    def _normalize_string_list(value):
+        """
+        Normaliza um valor para lista de strings.
+        
+        Aceita:
+        - list[str]: retorna como está
+        - str: se contém vírgula, divide por vírgula; senão, retorna lista com um elemento
+        - None: retorna lista vazia
+        
+        Returns:
+            list[str]: Lista normalizada de strings
+        """
+        if value is None:
+            return []
+        if isinstance(value, list):
+            # Filtra strings vazias e remove espaços
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            # Se contém vírgula, divide; senão, retorna lista com um elemento
+            if ',' in value:
+                return [item.strip() for item in value.split(',') if item.strip()]
+            else:
+                return [value.strip()] if value.strip() else []
+        # Para outros tipos, converte para string e retorna como lista
+        return [str(value).strip()] if str(value).strip() else []
 
     @staticmethod
     def _extract_group_id(data: Dict[str, Any]) -> Optional[str]:
@@ -1804,14 +1831,25 @@ class ZowsupClient:
 
         return CommandResponse(data=result)
 
-    def create_group(self, subject: str, participants: list[str]=[]) -> CommandResponse:
+    def create_group(self, subject: str, participants: list[str] = []) -> CommandResponse:
         """
         Cria um grupo com o assunto e participantes informados.
 
-        - subject: nome do grupo
-        - participants: string com jids separados por vírgula
+        Args:
+            subject: Nome do grupo
+            participants: Lista de JIDs dos participantes (ex: ["5511999999999", "5511888888888"])
+        
+        Returns:
+            CommandResponse com groupId e informações do grupo criado
+        
+        Example:
+            client.create_group("Meu Grupo", ["5511999999999", "5511888888888"])
         """
-        cmd_id, err = self._execute_command("group.create", [subject, ",".join(participants) if participants else ""], {})
+        # Normaliza participantes para lista
+        participants_list = self._normalize_string_list(participants)
+        participants_str = ",".join(participants_list) if participants_list else ""
+        
+        cmd_id, err = self._execute_command("group.create", [subject, participants_str], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("group.create")
@@ -1912,19 +1950,26 @@ class ZowsupClient:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
-    def group_add(self, group_id: str, participant_phones: str) -> CommandResponse:
+    def group_add(self, group_id: str, participant_phones: list[str]) -> CommandResponse:
         """
         Adiciona participantes a um grupo.
         
         Args:
             group_id: ID do grupo (pode ser apenas o ID ou JID completo)
-            participant_phones: String com phones separados por vírgula (ex: "5511999999999,5511888888888")
+            participant_phones: Lista de phones/JIDs dos participantes (ex: ["5511999999999", "5511888888888"])
         
         Returns:
             CommandResponse com successCount, successJids, errorCount, errorJids
+        
+        Example:
+            client.group_add("120363123456789012@g.us", ["5511999999999", "5511888888888"])
         """
-        logger.debug(f"{self._log_prefix} group_add(group_id={group_id}, participants={participant_phones})")
-        cmd_id, err = self._execute_command("group.add", [group_id, participant_phones], {})
+        # Normaliza para lista e converte para string separada por vírgula para a camada inferior
+        participants_list = self._normalize_string_list(participant_phones)
+        participants_str = ",".join(participants_list)
+        
+        logger.debug(f"{self._log_prefix} group_add(group_id={group_id}, participants={participants_list})")
+        cmd_id, err = self._execute_command("group.add", [group_id, participants_str], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("group.add")
@@ -2067,19 +2112,26 @@ class ZowsupClient:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
-    def group_remove(self, group_id: str, participant_phones: str) -> CommandResponse:
+    def group_remove(self, group_id: str, participant_phones: list[str]) -> CommandResponse:
         """
         Remove participantes de um grupo.
         
         Args:
             group_id: ID do grupo (pode ser apenas o ID ou JID completo)
-            participant_phones: String com phones separados por vírgula (ex: "5511999999999,5511888888888")
+            participant_phones: Lista de phones/JIDs dos participantes (ex: ["5511999999999", "5511888888888"])
         
         Returns:
             CommandResponse com successCount, successJids, errorCount, errorJids
+        
+        Example:
+            client.group_remove("120363123456789012@g.us", ["5511999999999", "5511888888888"])
         """
-        logger.debug(f"{self._log_prefix} group_remove(group_id={group_id}, participants={participant_phones})")
-        cmd_id, err = self._execute_command("group.remove", [group_id, participant_phones], {})
+        # Normaliza para lista e converte para string separada por vírgula para a camada inferior
+        participants_list = self._normalize_string_list(participant_phones)
+        participants_str = ",".join(participants_list)
+        
+        logger.debug(f"{self._log_prefix} group_remove(group_id={group_id}, participants={participants_list})")
+        cmd_id, err = self._execute_command("group.remove", [group_id, participants_str], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("group.remove")
@@ -2088,19 +2140,26 @@ class ZowsupClient:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
-    def group_promote(self, group_id: str, participant_phones: str) -> CommandResponse:
+    def group_promote(self, group_id: str, participant_phones: list[str]) -> CommandResponse:
         """
         Promove participantes a administradores do grupo.
         
         Args:
             group_id: ID do grupo (pode ser apenas o ID ou JID completo)
-            participant_phones: String com phones separados por vírgula (ex: "5511999999999,5511888888888")
+            participant_phones: Lista de phones/JIDs dos participantes (ex: ["5511999999999", "5511888888888"])
         
         Returns:
             CommandResponse com status
+        
+        Example:
+            client.group_promote("120363123456789012@g.us", ["5511999999999", "5511888888888"])
         """
-        logger.debug(f"{self._log_prefix} group_promote(group_id={group_id}, participants={participant_phones})")
-        cmd_id, err = self._execute_command("group.promote", [group_id, participant_phones], {})
+        # Normaliza para lista e converte para string separada por vírgula para a camada inferior
+        participants_list = self._normalize_string_list(participant_phones)
+        participants_str = ",".join(participants_list)
+        
+        logger.debug(f"{self._log_prefix} group_promote(group_id={group_id}, participants={participants_list})")
+        cmd_id, err = self._execute_command("group.promote", [group_id, participants_str], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("group.promote")
@@ -2109,19 +2168,26 @@ class ZowsupClient:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
-    def group_demote(self, group_id: str, participant_phones: str) -> CommandResponse:
+    def group_demote(self, group_id: str, participant_phones: list[str]) -> CommandResponse:
         """
         Remove privilégios de administrador de participantes do grupo.
         
         Args:
             group_id: ID do grupo (pode ser apenas o ID ou JID completo)
-            participant_phones: String com phones separados por vírgula (ex: "5511999999999,5511888888888")
+            participant_phones: Lista de phones/JIDs dos participantes (ex: ["5511999999999", "5511888888888"])
         
         Returns:
             CommandResponse com status
+        
+        Example:
+            client.group_demote("120363123456789012@g.us", ["5511999999999", "5511888888888"])
         """
-        logger.debug(f"{self._log_prefix} group_demote(group_id={group_id}, participants={participant_phones})")
-        cmd_id, err = self._execute_command("group.demote", [group_id, participant_phones], {})
+        # Normaliza para lista e converte para string separada por vírgula para a camada inferior
+        participants_list = self._normalize_string_list(participant_phones)
+        participants_str = ",".join(participants_list)
+        
+        logger.debug(f"{self._log_prefix} group_demote(group_id={group_id}, participants={participants_list})")
+        cmd_id, err = self._execute_command("group.demote", [group_id, participants_str], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("group.demote")
@@ -2180,9 +2246,22 @@ class ZowsupClient:
 
     def sync_contacts(self, numbers: list[str]) -> CommandResponse:
         """
-        Sincroniza contatos informados (string de números separados por vírgula).
+        Sincroniza contatos informados.
+        
+        Args:
+            numbers: Lista de números de telefone para sincronizar (ex: ["5511999999999", "5511888888888"])
+        
+        Returns:
+            CommandResponse com informações dos contatos sincronizados
+        
+        Example:
+            client.sync_contacts(["5511999999999", "5511888888888"])
         """
-        cmd_id, err = self._execute_command("contact.sync", [",".join(numbers)], {})
+        # Normaliza para lista (aceita string separada por vírgula para compatibilidade)
+        numbers_list = self._normalize_string_list(numbers)
+        numbers_str = ",".join(numbers_list)
+        
+        cmd_id, err = self._execute_command("contact.sync", [numbers_str], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
         wait_time = self._default_wait_time("contact.sync")
@@ -2194,10 +2273,20 @@ class ZowsupClient:
 
     def integrity_check(self, phones: list[str]) -> CommandResponse:
         """
-        Executa a checagem de integridade (BizIntegrityQuery) para IDs separados por vírgula.
+        Executa a checagem de integridade (BizIntegrityQuery) para os números informados.
+        
+        Args:
+            phones: Lista de números de telefone para verificar (ex: ["5511999999999", "5511888888888"])
+        
+        Returns:
+            CommandResponse com resultados da verificação de integridade
+        
+        Example:
+            client.integrity_check(["5511999999999", "5511888888888"])
         """
-
-        phones_str = ",".join(phones)
+        # Normaliza para lista (aceita string separada por vírgula para compatibilidade)
+        phones_list = self._normalize_string_list(phones)
+        phones_str = ",".join(phones_list)
 
 
         cmd_id, err = self._execute_command("integrity.check", [phones_str], {})
