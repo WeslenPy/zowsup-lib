@@ -129,11 +129,11 @@ class _CommandDispatcher:
         """
         with self._lock:
             obj = self._events.get(cmd_id)
-            if obj is None:
+        if obj is None:
                 # Cria evento se não existir (para comandos que retornam JUSTWAIT)
                 obj = {"event": threading.Event()}
                 self._events[cmd_id] = obj
-        
+
         event = obj["event"]
         if not event.wait(wait_time):
             # Timeout: remove evento se não houve resultado
@@ -557,109 +557,62 @@ class ZowsupClient:
     def _run_stack_loop(self) -> None:
         """
         Executa o loop do stack (equivalente ao YowBot.run()).
-        Implementa retry com backoff exponencial para erros de conexão.
+        Retry de conexão está desabilitado por padrão.
         """
         logger.info(f"{self._log_prefix} Login start")
-        
-        max_connection_retries = 5
-        connection_retry_count = 0
-        base_delay = 2  # Delay inicial de 2 segundos
-        
-        while connection_retry_count < max_connection_retries:
+        try:
+            self._stack.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT))
+            self._stack.loop()
+            logger.info(f"{self._log_prefix} LOOP ENDED")
+        except (OSError, TimeoutError, ConnectionError) as exc:
+            # Erros de conexão de rede - não faz retry, apenas loga e desconecta
+            error_code = getattr(exc, 'errno', None)
+            error_msg = str(exc)
+            
+            # Log específico para diferentes tipos de erro
+            if error_code == 10060:  # Windows timeout
+                logger.error(
+                    f"{self._log_prefix} Timeout de conexão (errno 10060). "
+                    "Retry desabilitado. Verifique sua conexão de rede, firewall ou proxy."
+                )
+            elif isinstance(exc, TimeoutError):
+                logger.error(
+                    f"{self._log_prefix} Timeout de conexão. "
+                    "Retry desabilitado. Verifique sua conexão de rede."
+                )
+            elif isinstance(exc, ConnectionError):
+                logger.error(
+                    f"{self._log_prefix} Erro de conexão: {error_msg}. "
+                    "Retry desabilitado."
+                )
+            else:
+                logger.error(
+                    f"{self._log_prefix} Erro de rede (OSError): {error_msg}. "
+                    "Retry desabilitado."
+                )
+            
             try:
-                self._stack.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT))
-                self._stack.loop()
-                logger.info(f"{self._log_prefix} LOOP ENDED")
-                break  # Sucesso, sai do loop
+                self.disconnect()
+            except Exception:
+                pass
+            # Marca como desconectado
+            self._started = False
+            
+        except KeyboardInterrupt:
+            logger.info(f"{self._log_prefix} Interrompido pelo usuário")
+            try:
+                self.disconnect()
+            except Exception:
+                pass
                 
-            except (OSError, TimeoutError, ConnectionError) as exc:
-                # Erros de conexão de rede
-                connection_retry_count += 1
-                error_code = getattr(exc, 'errno', None)
-                error_msg = str(exc)
-                
-                # Log específico para diferentes tipos de erro
-                if error_code == 10060:  # Windows timeout
-                    logger.warning(
-                        f"{self._log_prefix} Timeout de conexão (errno 10060). "
-                        f"Tentativa {connection_retry_count}/{max_connection_retries}"
-                    )
-                elif isinstance(exc, TimeoutError):
-                    logger.warning(
-                        f"{self._log_prefix} Timeout de conexão. "
-                        f"Tentativa {connection_retry_count}/{max_connection_retries}"
-                    )
-                elif isinstance(exc, ConnectionError):
-                    logger.warning(
-                        f"{self._log_prefix} Erro de conexão: {error_msg}. "
-                        f"Tentativa {connection_retry_count}/{max_connection_retries}"
-                    )
-                else:
-                    logger.warning(
-                        f"{self._log_prefix} Erro de rede (OSError): {error_msg}. "
-                        f"Tentativa {connection_retry_count}/{max_connection_retries}"
-                    )
-                
-                # Se ainda há tentativas, aguarda e tenta novamente
-                if connection_retry_count < max_connection_retries:
-                    # Backoff exponencial com jitter
-                    delay = min(base_delay * (2 ** (connection_retry_count - 1)), 30)
-                    delay += random.uniform(0, 1)  # Jitter de 0-1s
-                    
-                    logger.info(
-                        f"{self._log_prefix} Aguardando {delay:.1f}s antes de tentar reconectar..."
-                    )
-                    
-                    try:
-                        # Desconecta antes de tentar novamente
-                        self.disconnect()
-                    except Exception:
-                        pass
-                    
-                    time.sleep(delay)
-                    
-                    # Recria o stack se necessário (pode ter sido destruído)
-                    if not hasattr(self, '_stack') or self._stack is None:
-                        logger.warning(f"{self._log_prefix} Stack foi destruído, recriando...")
-                        try:
-                            # Recria o stack
-                            device_env = self.bot_env.deviceEnv
-                            network_env = self.bot_env.networkEnv
-                            self._init_send_layer_stack(device_env, network_env)
-                        except Exception as e:
-                            logger.error(f"{self._log_prefix} Erro ao recriar stack: {e}")
-                            break
-                else:
-                    # Esgotou tentativas
-                    logger.error(
-                        f"{self._log_prefix} Falha ao conectar após {max_connection_retries} tentativas. "
-                        "Verifique sua conexão de rede, firewall ou proxy."
-                    )
-                    try:
-                        self.disconnect()
-                    except Exception:
-                        pass
-                    # Marca como desconectado
-                    self._started = False
-                    break
-                    
-            except KeyboardInterrupt:
-                logger.info(f"{self._log_prefix} Interrompido pelo usuário")
-                try:
-                    self.disconnect()
-                except Exception:
-                    pass
-                break
-                
-            except Exception as exc:  # pragma: no cover - defensivo
-                # Outros erros não relacionados a conexão
-                logger.exception(exc)
-                logger.error(f"{self._log_prefix} Erro no loop do stack: {exc}", exc_info=True)
-                try:
-                    self.disconnect()
-                except Exception:
-                    pass
-                break
+        except Exception as exc:  # pragma: no cover - defensivo
+            # Outros erros não relacionados a conexão
+            logger.exception(exc)
+            logger.error(f"{self._log_prefix} Erro no loop do stack: {exc}", exc_info=True)
+            try:
+                self.disconnect()
+            except Exception:
+                pass
 
     def _register_command_handlers(self) -> None:
         """
@@ -1256,6 +1209,104 @@ class ZowsupClient:
             "started": self._started,
             "auto_reply_enabled": self._auto_reply_enabled,
         }
+    
+    def is_online(self) -> bool:
+        """
+        Verifica se a conta está online e conectada ao WhatsApp.
+        
+        Este método verifica múltiplos aspectos do estado de conexão:
+        - Se o cliente foi iniciado
+        - Se o SendLayer existe e está conectado
+        - Se o stack está ativo
+        
+        Returns:
+            bool: True se a conta está online e conectada, False caso contrário
+        
+        Example:
+            if client.is_online():
+                print("Conta está online!")
+            else:
+                print("Conta está desconectada")
+        """
+        # Verifica se foi iniciado
+        if not self._started:
+            logger.debug(f"{self._log_prefix} is_online() = False (não iniciado)")
+            return False
+        
+        # Verifica se SendLayer existe
+        if self.send_layer is None:
+            logger.debug(f"{self._log_prefix} is_online() = False (send_layer é None)")
+            return False
+        
+        # Verifica se está conectado
+        if not self.send_layer.isConnected:
+            logger.debug(f"{self._log_prefix} is_online() = False (isConnected = False)")
+            return False
+        
+        # Verifica se o stack está ativo
+        if not hasattr(self, '_stack') or self._stack is None:
+            logger.debug(f"{self._log_prefix} is_online() = False (stack é None)")
+            return False
+        
+        # Verifica se a thread do stack está viva
+        if hasattr(self, '_stack_thread') and self._stack_thread is not None:
+            if not self._stack_thread.is_alive():
+                logger.debug(f"{self._log_prefix} is_online() = False (stack_thread não está viva)")
+                return False
+        
+        logger.debug(f"{self._log_prefix} is_online() = True")
+        return True
+    
+    def get_connection_status(self) -> Dict[str, Any]:
+        """
+        Retorna informações detalhadas sobre o status de conexão da conta.
+        
+        Returns:
+            Dict com informações detalhadas:
+            - online: Se está online e conectada
+            - connected: Se está conectada (mesmo que is_connected())
+            - started: Se o cliente foi iniciado
+            - send_layer_exists: Se o SendLayer existe
+            - stack_exists: Se o stack existe
+            - stack_thread_alive: Se a thread do stack está viva
+            - last_online_timestamp: Timestamp da última vez que ficou online (se disponível)
+            - account_id: ID da conta
+        
+        Example:
+            status = client.get_connection_status()
+            if not status['online']:
+                print(f"Conta desconectada. Stack thread: {status['stack_thread_alive']}")
+        """
+        status = {
+            "account_id": self.account_id,
+            "started": self._started,
+            "send_layer_exists": self.send_layer is not None,
+            "stack_exists": hasattr(self, '_stack') and self._stack is not None,
+            "stack_thread_alive": False,
+            "last_online_timestamp": None,
+        }
+        
+        # Verifica thread do stack
+        if hasattr(self, '_stack_thread') and self._stack_thread is not None:
+            status["stack_thread_alive"] = self._stack_thread.is_alive()
+        
+        # Verifica timestamp da última vez online
+        if self.send_layer is not None and hasattr(self.send_layer, 'lastOnlineTimeStamp'):
+            status["last_online_timestamp"] = getattr(self.send_layer, 'lastOnlineTimeStamp', None)
+        
+        # Verifica conexão
+        status["connected"] = self.is_connected()
+        
+        # Determina se está online (conexão ativa + stack ativo)
+        status["online"] = (
+            status["started"] and
+            status["send_layer_exists"] and
+            status["connected"] and
+            status["stack_exists"] and
+            status["stack_thread_alive"]
+        )
+        
+        return status
 
     # ------------------------------------------------------------------ #
     # Operações de alto nível
@@ -1723,7 +1774,7 @@ class ZowsupClient:
         result, err2 = self._get_cmd_result(cmd_id, wait_time)
         if err2 is not None:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
-        
+
         return CommandResponse(data=result)
 
     def create_group(self, subject: str, participants: list[str]=[]) -> CommandResponse:
@@ -1855,7 +1906,7 @@ class ZowsupClient:
         if err2 is not None:
             raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
-    
+
     def get_group_info(self, group_id: str) -> CommandResponse:
         """
         Obtém informações de um grupo.
