@@ -6,7 +6,7 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 import names
 from loguru import logger
@@ -671,7 +671,73 @@ class ZowsupClient:
     def _set_cmd_error(self, cmd_id: str, error: Any) -> None:
         self._dispatcher.set_error(cmd_id, error)
 
+    def _handle_justwait(self, cmd_id: str, command_name: str) -> Optional[CommandResponse]:
+        """
+        Trata o retorno JUSTWAIT de um comando.
+        
+        Quando um comando retorna JUSTWAIT, significa que foi executado mas não há
+        resultado imediato. O sistema deve aguardar um tempo determinado antes de retornar.
+        
+        Args:
+            cmd_id: ID do comando retornado (pode ser "JUSTWAIT")
+            command_name: Nome do comando para obter o tempo de espera padrão
+        
+        Returns:
+            CommandResponse se cmd_id for JUSTWAIT, None caso contrário
+        """
+        if cmd_id == "JUSTWAIT":
+            wait_time = self._default_wait_time(command_name)
+            logger.debug(f"{self._log_prefix} Comando '{command_name}' retornou JUSTWAIT, aguardando {wait_time}s")
+            time.sleep(wait_time)
+            return CommandResponse(data={"status": "ok", "justwait": True})
+        return None
+    
+    def _execute_and_wait_result(
+        self, 
+        command_name: str, 
+        params: Optional[list], 
+        options: Optional[Dict[str, Any]],
+        wait_time: Optional[int] = None
+    ) -> Tuple[Any, Optional[Dict[str, Any]]]:
+        """
+        Executa um comando e aguarda o resultado, tratando JUSTWAIT adequadamente.
+        
+        Esta função encapsula a lógica de:
+        1. Executar o comando
+        2. Tratar JUSTWAIT (faz sleep se necessário)
+        3. Aguardar resultado via evento
+        
+        Args:
+            command_name: Nome do comando
+            params: Parâmetros do comando
+            options: Opções do comando
+            wait_time: Tempo de espera (se None, usa o padrão do comando)
+        
+        Returns:
+            Tupla (result, error) onde:
+            - result: Resultado do comando ou None se houver erro
+            - error: Dict com código e mensagem de erro ou None
+        """
+        cmd_id, err = self._execute_command(command_name, params, options)
+        if err is not None:
+            return None, err
+        
+        # Trata JUSTWAIT: aguarda tempo determinado antes de retornar
+        justwait_response = self._handle_justwait(cmd_id, command_name)
+        if justwait_response is not None:
+            return justwait_response.data, None
+        
+        # Aguarda resultado via evento
+        if wait_time is None:
+            wait_time = self._default_wait_time(command_name)
+        
+        result, err2 = self._get_cmd_result(cmd_id, wait_time)
+        return result, err2
+    
     def _get_cmd_result(self, cmd_id: str, wait_time: int):
+        """
+        Aguarda resultado de um comando via evento (100% orientado a eventos).
+        """
         return self._dispatcher.wait_result(cmd_id, wait_time)
     
     @staticmethod
@@ -1334,6 +1400,134 @@ class ZowsupClient:
         )
         
         return status
+    
+    def check_message_error(self, message_id: str) -> Dict[str, Any]:
+        """
+        Verifica se uma mensagem teve erro com base no message_id.
+        
+        Consulta o banco de dados para verificar o status e código de erro
+        de uma mensagem enviada.
+        
+        Args:
+            message_id: ID da mensagem a verificar
+        
+        Returns:
+            Dict com informações sobre a mensagem:
+            - found: bool - Se a mensagem foi encontrada no banco
+            - has_error: bool - Se a mensagem teve erro
+            - status: str - Status da mensagem (EXECUTED, SENT, ERROR)
+            - error_code: Optional[str] - Código de erro, se houver
+            - error_message: Optional[str] - Mensagem descritiva do erro
+            - recipient: Optional[str] - JID do destinatário
+            - message_type: Optional[str] - Tipo da mensagem
+            - created_at: Optional[datetime] - Data/hora de criação
+        
+        Example:
+            # Verificar se uma mensagem teve erro
+            result = client.check_message_error("D0446B25AE18C5F0237B6A1F799CE8D3")
+            if result["has_error"]:
+                print(f"Erro {result['error_code']}: {result['error_message']}")
+        """
+        from zowsuplib.app import models
+        from zowsuplib.app.db import SessionLocal
+        
+        logger.debug(f"{self._log_prefix} check_message_error(message_id={message_id})")
+        
+        db = SessionLocal()
+        try:
+            # Obtém o account_id da conta atual
+            account_id = db.query(models.Account.id).filter_by(phone=self.account_id).scalar()
+            if account_id is None:
+                return {
+                    "found": False,
+                    "has_error": False,
+                    "status": None,
+                    "error_code": None,
+                    "error_message": None,
+                    "recipient": None,
+                    "message_type": None,
+                    "created_at": None,
+                }
+            
+            # Busca a mensagem no banco
+            sent_message = (
+                db.query(models.SentMessage)
+                .filter_by(account_id=account_id, msg_id=message_id)
+                .first()
+            )
+            
+            if sent_message is None:
+                return {
+                    "found": False,
+                    "has_error": False,
+                    "status": None,
+                    "error_code": None,
+                    "error_message": None,
+                    "recipient": None,
+                    "message_type": None,
+                    "created_at": None,
+                }
+            
+            # Verifica se há erro
+            has_error = sent_message.status == "ERROR" or sent_message.error_code is not None
+            error_message = None
+            
+            if has_error and sent_message.error_code:
+                # Obtém mensagem descritiva do erro
+                error_message = self._get_ack_error_message(sent_message.error_code)
+            
+            return {
+                "found": True,
+                "has_error": has_error,
+                "status": sent_message.status,
+                "error_code": sent_message.error_code,
+                "error_message": error_message,
+                "recipient": sent_message.recipient,
+                "message_type": sent_message.message_type,
+                "created_at": sent_message.created_at.isoformat() if sent_message.created_at else None,
+            }
+        except Exception as e:
+            logger.error(f"{self._log_prefix} Erro ao verificar mensagem {message_id}: {e}", exc_info=True)
+            return {
+                "found": False,
+                "has_error": False,
+                "status": None,
+                "error_code": None,
+                "error_message": f"Erro ao consultar banco: {str(e)}",
+                "recipient": None,
+                "message_type": None,
+                "created_at": None,
+            }
+        finally:
+            db.close()
+    
+    @staticmethod
+    def _get_ack_error_message(error_code):
+        """
+        Retorna mensagem de erro descritiva baseada no código de erro do ACK.
+        
+        Args:
+            error_code: Código de erro do ACK (string ou int)
+        
+        Returns:
+            str: Mensagem de erro descritiva
+        """
+        error_code = str(error_code) if error_code is not None else "unknown"
+        
+        # Mapeamento de códigos de erro comuns do WhatsApp
+        error_messages = {
+            "420": "Rate limit excedido - muitas mensagens enviadas muito rapidamente",
+            "403": "Acesso negado - conta pode estar bloqueada ou restrita",
+            "404": "Destinatário não encontrado - número pode estar inválido",
+            "406": "Não aceitável - mensagem rejeitada pelo servidor",
+            "409": "Conflito - sessão substituída por outra conexão",
+            "413": "Mensagem muito grande - arquivo excede o tamanho máximo",
+            "429": "Muitas requisições - rate limit excedido",
+            "500": "Erro interno do servidor",
+            "503": "Serviço indisponível - servidor temporariamente fora do ar",
+        }
+        
+        return error_messages.get(error_code, f"Erro desconhecido (código: {error_code})")
 
     # ------------------------------------------------------------------ #
     # Operações de alto nível
@@ -1522,16 +1716,9 @@ class ZowsupClient:
             return CommandResponse(data={"message_id": cmd_id})
 
         # Comportamento padrão: aguarda resultado via evento (100% orientado a eventos)
-        cmd_id, err = self._execute_command("msg.send", [to, text], options)
+        result, err = self._execute_and_wait_result("msg.send", [to, text], options)
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-
-        wait_time = self._default_wait_time("msg.send")
-        # Sempre aguarda resultado via evento, mesmo se retornou JUSTWAIT
-        # (o comando pode ainda retornar um resultado assíncrono)
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
 
         return CommandResponse(data=result)
 
@@ -1631,15 +1818,9 @@ class ZowsupClient:
 
             return CommandResponse(data={"message_id": cmd_id})
 
-        cmd_id, err = self._execute_command("msg.sendmedia", [to, media_type, file_path_or_url], opts)
+        result, err = self._execute_and_wait_result("msg.sendmedia", [to, media_type, file_path_or_url], opts)
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-
-        wait_time = self._default_wait_time("msg.sendmedia")
-        # Aguarda resultado via evento (orientado a eventos)
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         
         return CommandResponse(data=result)
 
@@ -1809,7 +1990,7 @@ class ZowsupClient:
                 except Exception as e:
                     logger.error(f"Erro ao enviar status via SendLayer direto: {e}")
             
-            cmd_id, err = self._execute_command("status.send", [STATUS_BROADCAST, text], opts)
+            result, err = self._execute_and_wait_result("status.send", [STATUS_BROADCAST, text], opts)
         else:
             if self.send_layer is not None:
                 try:
@@ -1818,16 +1999,10 @@ class ZowsupClient:
                 except Exception as e:
                     logger.error(f"Erro ao enviar status de mídia via SendLayer direto: {e}")
             
-            cmd_id, err = self._execute_command("status.sendmedia", [STATUS_BROADCAST, media_type, file_path_or_url], opts)
+            result, err = self._execute_and_wait_result("status.sendmedia", [STATUS_BROADCAST, media_type, file_path_or_url], opts)
         
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        
-        wait_time = self._default_wait_time("status.send")
-        # Aguarda resultado via evento (orientado a eventos)
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
 
         return CommandResponse(data=result)
 
@@ -1849,14 +2024,9 @@ class ZowsupClient:
         participants_list = self._normalize_string_list(participants)
         participants_str = ",".join(participants_list) if participants_list else ""
         
-        cmd_id, err = self._execute_command("group.create", [subject, participants_str], {})
+        result, err = self._execute_and_wait_result("group.create", [subject, participants_str], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("group.create")
-        # Aguarda resultado via evento (orientado a eventos)
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         # Persistência de grupo + participantes (owner + lista recebida)
         group_id = self._extract_group_id(result or {})
         try:
@@ -1881,15 +2051,9 @@ class ZowsupClient:
         Returns:
             CommandResponse com dados retornados pela API, incluindo o código de convite (invite/code/inviteCode).
         """
-        cmd_id, err = self._execute_command("group.getinvite", [group_id], {})
+        result, err = self._execute_and_wait_result("group.getinvite", [group_id], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-
-        wait_time = self._default_wait_time("group.getinvite")
-        # Aguarda resultado via evento (orientado a eventos)
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         if isinstance(result, dict):
             code = result.get("code") or result.get("invite") or result.get("inviteCode")
             if code:
@@ -1911,15 +2075,9 @@ class ZowsupClient:
         if "chat.whatsapp.com/" in invite_code:
             code = invite_code.split("chat.whatsapp.com/")[-1].strip()
 
-        cmd_id, err = self._execute_command("group.join", [code], {})
+        result, err = self._execute_and_wait_result("group.join", [code], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-
-        wait_time = self._default_wait_time("group.join")
-        # Aguarda resultado via evento (orientado a eventos)
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         # Tenta registrar o participante no grupo retornado
         try:
             group_id = None
@@ -1940,14 +2098,9 @@ class ZowsupClient:
         """
         Lista grupos da conta atual, quando suportado pela API.
         """
-        cmd_id, err = self._execute_command("group.list", [], {})
+        result, err = self._execute_and_wait_result("group.list", [], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("group.list")
-        # Aguarda resultado via evento (orientado a eventos)
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def group_add(self, group_id: str, participant_phones: list[str]) -> CommandResponse:
@@ -1969,14 +2122,9 @@ class ZowsupClient:
         participants_str = ",".join(participants_list)
         
         logger.debug(f"{self._log_prefix} group_add(group_id={group_id}, participants={participants_list})")
-        cmd_id, err = self._execute_command("group.add", [group_id, participants_str], {})
+        result, err = self._execute_and_wait_result("group.add", [group_id, participants_str], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("group.add")
-        # Aguarda resultado via evento (orientado a eventos)
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
 
     def get_group_info(self, group_id: str) -> CommandResponse:
@@ -1990,13 +2138,9 @@ class ZowsupClient:
             CommandResponse com groupId, subject, participants
         """
         logger.debug(f"{self._log_prefix} get_group_info(group_id={group_id})")
-        cmd_id, err = self._execute_command("group.info", [group_id], {})
+        result, err = self._execute_and_wait_result("group.info", [group_id], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("group.info")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def set_group_subject(self, group_id: str, subject: str) -> CommandResponse:
@@ -2011,13 +2155,9 @@ class ZowsupClient:
             CommandResponse com status e subject
         """
         logger.debug(f"{self._log_prefix} set_group_subject(group_id={group_id}, subject={subject})")
-        cmd_id, err = self._execute_command("group.setsubject", [group_id, subject], {})
+        result, err = self._execute_and_wait_result("group.setsubject", [group_id, subject], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("group.setsubject")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def set_group_description(
@@ -2072,13 +2212,9 @@ class ZowsupClient:
         if new_id:
             options["new_id"] = new_id
         
-        cmd_id, err = self._execute_command("group.setdescription", [group_id, description], options)
+        result, err = self._execute_and_wait_result("group.setdescription", [group_id, description], options)
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("group.setdescription")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def set_group_settings(self, group_id: str, action: str, value: Optional[str] = None) -> CommandResponse:
@@ -2103,13 +2239,9 @@ class ZowsupClient:
         params = [group_id, action]
         if value is not None:
             params.append(value)
-        cmd_id, err = self._execute_command("group.setsettings", params, {})
+        result, err = self._execute_and_wait_result("group.setsettings", params, {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("group.setsettings")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def group_remove(self, group_id: str, participant_phones: list[str]) -> CommandResponse:
@@ -2131,13 +2263,9 @@ class ZowsupClient:
         participants_str = ",".join(participants_list)
         
         logger.debug(f"{self._log_prefix} group_remove(group_id={group_id}, participants={participants_list})")
-        cmd_id, err = self._execute_command("group.remove", [group_id, participants_str], {})
+        result, err = self._execute_and_wait_result("group.remove", [group_id, participants_str], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("group.remove")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def group_promote(self, group_id: str, participant_phones: list[str]) -> CommandResponse:
@@ -2159,13 +2287,9 @@ class ZowsupClient:
         participants_str = ",".join(participants_list)
         
         logger.debug(f"{self._log_prefix} group_promote(group_id={group_id}, participants={participants_list})")
-        cmd_id, err = self._execute_command("group.promote", [group_id, participants_str], {})
+        result, err = self._execute_and_wait_result("group.promote", [group_id, participants_str], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("group.promote")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def group_demote(self, group_id: str, participant_phones: list[str]) -> CommandResponse:
@@ -2187,13 +2311,9 @@ class ZowsupClient:
         participants_str = ",".join(participants_list)
         
         logger.debug(f"{self._log_prefix} group_demote(group_id={group_id}, participants={participants_list})")
-        cmd_id, err = self._execute_command("group.demote", [group_id, participants_str], {})
+        result, err = self._execute_and_wait_result("group.demote", [group_id, participants_str], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("group.demote")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def group_leave(self, group_id: str) -> CommandResponse:
@@ -2207,13 +2327,9 @@ class ZowsupClient:
             CommandResponse com status
         """
         logger.debug(f"{self._log_prefix} group_leave(group_id={group_id})")
-        cmd_id, err = self._execute_command("group.leave", [group_id], {})
+        result, err = self._execute_and_wait_result("group.leave", [group_id], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("group.leave")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def set_group_icon(self, group_id: str, icon_path_or_url: str) -> CommandResponse:
@@ -2235,13 +2351,9 @@ class ZowsupClient:
             client.set_group_icon("120363403793561395@g.us", "/path/to/icon.jpg")
         """
         logger.debug(f"{self._log_prefix} set_group_icon(group_id={group_id}, icon={icon_path_or_url})")
-        cmd_id, err = self._execute_command("group.seticon", [group_id, icon_path_or_url], {})
+        result, err = self._execute_and_wait_result("group.seticon", [group_id, icon_path_or_url], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("group.seticon")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
 
     def sync_contacts(self, numbers: list[str]) -> CommandResponse:
@@ -2261,14 +2373,9 @@ class ZowsupClient:
         numbers_list = self._normalize_string_list(numbers)
         numbers_str = ",".join(numbers_list)
         
-        cmd_id, err = self._execute_command("contact.sync", [numbers_str], {})
+        result, err = self._execute_and_wait_result("contact.sync", [numbers_str], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("contact.sync")
-        # Aguarda resultado via evento (orientado a eventos)
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
 
     def integrity_check(self, phones: list[str]) -> CommandResponse:
@@ -2289,14 +2396,9 @@ class ZowsupClient:
         phones_str = ",".join(phones_list)
 
 
-        cmd_id, err = self._execute_command("integrity.check", [phones_str], {})
+        result, err = self._execute_and_wait_result("integrity.check", [phones_str], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("integrity.check")
-        # Aguarda resultado via evento (orientado a eventos)
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def send_reaction(
@@ -2437,14 +2539,9 @@ class ZowsupClient:
         self._bind_sysvar_context()
 
         params = [name] if name else []
-        cmd_id, err = self._execute_command("account.init", params, {})
+        result, err = self._execute_and_wait_result("account.init", params, {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("account.init")
-        # Aguarda resultado via evento (orientado a eventos)
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def set_account_name(self, name: str) -> CommandResponse:
@@ -2518,13 +2615,9 @@ class ZowsupClient:
             client.set_account_avatar("/path/to/avatar.jpg")
         """
         logger.debug(f"{self._log_prefix} set_account_avatar(avatar={avatar_path_or_url})")
-        cmd_id, err = self._execute_command("account.setavatar", [avatar_path_or_url], {})
+        result, err = self._execute_and_wait_result("account.setavatar", [avatar_path_or_url], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("account.setavatar")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def get_account_avatar(self, target_jid: Optional[str] = None) -> CommandResponse:
@@ -2547,13 +2640,9 @@ class ZowsupClient:
         """
         logger.debug(f"{self._log_prefix} get_account_avatar(target_jid={target_jid})")
         params = [target_jid] if target_jid else []
-        cmd_id, err = self._execute_command("account.getavatar", params, {})
+        result, err = self._execute_and_wait_result("account.getavatar", params, {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("account.getavatar")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def set_account_email(self, email: str) -> CommandResponse:
@@ -2581,13 +2670,9 @@ class ZowsupClient:
             client.verify_account_email_code("123456")
         """
         logger.debug(f"{self._log_prefix} set_account_email(email={email})")
-        cmd_id, err = self._execute_command("account.setemail", [email], {})
+        result, err = self._execute_and_wait_result("account.setemail", [email], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("account.setemail")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def get_account_email(self) -> CommandResponse:
@@ -2603,13 +2688,9 @@ class ZowsupClient:
             print(f"Verificado: {response.data.get('verified')}")
         """
         logger.debug(f"{self._log_prefix} get_account_email()")
-        cmd_id, err = self._execute_command("account.getemail", [], {})
+        result, err = self._execute_and_wait_result("account.getemail", [], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("account.getemail")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def verify_account_email(self) -> CommandResponse:
@@ -2623,13 +2704,9 @@ class ZowsupClient:
             client.verify_account_email()
         """
         logger.debug(f"{self._log_prefix} verify_account_email()")
-        cmd_id, err = self._execute_command("account.verifyemail", [], {})
+        result, err = self._execute_and_wait_result("account.verifyemail", [], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("account.verifyemail")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def verify_account_email_code(self, code: str) -> CommandResponse:
@@ -2646,13 +2723,9 @@ class ZowsupClient:
             client.verify_account_email_code("123456")
         """
         logger.debug(f"{self._log_prefix} verify_account_email_code(code={code})")
-        cmd_id, err = self._execute_command("account.verifyemailcode", [code], {})
+        result, err = self._execute_and_wait_result("account.verifyemailcode", [code], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("account.verifyemailcode")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def get_account_info(self) -> CommandResponse:
@@ -2668,13 +2741,9 @@ class ZowsupClient:
             print(f"Último registro em: {response.data.get('last_reg')}")
         """
         logger.debug(f"{self._log_prefix} get_account_info()")
-        cmd_id, err = self._execute_command("account.info", [], {})
+        result, err = self._execute_and_wait_result("account.info", [], {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("account.info")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
     
     def set_account_2fa(self, code: Optional[str] = None, email: Optional[str] = None) -> CommandResponse:
@@ -2701,13 +2770,9 @@ class ZowsupClient:
             params.append(code)
         if email:
             params.append(email)
-        cmd_id, err = self._execute_command("account.set2fa", params, {})
+        result, err = self._execute_and_wait_result("account.set2fa", params, {})
         if err is not None:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
-        wait_time = self._default_wait_time("account.set2fa")
-        result, err2 = self._get_cmd_result(cmd_id, wait_time)
-        if err2 is not None:
-            raise ZowsupError(err2.get("code"), err2.get("msg", "Command error"))
         return CommandResponse(data=result)
 
     # ------------------------------------------------------------------ #
