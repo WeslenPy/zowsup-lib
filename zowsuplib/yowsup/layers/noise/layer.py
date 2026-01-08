@@ -54,7 +54,10 @@ class YowNoiseLayer(YowLayer):
 
     @EventCallback(YowAuthenticationProtocolLayer.EVENT_AUTH)
     def on_auth(self, event):        
-
+        import threading
+        thread_id = threading.current_thread().ident
+        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+        logger.info(f"[HANDSHAKE-DEBUG] on_auth chamado | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())}")
         logger.debug("Received auth event")
         self._profile = self.getProp("profile")
 
@@ -235,35 +238,52 @@ class YowNoiseLayer(YowLayer):
                 )
 
                 if not self._in_handshake():
+                    import threading
+                    thread_id = threading.current_thread().ident
+                    account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
                     self._handshake_attempt += 1
                     attempt_id = self._handshake_attempt
                     self._last_handshake_attempt = attempt_id
-                    logger.info(f"[handshake {attempt_id}] performing login handshake | username={username} passive={passive} deviceid={int(device) if device is not None else None} mcc={mcc} mnc={mnc} rs={'present' if remote_static else 'none'}")
+                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] performing login handshake | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} username={username} passive={passive} deviceid={int(device) if device is not None else None} mcc={mcc} mnc={mnc} rs={'present' if remote_static else 'none'}")
+                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] client_config completo: platform={client_config.useragent.platform} app_version={client_config.useragent.app_version} os_version={client_config.useragent.os_version} manufacturer={client_config.useragent.manufacturer} device={client_config.useragent.device}")
+                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] local_static presente: {local_static is not None} remote_static presente: {remote_static is not None}")
+                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] stream object: {id(self._stream)} protocol state: {self._wa_noiseprotocol.state}")
                     self._handshake_worker = WANoiseProtocolHandshakeWorker(
                         self._wa_noiseprotocol, self._stream, client_config, local_static, remote_static,
                         self.on_handshake_finished,
                         deviceid = int(device) if device is not None else None,
                         attempt_id = attempt_id
                     )
-                    logger.debug(f"[handshake {attempt_id}] starting handshake worker")
+                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] starting handshake worker | worker_thread_id={self._handshake_worker.ident if hasattr(self._handshake_worker, 'ident') else 'N/A'}")
                     self._stream.set_events_callback(self._handle_stream_event)
                     self._handshake_worker.start()
+                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] handshake worker started | worker_thread_id={self._handshake_worker.ident}")
                 else:
-                    logger.warning("Login handshake requested while another is in progress; skipping new attempt")
+                    account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+                    logger.warning(f"[HANDSHAKE-DEBUG] Login handshake requested while another is in progress; skipping new attempt | account={account_id} current_state={self._wa_noiseprotocol.state} attempt_id={self._last_handshake_attempt}")
 
     def on_handshake_finished(self, e=None):
         # type: (Exception) -> None
+        import threading
+        import traceback
+        thread_id = threading.current_thread().ident
+        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+        
         if e is not None:
-            logger.error(f"[handshake {self._last_handshake_attempt}] handshake finished with error: {e}")
+            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] handshake finished with error | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} error={e} error_type={type(e).__name__}")
+            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] error details: {str(e)}")
+            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] protocol state: {self._wa_noiseprotocol.state}")
+            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] stream state: {id(self._stream)}")
+            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] full traceback:\n{traceback.format_exc()}")
             self._maybe_break("NOISE_BREAK_ON_HANDSHAKE_ERROR")
             self.emitEvent(YowLayerEvent(self.EVENT_HANDSHAKE_FAILED, reason=e))
             data=WriteEncoder(TokenDictionary()).protocolTreeNodeToBytes(
                 ProtocolTreeNode("failure", {"reason": str(e)})
             )
             self.toUpper(data)            
-            logger.error("An error occurred during handshake, try login again.")
+            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] An error occurred during handshake, try login again. | account={account_id}")
         else:
-            logger.info(f"[handshake {self._last_handshake_attempt}] handshake finished successfully | state={self._wa_noiseprotocol.state}")
+            logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] handshake finished successfully | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} state={self._wa_noiseprotocol.state}")
 
     def _in_handshake(self):
         """
@@ -272,9 +292,16 @@ class YowNoiseLayer(YowLayer):
         """
         return self._wa_noiseprotocol.state == WANoiseProtocol.STATE_HANDSHAKE
 
-    def _on_protocol_state_changed(self, state):           
-        if state == WANoiseProtocol.STATE_TRANSPORT:            
+    def _on_protocol_state_changed(self, state):
+        import threading
+        thread_id = threading.current_thread().ident
+        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+        logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] protocol state changed | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} old_state={getattr(self._wa_noiseprotocol, 'state', 'N/A')} new_state={state}")
+        
+        if state == WANoiseProtocol.STATE_TRANSPORT:
+            logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] entering TRANSPORT state | account={account_id}")
             if self._rs != self._wa_noiseprotocol.rs:
+                logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] remote static changed | account={account_id} old_rs={self._rs} new_rs={self._wa_noiseprotocol.rs}")
                 if self._profile is not None:
                     config = self._profile.config
                     config.server_static_public = self._wa_noiseprotocol.rs                    
@@ -283,18 +310,29 @@ class YowNoiseLayer(YowLayer):
 
             self._flush_incoming_buffer()
         if state == WANoiseProtocol.STATE_ERROR and self._last_segment_preview:
-            logger.error(f"[handshake {self._last_handshake_attempt}] protocol entered ERROR; last incoming segment {self._last_segment_preview}")
+            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] protocol entered ERROR | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} last incoming segment {self._last_segment_preview}")
             self._maybe_break("NOISE_BREAK_ON_STATE_ERROR")
         logger.debug(f"[handshake {self._last_handshake_attempt}] protocol state changed to {state}")
 
-    def _handle_stream_event(self, event):        
+    def _handle_stream_event(self, event):
+        import threading
+        thread_id = threading.current_thread().ident
+        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+        logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event | account={account_id} thread_id={thread_id} event={event} attempt_id={self._last_handshake_attempt}")
+        
         if event == BlockingQueueSegmentedStream.EVENT_WRITE:
+            segment = self._stream.get_write_segment()
+            logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event WRITE | account={account_id} thread_id={thread_id} segment_len={len(segment) if segment else 0} attempt_id={self._last_handshake_attempt}")
             logger.debug(f"[handshake {self._last_handshake_attempt}] stream event WRITE")
-            self.toLower(self._stream.get_write_segment())
+            self.toLower(segment)
         elif event == BlockingQueueSegmentedStream.EVENT_READ:
+            logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event READ | account={account_id} thread_id={thread_id} aguardando segment da queue attempt_id={self._last_handshake_attempt}")
             logger.debug(f"[handshake {self._last_handshake_attempt}] stream event READ")
-            self._stream.put_read_segment(self._incoming_segments_queue.get(block=True))
+            segment = self._incoming_segments_queue.get(block=True)
+            logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event READ | account={account_id} thread_id={thread_id} segment recebido, len={len(segment) if segment else 0} attempt_id={self._last_handshake_attempt}")
+            self._stream.put_read_segment(segment)
         else:
+            logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event OTHER | account={account_id} thread_id={thread_id} event={event} attempt_id={self._last_handshake_attempt}")
             logger.debug(f"[handshake {self._last_handshake_attempt}] stream event other={event}")
 
     def send(self, data):

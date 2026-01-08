@@ -48,9 +48,15 @@ class YowNetworkLayer(YowLayer, ConnectionCallbacks):
             return SocketConnectionDispatcher(self)
 
     def onConnected(self):
+        import threading
+        thread_id = threading.current_thread().ident
+        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+        endpoint = self.getProp(self.__class__.PROP_ENDPOINT)
+        logger.info(f"[HANDSHAKE-DEBUG] onConnected | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} endpoint={endpoint}")
         logger.debug("Connected")
         self.state = self.__class__.STATE_CONNECTED
         self.connected = True
+        logger.info(f"[HANDSHAKE-DEBUG] onConnected emitindo EVENT_STATE_CONNECTED | account={account_id} thread_id={thread_id}")
         self.emitEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECTED))
 
     def onDisconnected(self):
@@ -84,13 +90,20 @@ class YowNetworkLayer(YowLayer, ConnectionCallbacks):
         return True
 
     def createConnection(self):
+        import threading
+        thread_id = threading.current_thread().ident
+        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+        logger.info(f"[HANDSHAKE-DEBUG] createConnection iniciado | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} current_state={self.state}")
         self._disconnect_reason = None
         self._dispatcher = self.__create_dispatcher(self.getProp(self.PROP_DISPATCHER, self.DISPATCHER_DEFAULT))
+        logger.info(f"[HANDSHAKE-DEBUG] createConnection dispatcher criado | account={account_id} thread_id={thread_id} dispatcher={id(self._dispatcher)}")
         self.state = self.__class__.STATE_CONNECTING
-        endpoint = self.getProp(self.__class__.PROP_ENDPOINT)        
+        endpoint = self.getProp(self.__class__.PROP_ENDPOINT)
+        logger.info(f"[HANDSHAKE-DEBUG] createConnection conectando | account={account_id} thread_id={thread_id} endpoint={endpoint[0]}:{endpoint[1]}")
         logger.info(f"Connecting to {endpoint[0]}:{endpoint[1]}")    
 
         self._dispatcher.connect(endpoint)
+        logger.info(f"[HANDSHAKE-DEBUG] createConnection connect() chamado | account={account_id} thread_id={thread_id}")
 
     def destroyConnection(self, reason=None):
         self._disconnect_reason = reason

@@ -426,19 +426,28 @@ class SendLayer(YowInterfaceLayer):
         """
         Detecta erros de handshake e marca para rotação de ambiente.
         """
+        import threading
+        import traceback
+        thread_id = threading.current_thread().ident
         reason = getattr(event, 'reason', None) or str(event)
-        logger.error(f"[{self.bot.botId if self.bot.botId else 'unknown'}] Erro de handshake detectado: {reason}")
+        account_id = self.bot.botId if self.bot.botId else 'unknown'
+        logger.error(f"[HANDSHAKE-DEBUG] onHandshakeFailed chamado | account={account_id} thread_id={thread_id} reason={reason} event={event}")
+        logger.error(f"[HANDSHAKE-DEBUG] onHandshakeFailed stack trace:\n{traceback.format_stack()}")
+        logger.error(f"[{account_id}] Erro de handshake detectado: {reason}")
         self._handshake_error_detected = True
         
         # Chama callback customizado se configurado
         if self.handshake_failed_callback:
             try:
+                logger.info(f"[HANDSHAKE-DEBUG] onHandshakeFailed chamando callback | account={account_id}")
                 self.handshake_failed_callback(reason=reason, bot_id=self.bot.botId)
+                logger.info(f"[HANDSHAKE-DEBUG] onHandshakeFailed callback retornou | account={account_id}")
             except Exception as e:
+                logger.error(f"[HANDSHAKE-DEBUG] onHandshakeFailed erro ao chamar callback | account={account_id} error={e}")
                 logger.error(f"Erro ao chamar callback de handshake failed: {e}")
         
         # Marca que houve erro de handshake (pode ser usado para rotação de ambiente)
-        logger.warning(f"[{self.bot.botId if self.bot.botId else 'unknown'}] Handshake falhou. Considere tentar outro tipo de ambiente.")    
+        logger.warning(f"[HANDSHAKE-DEBUG] [{account_id}] Handshake falhou. Considere tentar outro tipo de ambiente. | thread_id={thread_id}")    
 
     
     @ProtocolEntityCallback("notification")

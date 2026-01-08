@@ -44,22 +44,36 @@ class WANoiseProtocolHandshakeWorker(threading.Thread):
         self._deviceid = deviceid    
 
     def run(self):
+        import threading
+        import traceback
+        thread_id = threading.current_thread().ident
+        logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] worker.run() iniciado | thread_id={thread_id} worker_thread={self.ident}")
         self._protocol.reset()
         error = None
-        logger.debug(f"[handshake {self._attempt_id}] worker starting | mode={self._mode} deviceid={self._deviceid} rs={'present' if self._rs else 'none'}")
+        logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] worker starting | thread_id={thread_id} mode={self._mode} deviceid={self._deviceid} rs={'present' if self._rs else 'none'} protocol={id(self._protocol)} stream={id(self._stream)}")
+        logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] local_static keypair: {id(self._s) if self._s else None} remote_static publickey: {id(self._rs) if self._rs else None}")
         try:          
-            logger.debug(f"[handshake {self._attempt_id}] client_config username={self._client_config.username} mcc={self._client_config.useragent.mcc} mnc={self._client_config.useragent.mnc} passive={self._client_config.passive} short_connect={self._client_config.short_connect}")
+            logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] client_config username={self._client_config.username} mcc={self._client_config.useragent.mcc} mnc={self._client_config.useragent.mnc} passive={self._client_config.passive} short_connect={self._client_config.short_connect}")
+            logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] chamando protocol.start() | thread_id={thread_id}")
+            logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] protocol.start params: mode={self._mode} identity={self._identity is not None} regid={self._regid is not None} signedprekey={self._signedprekey is not None} deviceid={self._deviceid}")
             self._protocol.start(self._stream, self._client_config, self._s, self._rs,mode=self._mode,identity= self._identity,regid = self._regid,signedprekey = self._signedprekey,deviceid=self._deviceid)       
-            logger.debug(f"[handshake {self._attempt_id}] protocol.start returned without exception")
+            logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] protocol.start returned without exception | thread_id={thread_id}")
             
-        except HandshakeFailedException as e:                  
+        except HandshakeFailedException as e:
             error = e
+            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] HandshakeFailedException capturada | thread_id={thread_id} error={e} error_type={type(e).__name__}")
+            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] HandshakeFailedException traceback:\n{traceback.format_exc()}")
             logger.error(f"[handshake {self._attempt_id}] handshake failed: {e}")
         except Exception as e:
             error = e
+            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] Exception inesperada capturada | thread_id={thread_id} error={e} error_type={type(e).__name__}")
+            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] Exception traceback:\n{traceback.format_exc()}")
             logger.exception(f"[handshake {self._attempt_id}] unexpected error during handshake")
 
+        logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] worker.run() finalizando | thread_id={thread_id} error={error} finish_callback={'present' if self._finish_callback else 'none'}")
         if self._finish_callback is not None:
+            logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] chamando finish_callback | thread_id={thread_id} error={error}")
             self._finish_callback(error)
+            logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] finish_callback retornou | thread_id={thread_id}")
 
 

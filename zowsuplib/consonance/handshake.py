@@ -79,8 +79,11 @@ class WAHandshake(object):
         :type e: consonance.structs.keypair.KeyPair | None
         :return:
         :rtype:
-        """        
-                
+        """
+        import threading
+        thread_id = threading.current_thread().ident
+        logger.info(f"[HANDSHAKE-DEBUG] WAHandshake.perform() chamado | thread_id={thread_id} stream={id(stream)} s={id(s) if s else None} rs={id(rs) if rs else None} e={id(e) if e else None}")
+        logger.info(f"[HANDSHAKE-DEBUG] WAHandshake.perform() client_config: username={client_config.username} platform={client_config.useragent.platform} app_version={client_config.useragent.app_version}")
         logger.debug(f"perform(client_config={client_config}, stream={stream}, s={s}, rs={rs}, e={e})")
         dh = X25519DH()
         if e is not None:
@@ -107,20 +110,31 @@ class WAHandshake(object):
         client_payload = self._create_full_payload(client_config,s)
 
         #logger.debug("Create client_payload=%s" % client_payload)
+        import threading
+        thread_id = threading.current_thread().ident
+        logger.info(f"[HANDSHAKE-DEBUG] WAHandshake.perform() iniciando handshake | thread_id={thread_id} rs={'present' if rs is not None else 'none'}")
         try:
             if rs is not None:
+                logger.info(f"[HANDSHAKE-DEBUG] WAHandshake.perform() usando handshake IK (rs presente) | thread_id={thread_id}")
                 try:                    
                     cipherstatepair = self._start_handshake_ik(stream, client_payload, dissononce_s, dissononce_rs)
-                except NewRemoteStaticException as ex:                                
+                    logger.info(f"[HANDSHAKE-DEBUG] WAHandshake.perform() _start_handshake_ik retornou com sucesso | thread_id={thread_id}")
+                except NewRemoteStaticException as ex:
+                    logger.warning(f"[HANDSHAKE-DEBUG] WAHandshake.perform() NewRemoteStaticException, fazendo fallback para XX | thread_id={thread_id} exception={ex}")
                     cipherstatepair = self._switch_handshake_xxfallback(stream, dissononce_s, client_payload, ex.server_hello)
-            else:                
-                             
-                cipherstatepair = self._start_handshake_xx(stream, client_payload, dissononce_s)                
+                    logger.info(f"[HANDSHAKE-DEBUG] WAHandshake.perform() _switch_handshake_xxfallback retornou com sucesso | thread_id={thread_id}")
+            else:
+                logger.info(f"[HANDSHAKE-DEBUG] WAHandshake.perform() usando handshake XX (rs ausente) | thread_id={thread_id}")
+                cipherstatepair = self._start_handshake_xx(stream, client_payload, dissononce_s)
+                logger.info(f"[HANDSHAKE-DEBUG] WAHandshake.perform() _start_handshake_xx retornou com sucesso | thread_id={thread_id}")
+            logger.info(f"[HANDSHAKE-DEBUG] WAHandshake.perform() handshake concluído com sucesso | thread_id={thread_id}")
             return cipherstatepair
         except DecryptFailedException as e:
+            logger.error(f"[HANDSHAKE-DEBUG] WAHandshake.perform() DecryptFailedException | thread_id={thread_id} error={e}")
             logger.exception(e)
             raise HandshakeFailedException(e)
         except DecodeError as e:
+            logger.error(f"[HANDSHAKE-DEBUG] WAHandshake.perform() DecodeError | thread_id={thread_id} error={e}")
             logger.exception(e)
             raise HandshakeFailedException(e)
 
@@ -195,9 +209,21 @@ class WAHandshake(object):
         client_hello.ephemeral = bytes(ephemeral_public)
         handshakemessage.client_hello.MergeFrom(client_hello)
         stream.write_segment(handshakemessage.SerializeToString())
-        incoming_handshakemessage = wa5_pb2.HandshakeMessage()                        
-        incoming_handshakemessage.ParseFromString(stream.read_segment())        
+        import threading
+        thread_id = threading.current_thread().ident
+        logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_xx() lendo server_hello | thread_id={thread_id}")
+        incoming_handshakemessage = wa5_pb2.HandshakeMessage()
+        try:
+            segment_data = stream.read_segment()
+            logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_xx() segment recebido | thread_id={thread_id} segment_len={len(segment_data) if segment_data else 0}")
+            incoming_handshakemessage.ParseFromString(segment_data)
+            logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_xx() segment parseado | thread_id={thread_id} has_server_hello={incoming_handshakemessage.HasField('server_hello')}")
+        except Exception as parse_error:
+            logger.error(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_xx() erro ao ler/parsear segment | thread_id={thread_id} error={parse_error} error_type={type(parse_error).__name__}")
+            raise HandshakeFailedException(f"Erro ao ler segment do servidor: {parse_error}")
+        
         if not incoming_handshakemessage.HasField("server_hello"):
+            logger.error(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_xx() server_hello ausente | thread_id={thread_id} fields={incoming_handshakemessage.ListFields()}")
             raise HandshakeFailedException("Handshake message does not contain server hello!")
         server_hello = incoming_handshakemessage.server_hello
         payload_buffer = bytearray()
@@ -253,14 +279,24 @@ class WAHandshake(object):
         client_hello.static = static_public
         client_hello.payload = payload
         handshakemessage.client_hello.MergeFrom(client_hello)
+        import threading
+        thread_id = threading.current_thread().ident
+        logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() enviando client_hello | thread_id={thread_id}")
         stream.write_segment(handshakemessage.SerializeToString())
+        logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() client_hello enviado, aguardando resposta | thread_id={thread_id}")
         incoming_handshakemessage = wa5_pb2.HandshakeMessage()
-        try :
-            incoming_handshakemessage.ParseFromString(stream.read_segment())                  
-        except:
-            raise HandshakeFailedException("Handshake exception after server read")
+        try:
+            segment_data = stream.read_segment()
+            logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() segment recebido | thread_id={thread_id} segment_len={len(segment_data) if segment_data else 0}")
+            incoming_handshakemessage.ParseFromString(segment_data)
+            logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() segment parseado | thread_id={thread_id} has_server_hello={incoming_handshakemessage.HasField('server_hello')}")
+        except Exception as read_error:
+            logger.error(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() erro ao ler segment | thread_id={thread_id} error={read_error} error_type={type(read_error).__name__}")
+            logger.error(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() traceback completo:\n{__import__('traceback').format_exc()}")
+            raise HandshakeFailedException(f"Handshake exception after server read: {read_error}")
         
         if not incoming_handshakemessage.HasField("server_hello"):
+            logger.error(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() server_hello ausente | thread_id={thread_id} fields={incoming_handshakemessage.ListFields()}")
             raise HandshakeFailedException("Handshake message does not contain server hello!")
 
         server_hello = incoming_handshakemessage.server_hello
