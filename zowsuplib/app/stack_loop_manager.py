@@ -168,9 +168,20 @@ class StackLoopManager:
                             if network_layer and hasattr(network_layer, '_dispatcher'):
                                 dispatcher = network_layer._dispatcher
                                 if isinstance(dispatcher, AsyncoreConnectionDispatcher):
-                                    # Adiciona todos os sockets deste dispatcher ao mapa combinado
+                                    # Adiciona apenas sockets válidos e abertos ao mapa combinado
                                     if hasattr(dispatcher, 'socket_map') and dispatcher.socket_map:
-                                        combined_socket_map.update(dispatcher.socket_map)
+                                        for sock, handler in dispatcher.socket_map.items():
+                                            try:
+                                                # Verifica se o socket ainda é válido antes de adicionar
+                                                if sock.fileno() != -1:
+                                                    combined_socket_map[sock] = handler
+                                            except (OSError, ValueError, AttributeError):
+                                                # Socket fechado ou inválido, remove do mapa original
+                                                try:
+                                                    if sock in dispatcher.socket_map:
+                                                        del dispatcher.socket_map[sock]
+                                                except:
+                                                    pass
                     except Exception as e:
                         logger.debug(f"[StackLoopManager] Erro ao obter socket_map de {account_id}: {e}")
                 
@@ -179,18 +190,30 @@ class StackLoopManager:
                 # Processa múltiplas vezes para garantir que eventos de conexão sejam tratados
                 if combined_socket_map:
                     try:
-                        # Usa a mesma lógica do asyncore.loop() para escolher poll ou poll2
-                        import select
-                        use_poll = hasattr(select, 'poll')
-                        # Processa até 3 vezes para garantir que eventos de conexão sejam tratados
-                        for _ in range(3):
-                            if use_poll:
-                                asyncore.poll2(timeout=0.0, map=combined_socket_map)
-                            else:
-                                asyncore.poll(timeout=0.0, map=combined_socket_map)
-                            # Se não há mais eventos pendentes, para
-                            if not combined_socket_map:
-                                break
+                        # Filtra sockets fechados antes do poll para evitar WinError 10038
+                        valid_socket_map = {}
+                        for sock, handler in list(combined_socket_map.items()):
+                            try:
+                                # Verifica se o socket ainda é válido antes de adicionar
+                                if sock.fileno() != -1:
+                                    valid_socket_map[sock] = handler
+                            except (OSError, ValueError, AttributeError):
+                                # Socket fechado ou inválido, ignora
+                                pass
+                        
+                        if valid_socket_map:
+                            # Usa a mesma lógica do asyncore.loop() para escolher poll ou poll2
+                            import select
+                            use_poll = hasattr(select, 'poll')
+                            # Processa até 3 vezes para garantir que eventos de conexão sejam tratados
+                            for _ in range(3):
+                                if use_poll:
+                                    asyncore.poll2(timeout=0.0, map=valid_socket_map)
+                                else:
+                                    asyncore.poll(timeout=0.0, map=valid_socket_map)
+                                # Se não há mais eventos pendentes, para
+                                if not valid_socket_map:
+                                    break
                     except Exception as e:
                         logger.debug(f"[StackLoopManager] Erro no asyncore.poll: {e}")
                 
