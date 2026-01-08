@@ -13,7 +13,7 @@ from zowsuplib.consonance.config.client import ClientConfig
 from zowsuplib.consonance.config.useragent import UserAgentConfig
 from zowsuplib.consonance.streams.segmented.blockingqueue import BlockingQueueSegmentedStream
 from zowsuplib.consonance.structs.keypair import KeyPair
-import threading,logging,uuid,base64,os
+import threading,logging,uuid,base64,os,time
 from zowsuplib.common.utils import Utils
 from zowsuplib.app.yowbot_values import YowBotType
 from zowsuplib.settings.conf import settings
@@ -474,7 +474,38 @@ class YowNoiseLayer(YowLayer):
         elif event == BlockingQueueSegmentedStream.EVENT_READ:
             logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event READ | account={account_id} thread_id={thread_id} aguardando segment da queue attempt_id={self._last_handshake_attempt}")
             logger.debug(f"[handshake {self._last_handshake_attempt}] stream event READ")
-            segment = self._incoming_segments_queue.get(block=True)
+            # Tenta obter segmento de forma não-bloqueante primeiro
+            # Se não houver dados, aguarda um pouco e tenta novamente
+            # Isso evita deadlock quando handshake roda em thread separada
+            # O StackLoopManager precisa processar dados da rede para popular _incoming_segments_queue
+            segment = None
+            max_retries = 200  # 20 segundos total (200 * 0.1s) - aumenta timeout para handshakes lentos
+            retry_count = 0
+            while segment is None and retry_count < max_retries:
+                try:
+                    segment = self._incoming_segments_queue.get(block=False)
+                    break
+                except Queue.Empty:
+                    retry_count += 1
+                    if retry_count % 10 == 0:  # Log a cada 1 segundo
+                        logger.debug(
+                            f"[HANDSHAKE-DEBUG] _handle_stream_event READ | account={account_id} "
+                            f"thread_id={thread_id} aguardando dados (tentativa {retry_count}/{max_retries}, "
+                            f"queue_size={self._incoming_segments_queue.qsize()}) "
+                            f"attempt_id={self._last_handshake_attempt}"
+                        )
+                    # Aguarda 100ms antes de tentar novamente
+                    # Isso permite que o StackLoopManager processe dados da rede
+                    time.sleep(0.1)
+            
+            if segment is None:
+                logger.error(
+                    f"[HANDSHAKE-DEBUG] _handle_stream_event READ | account={account_id} "
+                    f"thread_id={thread_id} timeout aguardando segmento após {max_retries} tentativas "
+                    f"attempt_id={self._last_handshake_attempt}"
+                )
+                raise Exception("Timeout aguardando segmento durante handshake")
+            
             logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event READ | account={account_id} thread_id={thread_id} segment recebido, len={len(segment) if segment else 0} attempt_id={self._last_handshake_attempt}")
             self._stream.put_read_segment(segment)
         else:
