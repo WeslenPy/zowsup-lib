@@ -4,6 +4,7 @@ from typing import List, Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from sqlalchemy.exc import PendingRollbackError, InvalidRequestError
 
 from zowsuplib.axolotl.identitykey import IdentityKey
 from zowsuplib.axolotl.identitykeypair import IdentityKeyPair
@@ -187,8 +188,28 @@ class SqlPreKeyStore:
         self.db.commit()
 
     def loadPendingPreKeys(self) -> List[PreKeyRecord]:
-        rows = self.db.query(models.PreKey.record).filter(models.PreKey.account_id == self.account.id).all()
-        return [PreKeyRecord(serialized=r[0]) for r in rows]
+        try:
+            rows = self.db.query(models.PreKey.record).filter(models.PreKey.account_id == self.account.id).all()
+            return [PreKeyRecord(serialized=r[0]) for r in rows]
+        except (PendingRollbackError, InvalidRequestError) as e:
+            logger.warning(f"Erro de transação inválida em loadPendingPreKeys, fazendo rollback: {e}")
+            try:
+                self.db.rollback()
+                # Tenta novamente após rollback
+                rows = self.db.query(models.PreKey.record).filter(models.PreKey.account_id == self.account.id).all()
+                return [PreKeyRecord(serialized=r[0]) for r in rows]
+            except Exception as retry_error:
+                logger.error(f"Erro ao tentar novamente após rollback em loadPendingPreKeys: {retry_error}")
+                # Retorna lista vazia em caso de erro persistente
+                return []
+        except Exception as e:
+            logger.error(f"Erro inesperado em loadPendingPreKeys: {e}")
+            # Tenta rollback mesmo para outros erros
+            try:
+                self.db.rollback()
+            except:
+                pass
+            return []
 
     def storePreKey(self, preKeyId: int, preKeyRecord: PreKeyRecord) -> None:
         row = models.PreKey(
