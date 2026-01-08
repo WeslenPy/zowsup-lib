@@ -9,7 +9,6 @@ import threading
 import time
 from typing import Dict, Optional, Callable, Any
 from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor, Future, as_completed
 from loguru import logger
 
 # TYPE_CHECKING para evitar importação circular
@@ -44,10 +43,11 @@ class HandshakeTask:
 
 class HandshakeManager:
     """
-    Gerenciador singleton que processa handshakes de todas as contas em paralelo.
+    Gerenciador singleton que processa handshakes de todas as contas em uma única thread.
     
-    Usa ThreadPoolExecutor com 3 workers para processar até 3 handshakes simultaneamente,
-    melhorando a escalabilidade para múltiplas contas.
+    Ao invés de cada handshake criar sua própria thread,
+    este manager mantém uma fila de handshakes pendentes e os processa sequencialmente
+    em uma única thread dedicada.
     """
     
     _instance: Optional['HandshakeManager'] = None
@@ -63,15 +63,9 @@ class HandshakeManager:
         self._manager_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
+        self._processing_lock = threading.Lock()  # Lock para processamento sequencial
         
-        # ThreadPoolExecutor para processamento paralelo (3 handshakes simultâneos)
-        self._executor: Optional[ThreadPoolExecutor] = ThreadPoolExecutor(
-            max_workers=3,
-            thread_name_prefix="HandshakeWorker"
-        )
-        self._futures: Dict[str, Future] = {}  # account_id -> Future
-        
-        logger.info("[HandshakeManager] Inicializado - modo paralelo ativado (3 workers)")
+        logger.info("[HandshakeManager] Inicializado - modo de thread única ativado")
     
     @classmethod
     def get_instance(cls) -> 'HandshakeManager':
@@ -158,9 +152,16 @@ class HandshakeManager:
             
             # Inicia a thread do manager se ainda não estiver rodando
             if self._manager_thread is None or not self._manager_thread.is_alive():
+                logger.info(f"[HandshakeManager] Thread do manager não está rodando, iniciando...")
                 self._start_manager_thread()
+            else:
+                logger.debug(f"[HandshakeManager] Thread do manager já está rodando (thread_id={self._manager_thread.ident})")
             
-            logger.debug(f"[HandshakeManager] Handshake registrado. Total na fila: {len(self._processing_queue)}")
+            logger.info(
+                f"[HandshakeManager] Handshake registrado para {account_id}. "
+                f"Total na fila: {len(self._processing_queue)}, "
+                f"Total no dicionário: {len(self._handshake_queue)}"
+            )
     
     def unregister_handshake(self, account_id: str) -> None:
         """
@@ -181,7 +182,10 @@ class HandshakeManager:
     def _start_manager_thread(self) -> None:
         """Inicia a thread de processamento de handshakes."""
         if self._manager_thread is not None and self._manager_thread.is_alive():
-            logger.warning("[HandshakeManager] Thread do manager já está rodando")
+            logger.warning(
+                f"[HandshakeManager] Thread do manager já está rodando "
+                f"(thread_id={self._manager_thread.ident}, is_alive={self._manager_thread.is_alive()})"
+            )
             return
         
         logger.info("[HandshakeManager] Iniciando thread do gerenciador de handshakes")
@@ -192,34 +196,51 @@ class HandshakeManager:
             daemon=True
         )
         self._manager_thread.start()
-        logger.info(f"[HandshakeManager] Thread do manager iniciada: {self._manager_thread.ident}")
+        logger.info(
+            f"[HandshakeManager] Thread do manager iniciada: "
+            f"thread_id={self._manager_thread.ident}, "
+            f"name={self._manager_thread.name}, "
+            f"is_alive={self._manager_thread.is_alive()}"
+        )
     
     def _run_manager_loop(self) -> None:
         """
-        Loop principal que processa todos os handshakes registrados em paralelo.
+        Loop principal que processa todos os handshakes registrados.
         
-        Usa ThreadPoolExecutor para processar até 3 handshakes simultaneamente.
+        Processa handshakes sequencialmente (um por vez) para evitar conflitos.
         """
         logger.info("[HandshakeManager] Loop do gerenciador de handshakes iniciado")
+        loop_iteration = 0
         
         while not self._stop_event.is_set():
             try:
+                loop_iteration += 1
+                
                 # Obtém próximo handshake da fila
                 account_id = None
                 task = None
                 
                 with self._lock:
-                    # Remove handshakes inativos e já em execução da fila
+                    # Remove handshakes inativos da fila
                     self._processing_queue = [
                         acc_id for acc_id in self._processing_queue
-                        if acc_id in self._handshake_queue 
-                        and self._handshake_queue[acc_id].active
-                        and acc_id not in self._futures  # Não está em execução
+                        if acc_id in self._handshake_queue and self._handshake_queue[acc_id].active
                     ]
                     
                     if self._processing_queue:
                         account_id = self._processing_queue.pop(0)
                         task = self._handshake_queue.get(account_id)
+                        logger.debug(
+                            f"[HandshakeManager] Loop iteração {loop_iteration}: "
+                            f"handshake encontrado para {account_id}, "
+                            f"fila restante: {len(self._processing_queue)}"
+                        )
+                    else:
+                        if loop_iteration % 100 == 0:  # Log a cada 100 iterações quando vazio
+                            logger.debug(
+                                f"[HandshakeManager] Loop iteração {loop_iteration}: "
+                                f"nenhum handshake na fila, aguardando..."
+                            )
                 
                 # Se não há handshakes, aguarda um pouco
                 if task is None or not task.active:
@@ -227,12 +248,20 @@ class HandshakeManager:
                     continue
                 
                 # Processa o handshake (sequencialmente, com lock)
+                logger.info(
+                    f"[HandshakeManager] Iniciando processamento de handshake para {account_id} "
+                    f"(attempt_id={task.attempt_id}, iteração={loop_iteration})"
+                )
+                
                 with self._processing_lock:
                     if self._stop_event.is_set():
                         break
                     
                     try:
                         self._execute_handshake(task)
+                        logger.info(
+                            f"[HandshakeManager] Handshake para {account_id} processado com sucesso"
+                        )
                     except Exception as e:
                         logger.error(
                             f"[HandshakeManager] Erro ao processar handshake para {account_id}: {e}",
@@ -245,74 +274,14 @@ class HandshakeManager:
                             logger.error(f"[HandshakeManager] Erro no callback de handshake: {callback_error}")
                     finally:
                         # Remove da fila após processamento
+                        logger.debug(f"[HandshakeManager] Removendo handshake da fila para {account_id}")
                         self.unregister_handshake(account_id)
                 
             except Exception as e:
-                logger.error(f"[HandshakeManager] Erro no loop principal: {e}", exc_info=True)
+                logger.error(f"[HandshakeManager] Erro no loop principal (iteração {loop_iteration}): {e}", exc_info=True)
                 self._stop_event.wait(0.1)
         
-        logger.info("[HandshakeManager] Loop do gerenciador de handshakes finalizado")
-    
-    def _cleanup_completed_futures(self) -> None:
-        """Remove futures completados e limpa handshakes finalizados."""
-        with self._lock:
-            completed_accounts = []
-            for account_id, future in list(self._futures.items()):
-                if future.done():
-                    completed_accounts.append(account_id)
-                    # Remove da fila de processamento
-                    if account_id in self._processing_queue:
-                        self._processing_queue.remove(account_id)
-                    # Remove do dicionário de handshakes
-                    if account_id in self._handshake_queue:
-                        del self._handshake_queue[account_id]
-            
-            for account_id in completed_accounts:
-                del self._futures[account_id]
-                logger.debug(f"[HandshakeManager] Handshake finalizado e removido: {account_id}")
-    
-    def _wait_for_all_futures(self, timeout: float = 30.0) -> None:
-        """Aguarda conclusão de todos os futures pendentes."""
-        with self._lock:
-            futures_to_wait = list(self._futures.values())
-        
-        if not futures_to_wait:
-            return
-        
-        logger.info(f"[HandshakeManager] Aguardando {len(futures_to_wait)} handshake(s) pendente(s)...")
-        for future in as_completed(futures_to_wait, timeout=timeout):
-            try:
-                future.result(timeout=1.0)
-            except Exception as e:
-                logger.error(f"[HandshakeManager] Erro ao aguardar future: {e}", exc_info=True)
-    
-    def _execute_handshake_wrapper(self, task: HandshakeTask) -> None:
-        """
-        Wrapper para executar handshake e tratar erros.
-        
-        Args:
-            task: Tarefa de handshake a ser executada
-        """
-        account_id = task.account_id
-        try:
-            logger.info(
-                f"[HandshakeManager] Iniciando processamento de handshake para {account_id} "
-                f"(attempt_id={task.attempt_id})"
-            )
-            self._execute_handshake(task)
-            logger.info(
-                f"[HandshakeManager] Handshake para {account_id} processado com sucesso"
-            )
-        except Exception as e:
-            logger.error(
-                f"[HandshakeManager] Erro ao processar handshake para {account_id}: {e}",
-                exc_info=True
-            )
-            # Chama callback de erro
-            try:
-                task.finish_callback(e)
-            except Exception as callback_error:
-                logger.error(f"[HandshakeManager] Erro no callback de handshake: {callback_error}")
+        logger.info(f"[HandshakeManager] Loop do gerenciador de handshakes finalizado (total de iterações: {loop_iteration})")
     
     def _execute_handshake(self, task: HandshakeTask) -> None:
         """
@@ -393,7 +362,7 @@ class HandshakeManager:
         )
     
     def stop(self) -> None:
-        """Para o loop de processamento e fecha o executor."""
+        """Para o loop de processamento."""
         logger.info("[HandshakeManager] Parando gerenciador de handshakes")
         self._stop_event.set()
         
@@ -404,16 +373,9 @@ class HandshakeManager:
             else:
                 logger.info("[HandshakeManager] Thread do manager finalizada")
         
-        # Fecha o executor e aguarda conclusão de tasks pendentes
-        if self._executor is not None:
-            logger.info("[HandshakeManager] Fechando ThreadPoolExecutor...")
-            self._executor.shutdown(wait=True, timeout=30.0)
-            logger.info("[HandshakeManager] ThreadPoolExecutor fechado")
-        
         with self._lock:
             self._handshake_queue.clear()
             self._processing_queue.clear()
-            self._futures.clear()
     
     def get_handshake_count(self) -> int:
         """Retorna o número de handshakes na fila."""

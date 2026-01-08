@@ -84,12 +84,6 @@ class AsyncoreConnectionDispatcher(YowConnectionDispatcher, asyncore.dispatcher_
 
     def handle_close(self):
         logger.debug("handle_close")
-        # Remove o socket do socket_map antes de fechar para evitar WinError 10038
-        if self.socket_map and self.socket in self.socket_map:
-            try:
-                del self.socket_map[self.socket]
-            except (KeyError, AttributeError):
-                pass
         self.close()        
         self.socket_map = None
         self._connected = False                

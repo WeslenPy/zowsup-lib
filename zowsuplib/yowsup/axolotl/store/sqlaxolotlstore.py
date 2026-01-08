@@ -212,13 +212,37 @@ class SqlPreKeyStore:
             return []
 
     def storePreKey(self, preKeyId: int, preKeyRecord: PreKeyRecord) -> None:
-        row = models.PreKey(
-            account_id=self.account.id,
-            prekey_id=preKeyId,
-            record=preKeyRecord.serialize(),
-        )
-        self.db.add(row)
-        self.db.commit()
+        try:
+            row = models.PreKey(
+                account_id=self.account.id,
+                prekey_id=preKeyId,
+                record=preKeyRecord.serialize(),
+            )
+            self.db.add(row)
+            self.db.commit()
+        except (PendingRollbackError, InvalidRequestError) as e:
+            logger.warning(f"Erro de transação inválida em storePreKey, fazendo rollback: {e}")
+            try:
+                self.db.rollback()
+                # Tenta novamente após rollback
+                row = models.PreKey(
+                    account_id=self.account.id,
+                    prekey_id=preKeyId,
+                    record=preKeyRecord.serialize(),
+                )
+                self.db.add(row)
+                self.db.commit()
+            except Exception as retry_error:
+                logger.error(f"Erro ao tentar novamente após rollback em storePreKey: {retry_error}")
+                raise
+        except Exception as e:
+            logger.error(f"Erro inesperado em storePreKey: {e}")
+            # Tenta rollback mesmo para outros erros
+            try:
+                self.db.rollback()
+            except Exception as rollback_error:
+                logger.error(f"Erro no rollback em storePreKey: {rollback_error}")
+            raise
 
     def containsPreKey(self, preKeyId: int) -> bool:
         q = (
@@ -291,23 +315,56 @@ class SqlSignedPreKeyStore:
         return [SignedPreKeyRecord(serialized=r[0]) for r in rows]
 
     def storeSignedPreKey(self, signedPreKeyId: int, signedPreKeyRecord: SignedPreKeyRecord) -> None:
-        # Delete existing
-        (
-            self.db.query(models.SignedPreKey)
-            .filter(
-                models.SignedPreKey.account_id == self.account.id,
-                models.SignedPreKey.prekey_id == signedPreKeyId,
+        try:
+            # Delete existing
+            (
+                self.db.query(models.SignedPreKey)
+                .filter(
+                    models.SignedPreKey.account_id == self.account.id,
+                    models.SignedPreKey.prekey_id == signedPreKeyId,
+                )
+                .delete(synchronize_session=False)
             )
-            .delete(synchronize_session=False)
-        )
-        row = models.SignedPreKey(
-            account_id=self.account.id,
-            prekey_id=signedPreKeyId,
-            timestamp=signedPreKeyRecord.getTimestamp(),
-            record=signedPreKeyRecord.serialize(),
-        )
-        self.db.add(row)
-        self.db.commit()
+            row = models.SignedPreKey(
+                account_id=self.account.id,
+                prekey_id=signedPreKeyId,
+                timestamp=signedPreKeyRecord.getTimestamp(),
+                record=signedPreKeyRecord.serialize(),
+            )
+            self.db.add(row)
+            self.db.commit()
+        except (PendingRollbackError, InvalidRequestError) as e:
+            logger.warning(f"Erro de transação inválida em storeSignedPreKey, fazendo rollback: {e}")
+            try:
+                self.db.rollback()
+                # Tenta novamente após rollback
+                (
+                    self.db.query(models.SignedPreKey)
+                    .filter(
+                        models.SignedPreKey.account_id == self.account.id,
+                        models.SignedPreKey.prekey_id == signedPreKeyId,
+                    )
+                    .delete(synchronize_session=False)
+                )
+                row = models.SignedPreKey(
+                    account_id=self.account.id,
+                    prekey_id=signedPreKeyId,
+                    timestamp=signedPreKeyRecord.getTimestamp(),
+                    record=signedPreKeyRecord.serialize(),
+                )
+                self.db.add(row)
+                self.db.commit()
+            except Exception as retry_error:
+                logger.error(f"Erro ao tentar novamente após rollback em storeSignedPreKey: {retry_error}")
+                raise
+        except Exception as e:
+            logger.error(f"Erro inesperado em storeSignedPreKey: {e}")
+            # Tenta rollback mesmo para outros erros
+            try:
+                self.db.rollback()
+            except Exception as rollback_error:
+                logger.error(f"Erro no rollback em storeSignedPreKey: {rollback_error}")
+            raise
 
     def containsSignedPreKey(self, signedPreKeyId: int) -> bool:
         q = (
@@ -453,26 +510,63 @@ class SqlSenderKeyStore:
         sender_id = senderKeyName.getSender().getName()
         serialized = senderKeyRecord.serialize()
 
-        row = (
-            self.db.query(models.SenderKey)
-            .filter(
-                models.SenderKey.account_id == self.account.id,
-                models.SenderKey.group_id == group_id,
-                models.SenderKey.sender_id == sender_id,
+        try:
+            row = (
+                self.db.query(models.SenderKey)
+                .filter(
+                    models.SenderKey.account_id == self.account.id,
+                    models.SenderKey.group_id == group_id,
+                    models.SenderKey.sender_id == sender_id,
+                )
+                .one_or_none()
             )
-            .one_or_none()
-        )
-        if row is None:
-            row = models.SenderKey(
-                account_id=self.account.id,
-                group_id=group_id,
-                sender_id=sender_id,
-                record=serialized,
-            )
-            self.db.add(row)
-        else:
-            row.record = serialized
-        self.db.commit()
+            if row is None:
+                row = models.SenderKey(
+                    account_id=self.account.id,
+                    group_id=group_id,
+                    sender_id=sender_id,
+                    record=serialized,
+                )
+                self.db.add(row)
+            else:
+                row.record = serialized
+            self.db.commit()
+        except (PendingRollbackError, InvalidRequestError) as e:
+            logger.warning(f"Erro de transação inválida em storeSenderKey, fazendo rollback: {e}")
+            try:
+                self.db.rollback()
+                # Tenta novamente após rollback
+                row = (
+                    self.db.query(models.SenderKey)
+                    .filter(
+                        models.SenderKey.account_id == self.account.id,
+                        models.SenderKey.group_id == group_id,
+                        models.SenderKey.sender_id == sender_id,
+                    )
+                    .one_or_none()
+                )
+                if row is None:
+                    row = models.SenderKey(
+                        account_id=self.account.id,
+                        group_id=group_id,
+                        sender_id=sender_id,
+                        record=serialized,
+                    )
+                    self.db.add(row)
+                else:
+                    row.record = serialized
+                self.db.commit()
+            except Exception as retry_error:
+                logger.error(f"Erro ao tentar novamente após rollback em storeSenderKey: {retry_error}")
+                raise
+        except Exception as e:
+            logger.error(f"Erro inesperado em storeSenderKey: {e}")
+            # Tenta rollback mesmo para outros erros
+            try:
+                self.db.rollback()
+            except Exception as rollback_error:
+                logger.error(f"Erro no rollback em storeSenderKey: {rollback_error}")
+            raise
 
     def loadSenderKey(self, senderKeyName):
         from zowsuplib.axolotl.groups.state.senderkeyrecord import SenderKeyRecord

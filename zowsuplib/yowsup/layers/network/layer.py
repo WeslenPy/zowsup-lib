@@ -108,7 +108,13 @@ class YowNetworkLayer(YowLayer, ConnectionCallbacks):
     def destroyConnection(self, reason=None):
         self._disconnect_reason = reason
         self.state = self.__class__.STATE_DISCONNECTING
-        self._dispatcher.disconnect()
+        if self._dispatcher is not None:
+            try:
+                self._dispatcher.disconnect()
+            except Exception as e:
+                logger.debug(f"Erro ao desconectar dispatcher: {e}")
+        else:
+            logger.debug("Dispatcher não está disponível durante destroyConnection")
 
     def getStatus(self):
         return self.connected

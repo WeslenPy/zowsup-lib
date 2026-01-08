@@ -1556,15 +1556,50 @@ class ZowsupClient:
         logger.info(f"{self._log_prefix} Desconectando...")
         try:
             # Remove do StackLoopManager antes de desconectar
-            manager = StackLoopManager.get_instance()
-            manager.unregister_stack(self.account_id)
+            try:
+                manager = StackLoopManager.get_instance()
+                manager.unregister_stack(self.account_id)
+            except Exception as e:
+                logger.debug(f"{self._log_prefix} Erro ao remover do StackLoopManager (pode já estar removido): {e}")
             
-            self.send_layer.userQuit = True
-            self.send_layer.setProp("FORCEQUIT", 1)
-            if self._stack is not None:
-                self._stack.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_DISCONNECT))
+            # Verifica se send_layer existe antes de usar
+            if hasattr(self, 'send_layer') and self.send_layer is not None:
+                try:
+                    self.send_layer.userQuit = True
+                    self.send_layer.setProp("FORCEQUIT", 1)
+                except Exception as e:
+                    logger.debug(f"{self._log_prefix} Erro ao definir userQuit: {e}")
             else:
-                self.send_layer.onDisconnected(YowLayerEvent(YowNetworkLayer.EVENT_STATE_DISCONNECT))
+                logger.warning(f"{self._log_prefix} send_layer não está disponível durante disconnect")
+            
+            # Desconecta o stack se existir
+            if self._stack is not None:
+                try:
+                    self._stack.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_DISCONNECT))
+                except Exception as e:
+                    logger.debug(f"{self._log_prefix} Erro ao broadcastar evento de disconnect: {e}")
+            elif hasattr(self, 'send_layer') and self.send_layer is not None:
+                try:
+                    self.send_layer.onDisconnected(YowLayerEvent(YowNetworkLayer.EVENT_STATE_DISCONNECT))
+                except Exception as e:
+                    logger.debug(f"{self._log_prefix} Erro ao chamar onDisconnected: {e}")
+            
+            # Remove do PingManager se estiver registrado
+            try:
+                from zowsuplib.app.ping_manager import PingManager
+                ping_manager = PingManager.get_instance()
+                ping_manager.unregister_ping(self.account_id)
+            except Exception as e:
+                logger.debug(f"{self._log_prefix} Erro ao remover do PingManager (pode já estar removido): {e}")
+            
+            # Remove do HandshakeManager se houver handshake pendente
+            try:
+                from zowsuplib.app.handshake_manager import HandshakeManager
+                handshake_manager = HandshakeManager.get_instance()
+                handshake_manager.unregister_handshake(self.account_id)
+            except Exception as e:
+                logger.debug(f"{self._log_prefix} Erro ao remover do HandshakeManager (pode não haver handshake): {e}")
+            
             self._started = False
             logger.info(f"{self._log_prefix} Desconectado com sucesso")
         except Exception as e:
