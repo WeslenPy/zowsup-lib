@@ -794,23 +794,51 @@ class ZowsupClient:
         self._dispatcher = _CommandDispatcher(self._log_prefix)
         self._register_command_handlers()
 
-    def _start_stack_thread(self) -> threading.Thread:
+    def _start_stack_thread(self) -> Optional[threading.Thread]:
         """
-        Inicia o loop do stack em thread dedicada.
+        Registra o stack no StackLoopManager centralizado ao invés de criar thread própria.
+        
+        Returns:
+            None (não cria thread própria, usa o manager centralizado)
         """
-        def _runner():
-            self._run_stack_loop()
-
-        t = threading.Thread(
-            target=_runner, name=f"stack-{self.account_id}", daemon=True
+        from zowsuplib.app.stack_loop_manager import StackLoopManager
+        
+        manager = StackLoopManager.get_instance()
+        
+        def on_loop_end():
+            """Callback chamado quando o loop termina."""
+            logger.info(f"{self._log_prefix} LOOP ENDED")
+            self._started = False
+        
+        # Registra o stack no manager centralizado
+        manager.register_stack(
+            account_id=self.account_id,
+            stack=self._stack,
+            on_loop_end=on_loop_end
         )
-        t.start()
-        return t
+        
+        logger.info(f"{self._log_prefix} Stack registrado no StackLoopManager centralizado")
+        return None  # Não retorna thread, pois usa o manager centralizado
 
     def _run_stack_loop(self) -> None:
         """
+        DEPRECATED: Este método não é mais usado.
+        O loop do stack é gerenciado pelo StackLoopManager centralizado.
+        
+        Mantido apenas para compatibilidade, mas não deve ser chamado diretamente.
+        """
+        logger.warning(f"{self._log_prefix} _run_stack_loop() chamado mas não é mais usado (usando StackLoopManager)")
+        # Este método não deve mais ser chamado
+        # O processamento é feito pelo StackLoopManager
+        pass
+
+    def _run_stack_loop_legacy(self) -> None:
+        """
         Executa o loop do stack (equivalente ao YowBot.run()).
         Retry de conexão está desabilitado por padrão.
+        
+        NOTA: Este método é mantido apenas para referência.
+        O processamento real é feito pelo StackLoopManager.
         """
         logger.info(f"{self._log_prefix} Login start")
         try:
@@ -1479,13 +1507,20 @@ class ZowsupClient:
     def disconnect(self) -> None:
         """
         Encerra a conexão do bot de forma controlada.
+        Remove o stack do StackLoopManager centralizado.
         """
+        from zowsuplib.app.stack_loop_manager import StackLoopManager
+        
         if not self._started:
             logger.debug(f"{self._log_prefix} Já está desconectado, ignorando chamada")
             return
         
         logger.info(f"{self._log_prefix} Desconectando...")
         try:
+            # Remove do StackLoopManager antes de desconectar
+            manager = StackLoopManager.get_instance()
+            manager.unregister_stack(self.account_id)
+            
             self.send_layer.userQuit = True
             self.send_layer.setProp("FORCEQUIT", 1)
             if self._stack is not None:
@@ -1595,8 +1630,12 @@ class ZowsupClient:
             return False
         
         # Verifica se a thread do stack está viva
-        if hasattr(self, '_stack_thread') and self._stack_thread is not None:
-            if not self._stack_thread.is_alive():
+        # Com StackLoopManager, não há thread própria, então verifica o manager
+        from zowsuplib.app.stack_loop_manager import StackLoopManager
+        manager = StackLoopManager.get_instance()
+        if self.account_id in manager._stacks:
+            entry = manager._stacks[self.account_id]
+            if not entry.active:
                 logger.debug(f"{self._log_prefix} is_online() = False (stack_thread não está viva)")
                 return False
         
@@ -1632,9 +1671,15 @@ class ZowsupClient:
             "last_online_timestamp": None,
         }
         
-        # Verifica thread do stack
-        if hasattr(self, '_stack_thread') and self._stack_thread is not None:
-            status["stack_thread_alive"] = self._stack_thread.is_alive()
+        # Verifica se o stack está registrado e ativo no StackLoopManager
+        from zowsuplib.app.stack_loop_manager import StackLoopManager
+        manager = StackLoopManager.get_instance()
+        with manager._lock:
+            if self.account_id in manager._stacks:
+                entry = manager._stacks[self.account_id]
+                status["stack_thread_alive"] = entry.active and manager.is_running()
+            else:
+                status["stack_thread_alive"] = False
         
         # Verifica timestamp da última vez online
         if self.send_layer is not None and hasattr(self.send_layer, 'lastOnlineTimeStamp'):

@@ -163,14 +163,15 @@ class YowIqProtocolLayer(YowProtocolLayer):
             self._pingQueueLock.release()
 
     @EventCallback(YowAuthenticationProtocolLayer.EVENT_AUTHED)
-    def onAuthed(self, event):        
+    def onAuthed(self, event):
         interval = self.getProp(self.__class__.PROP_PING_INTERVAL, 50)
         if interval <= 0:
             return
-        # Sempre recria a thread de ping para garantir isolamento por conta/stack
-        # e evitar reuso entre contas durante reconexões.
+        
+        # Para thread local se existir (compatibilidade)
         self.stop_thread()
         self._pingQueue = {}
+        
         # Tenta identificar a conta a partir das props do stack
         account_id = (
             self.getStack().getProp("botId")
@@ -178,31 +179,62 @@ class YowIqProtocolLayer(YowProtocolLayer):
             or "unknown"
         )
         self._pingAccountId = account_id
-        self._pingThread = YowPingThread(
-            self,
-            interval,
-            account_id=account_id,
-            sysvar_context=None,
-        )
-        self.__logger.debug(f"starting ping thread for {account_id} (interval={interval}s).")
-        self._pingThread.start()
+        
+        # Registra no PingManager centralizado ao invés de criar thread própria
+        try:
+            from zowsuplib.app.ping_manager import PingManager
+            manager = PingManager.get_instance()
+            manager.register_ping(
+                account_id=account_id,
+                layer=self,
+                interval=interval
+            )
+            self.__logger.debug(f"[PingManager] Ping registrado para {account_id} (interval={interval}s)")
+        except ImportError:
+            # Fallback para thread local se o manager não estiver disponível
+            self.__logger.warning(f"[PingManager] Manager não disponível, usando thread local para {account_id}")
+            self._pingThread = YowPingThread(
+                self,
+                interval,
+                account_id=account_id,
+                sysvar_context=None,
+            )
+            self.__logger.debug(f"starting ping thread for {account_id} (interval={interval}s).")
+            self._pingThread.start()
     
     
     def stop_thread(self):
+        """Para thread local de ping (compatibilidade) e remove do PingManager."""
+        # Para thread local se existir
         if self._pingThread:
             self.__logger.debug("stopping ping thread")
             if self._pingThread:
                 self._pingThread.stop()
                 self._pingThread = None
             self._pingQueue = {}
-            
+        
+        # Remove do PingManager centralizado
+        try:
+            from zowsuplib.app.ping_manager import PingManager
+            manager = PingManager.get_instance()
+            account_id = (
+                self.getStack().getProp("botId")
+                or self.getStack().getProp("jid")
+                or self._pingAccountId
+                or "unknown"
+            )
+            manager.unregister_ping(account_id)
+            self.__logger.debug(f"[PingManager] Ping removido para {account_id}")
+        except (ImportError, AttributeError):
+            # Manager não disponível ou sem account_id, ignora
+            pass
         
     @EventCallback(YowNetworkLayer.EVENT_STATE_DISCONNECT)
-    def onDisconnect(self, event):                
+    def onDisconnect(self, event):
         self.stop_thread()
     
     @EventCallback(YowNetworkLayer.EVENT_STATE_DISCONNECTED)
-    def onDisconnected(self, event):                
+    def onDisconnected(self, event):
         self.stop_thread()
             
 class YowPingThread(Thread):
