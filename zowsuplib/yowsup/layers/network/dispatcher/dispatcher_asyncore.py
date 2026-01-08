@@ -41,7 +41,35 @@ class AsyncoreConnectionDispatcher(YowConnectionDispatcher, asyncore.dispatcher_
             logger.debug("no proxy set, direct network")
 
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM,proxy)        
-        asyncore.dispatcher_with_send.connect(self, host)
+        
+        try:
+            asyncore.dispatcher_with_send.connect(self, host)
+        except OSError as e:
+            # Em Windows, connect_ex pode retornar erro 10060 (timeout) imediatamente
+            # mesmo em modo não-bloqueante. Neste caso, precisamos tratar como EINPROGRESS
+            # e permitir que o loop processe a conexão de forma assíncrona.
+            import os
+            from zowsuplib.yowsup.common.asyncore import EINPROGRESS, EALREADY, EWOULDBLOCK, EINVAL
+            
+            err = e.errno if hasattr(e, 'errno') else (e.args[0] if e.args else None)
+            
+            # WSAETIMEDOUT (10060) no Windows pode ocorrer imediatamente em sockets não-bloqueantes
+            # quando a conexão não pode ser estabelecida rapidamente. Tratamos como EINPROGRESS.
+            if err == 10060 and os.name == 'nt':
+                # Timeout imediato no Windows - trata como conexão em progresso
+                logger.debug(f"connect() retornou timeout (10060), tratando como conexão em progresso")
+                self.connecting = True
+                self.addr = host
+                # Não fecha o socket, permite que o loop tente novamente
+                return
+            elif err in (EINPROGRESS, EALREADY, EWOULDBLOCK) or (err == EINVAL and os.name == 'nt'):
+                # Erro esperado para conexão não-bloqueante, o loop processará
+                logger.debug(f"connect() retornou {err}, conexão será processada assincronamente")
+                return
+            else:
+                # Outro erro - relança a exceção
+                logger.error(f"Erro de conexão não tratado: {e} (errno={err})")
+                raise
         
         # NÃO chama asyncore.loop() bloqueante aqui
         # O StackLoopManager processará todos os socket_maps de forma não-bloqueante

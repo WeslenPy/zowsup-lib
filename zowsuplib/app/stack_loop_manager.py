@@ -176,15 +176,21 @@ class StackLoopManager:
                 
                 # Processa eventos asyncore de todas as conexões (não-bloqueante)
                 # Usa poll diretamente para evitar o sleep(0.2) bloqueante do loop()
+                # Processa múltiplas vezes para garantir que eventos de conexão sejam tratados
                 if combined_socket_map:
                     try:
                         # Usa a mesma lógica do asyncore.loop() para escolher poll ou poll2
                         import select
                         use_poll = hasattr(select, 'poll')
-                        if use_poll:
-                            asyncore.poll2(timeout=0.0, map=combined_socket_map)
-                        else:
-                            asyncore.poll(timeout=0.0, map=combined_socket_map)
+                        # Processa até 3 vezes para garantir que eventos de conexão sejam tratados
+                        for _ in range(3):
+                            if use_poll:
+                                asyncore.poll2(timeout=0.0, map=combined_socket_map)
+                            else:
+                                asyncore.poll(timeout=0.0, map=combined_socket_map)
+                            # Se não há mais eventos pendentes, para
+                            if not combined_socket_map:
+                                break
                     except Exception as e:
                         logger.debug(f"[StackLoopManager] Erro no asyncore.poll: {e}")
                 

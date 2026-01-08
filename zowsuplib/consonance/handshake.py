@@ -285,15 +285,51 @@ class WAHandshake(object):
         stream.write_segment(handshakemessage.SerializeToString())
         logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() client_hello enviado, aguardando resposta | thread_id={thread_id}")
         incoming_handshakemessage = wa5_pb2.HandshakeMessage()
-        try:
-            segment_data = stream.read_segment()
-            logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() segment recebido | thread_id={thread_id} segment_len={len(segment_data) if segment_data else 0}")
-            incoming_handshakemessage.ParseFromString(segment_data)
-            logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() segment parseado | thread_id={thread_id} has_server_hello={incoming_handshakemessage.HasField('server_hello')}")
-        except Exception as read_error:
-            logger.error(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() erro ao ler segment | thread_id={thread_id} error={read_error} error_type={type(read_error).__name__}")
-            logger.error(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() traceback completo:\n{__import__('traceback').format_exc()}")
-            raise HandshakeFailedException(f"Handshake exception after server read: {read_error}")
+        max_attempts = 5  # Tenta até 5 vezes para encontrar um HandshakeMessage válido
+        attempt = 0
+        
+        while attempt < max_attempts:
+            try:
+                segment_data = stream.read_segment()
+                logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() segment recebido (tentativa {attempt+1}/{max_attempts}) | thread_id={thread_id} segment_len={len(segment_data) if segment_data else 0}")
+                
+                # Tenta parsear como HandshakeMessage
+                try:
+                    incoming_handshakemessage.ParseFromString(segment_data)
+                    # Verifica se tem server_hello - se tiver, é um HandshakeMessage válido
+                    if incoming_handshakemessage.HasField('server_hello'):
+                        logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() segment parseado com sucesso | thread_id={thread_id} has_server_hello=True")
+                        break
+                    else:
+                        # Parseou mas não tem server_hello - pode ser um HandshakeMessage incompleto ou de outro tipo
+                        logger.warning(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() segment parseado mas sem server_hello | thread_id={thread_id} fields={incoming_handshakemessage.ListFields()}")
+                        # Tenta novamente
+                        attempt += 1
+                        if attempt < max_attempts:
+                            logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() tentando ler próximo segment | thread_id={thread_id}")
+                            continue
+                        else:
+                            raise HandshakeFailedException("Handshake message does not contain server hello after multiple attempts!")
+                except DecodeError as decode_error:
+                    # Não é um HandshakeMessage válido - pode ser uma mensagem normal
+                    logger.warning(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() segment não é HandshakeMessage válido (tentativa {attempt+1}/{max_attempts}) | thread_id={thread_id} error={decode_error}")
+                    attempt += 1
+                    if attempt < max_attempts:
+                        logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() descartando segment e tentando ler próximo | thread_id={thread_id}")
+                        continue
+                    else:
+                        logger.error(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() erro ao ler segment após {max_attempts} tentativas | thread_id={thread_id} error={decode_error}")
+                        raise HandshakeFailedException(f"Handshake exception after server read: {decode_error}")
+                        
+            except Exception as read_error:
+                if isinstance(read_error, HandshakeFailedException):
+                    raise
+                logger.error(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() erro ao ler segment | thread_id={thread_id} error={read_error} error_type={type(read_error).__name__}")
+                logger.error(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() traceback completo:\n{__import__('traceback').format_exc()}")
+                raise HandshakeFailedException(f"Handshake exception after server read: {read_error}")
+        
+        if attempt >= max_attempts:
+            raise HandshakeFailedException(f"Failed to receive valid HandshakeMessage after {max_attempts} attempts")
         
         if not incoming_handshakemessage.HasField("server_hello"):
             logger.error(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() server_hello ausente | thread_id={thread_id} fields={incoming_handshakemessage.ListFields()}")
