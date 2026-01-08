@@ -67,7 +67,15 @@ class YowIqProtocolLayer(YowProtocolLayer):
             self.toUpper(ErrorIqProtocolEntity.fromProtocolTreeNode(node))
                         
 
-        if node["type"] == "result":            
+        if node["type"] == "result":
+            # Processa pongs de ping (xmlns="w:p" e sem filhos)
+            if node.getAttributeValue("xmlns") == "w:p" and not node.hasChildren():
+                ping_id = node.getAttributeValue("id")
+                if ping_id:
+                    self.gotPong(ping_id)
+                    self.__logger.debug(f"Pong processado para ping {ping_id}")
+                return
+            
             if not node.hasChildren():                
                 self.toUpper(ResultIqProtocolEntity.fromProtocolTreeNode(node))
             elif node.getChild("verified_name") is not None:                
@@ -113,24 +121,46 @@ class YowIqProtocolLayer(YowProtocolLayer):
                                 
     def gotPong(self, pingId):
         self._pingQueueLock.acquire()
-        if pingId in self._pingQueue:
-            self._pingQueue = {}
-        self._pingQueueLock.release()
+        try:
+            if pingId in self._pingQueue:
+                del self._pingQueue[pingId]
+                self.__logger.debug(f"Pong recebido para ping {pingId}, removido da fila. Fila restante: {len(self._pingQueue)}")
+            else:
+                self.__logger.warning(f"Pong recebido para ping {pingId} que não está na fila")
+        finally:
+            self._pingQueueLock.release()
 
     def waitPong(self, id):
         self._pingQueueLock.acquire()
-        self._pingQueue[id] = None
-        pingQueueSize = len(self._pingQueue)
-        self._pingQueueLock.release()
-        self.__logger.debug(f"ping queue size: {pingQueueSize}")
-        if pingQueueSize >= 3:
-            # Marca prop de timeout para camadas superiores reagirem
-            try:
-                self.getStack().setProp(self.__class__.PROP_PING_TIMEOUT, True)
-            except Exception:
-                pass
-            self.__logger.warning("Ping timeout: desconectando stack")
-            self.getStack().broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_DISCONNECT, reason = "Ping Timeout"))
+        try:
+            # Armazena timestamp do ping para detectar timeouts
+            self._pingQueue[id] = time.time()
+            pingQueueSize = len(self._pingQueue)
+            
+            # Verifica se há pings antigos não respondidos (mais de 60 segundos)
+            current_time = time.time()
+            old_pings = [pid for pid, timestamp in self._pingQueue.items() 
+                        if timestamp and (current_time - timestamp) > 60]
+            
+            if old_pings:
+                self.__logger.warning(f"Removendo {len(old_pings)} pings antigos não respondidos: {old_pings}")
+                for pid in old_pings:
+                    del self._pingQueue[pid]
+                pingQueueSize = len(self._pingQueue)
+            
+            self.__logger.debug(f"ping queue size: {pingQueueSize} (ping {id} adicionado)")
+            
+            # Apenas desconecta se há 3 ou mais pings pendentes E pelo menos um está antigo
+            if pingQueueSize >= 3 and old_pings:
+                # Marca prop de timeout para camadas superiores reagirem
+                try:
+                    self.getStack().setProp(self.__class__.PROP_PING_TIMEOUT, True)
+                except Exception:
+                    pass
+                self.__logger.warning(f"Ping timeout: {pingQueueSize} pings pendentes, {len(old_pings)} antigos. Desconectando stack")
+                self.getStack().broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_DISCONNECT, reason = "Ping Timeout"))
+        finally:
+            self._pingQueueLock.release()
 
     @EventCallback(YowAuthenticationProtocolLayer.EVENT_AUTHED)
     def onAuthed(self, event):        
