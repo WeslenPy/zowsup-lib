@@ -129,23 +129,57 @@ class YowNoiseLayer(YowLayer):
                 attempt_id = self._handshake_attempt
                 self._last_handshake_attempt = attempt_id
                 logger.info(f"[handshake {attempt_id}] performing registration handshake | mcc={mcc} mnc={mnc} deviceid={deviceid if jid is not None else None}")
+                
+                # Limpa thread de handshake anterior se existir e estiver rodando
+                self._cleanup_old_handshake_worker()
+                
                 # Obtém account_id para nome da thread
                 account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
                 
-                self._handshake_worker = WANoiseProtocolHandshakeWorker(
-                    self._wa_noiseprotocol, self._stream, client_config, keypair,rs = None,                    
-                    finish_callback = self.on_handshake_finished,
-                    mode = "reg",
-                    identity = identity,regid = regid,signedprekey = signedprekey,
-                    deviceid = deviceid if jid is not None else None,
-                    attempt_id = attempt_id
-                )
-                # Garante que o nome da thread está correto
-                if hasattr(self._handshake_worker, 'name'):
-                    self._handshake_worker.name = f"HandshakeWorker-Reg-{account_id}-{attempt_id or '1'}"
-                logger.debug(f"[handshake {attempt_id}] starting handshake worker")
-                self._stream.set_events_callback(self._handle_stream_event)
-                self._handshake_worker.start()
+                # Tenta usar HandshakeManager se disponível
+                try:
+                    from zowsuplib.app.handshake_manager import HandshakeManager
+                    handshake_manager = HandshakeManager.get_instance()
+                    
+                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] registrando no HandshakeManager (reg) | account={account_id}")
+                    self._stream.set_events_callback(self._handle_stream_event)
+                    
+                    # Registra no manager centralizado
+                    handshake_manager.register_handshake(
+                        account_id=account_id,
+                        attempt_id=attempt_id,
+                        protocol=self._wa_noiseprotocol,
+                        stream=self._stream,
+                        client_config=client_config,
+                        s=keypair,
+                        rs=None,
+                        finish_callback=self.on_handshake_finished,
+                        mode="reg",
+                        identity=identity,
+                        regid=regid,
+                        signedprekey=signedprekey,
+                        deviceid=deviceid if jid is not None else None
+                    )
+                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] handshake registrado no HandshakeManager (reg) | account={account_id}")
+                    # Marca como None para indicar que está usando o manager
+                    self._handshake_worker = None
+                except Exception as e:
+                    # Fallback para thread local se o manager não estiver disponível
+                    logger.warning(f"[HANDSHAKE-DEBUG] HandshakeManager não disponível, usando thread local: {e}")
+                    self._handshake_worker = WANoiseProtocolHandshakeWorker(
+                        self._wa_noiseprotocol, self._stream, client_config, keypair,rs = None,                    
+                        finish_callback = self.on_handshake_finished,
+                        mode = "reg",
+                        identity = identity,regid = regid,signedprekey = signedprekey,
+                        deviceid = deviceid if jid is not None else None,
+                        attempt_id = attempt_id
+                    )
+                    # Garante que o nome da thread está correto
+                    if hasattr(self._handshake_worker, 'name'):
+                        self._handshake_worker.name = f"HandshakeWorker-Reg-{account_id}-{attempt_id or '1'}"
+                    logger.debug(f"[handshake {attempt_id}] starting handshake worker")
+                    self._stream.set_events_callback(self._handle_stream_event)
+                    self._handshake_worker.start()
             else:
                 logger.warning("Registration handshake requested while another is in progress; skipping new attempt")
                         
@@ -247,6 +281,10 @@ class YowNoiseLayer(YowLayer):
                     import threading
                     thread_id = threading.current_thread().ident
                     account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+                    
+                    # Limpa thread de handshake anterior se existir e estiver rodando
+                    self._cleanup_old_handshake_worker()
+                    
                     self._handshake_attempt += 1
                     attempt_id = self._handshake_attempt
                     self._last_handshake_attempt = attempt_id
@@ -257,19 +295,49 @@ class YowNoiseLayer(YowLayer):
                     # Obtém account_id para nome da thread
                     account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or username
                     
-                    self._handshake_worker = WANoiseProtocolHandshakeWorker(
-                        self._wa_noiseprotocol, self._stream, client_config, local_static, remote_static,
-                        self.on_handshake_finished,
-                        deviceid = int(device) if device is not None else None,
-                        attempt_id = attempt_id
-                    )
-                    # Garante que o nome da thread está correto
-                    if hasattr(self._handshake_worker, 'name'):
-                        self._handshake_worker.name = f"HandshakeWorker-{account_id}-{attempt_id or '1'}"
-                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] starting handshake worker | worker_thread_id={self._handshake_worker.ident if hasattr(self._handshake_worker, 'ident') else 'N/A'}")
-                    self._stream.set_events_callback(self._handle_stream_event)
-                    self._handshake_worker.start()
-                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] handshake worker started | worker_thread_id={self._handshake_worker.ident}")
+                    # Tenta usar HandshakeManager se disponível
+                    try:
+                        from zowsuplib.app.handshake_manager import HandshakeManager
+                        handshake_manager = HandshakeManager.get_instance()
+                        
+                        logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] registrando no HandshakeManager | account={account_id}")
+                        self._stream.set_events_callback(self._handle_stream_event)
+                        
+                        # Registra no manager centralizado
+                        handshake_manager.register_handshake(
+                            account_id=account_id,
+                            attempt_id=attempt_id,
+                            protocol=self._wa_noiseprotocol,
+                            stream=self._stream,
+                            client_config=client_config,
+                            s=local_static,
+                            rs=remote_static,
+                            finish_callback=self.on_handshake_finished,
+                            mode=None,
+                            identity=None,
+                            regid=None,
+                            signedprekey=None,
+                            deviceid=int(device) if device is not None else None
+                        )
+                        logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] handshake registrado no HandshakeManager | account={account_id}")
+                        # Marca como None para indicar que está usando o manager
+                        self._handshake_worker = None
+                    except Exception as e:
+                        # Fallback para thread local se o manager não estiver disponível
+                        logger.warning(f"[HANDSHAKE-DEBUG] HandshakeManager não disponível, usando thread local: {e}")
+                        self._handshake_worker = WANoiseProtocolHandshakeWorker(
+                            self._wa_noiseprotocol, self._stream, client_config, local_static, remote_static,
+                            self.on_handshake_finished,
+                            deviceid = int(device) if device is not None else None,
+                            attempt_id = attempt_id
+                        )
+                        # Garante que o nome da thread está correto
+                        if hasattr(self._handshake_worker, 'name'):
+                            self._handshake_worker.name = f"HandshakeWorker-{account_id}-{attempt_id or '1'}"
+                        logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] starting handshake worker | worker_thread_id={self._handshake_worker.ident if hasattr(self._handshake_worker, 'ident') else 'N/A'}")
+                        self._stream.set_events_callback(self._handle_stream_event)
+                        self._handshake_worker.start()
+                        logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] handshake worker started | worker_thread_id={self._handshake_worker.ident}")
                 else:
                     account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
                     logger.warning(f"[HANDSHAKE-DEBUG] Login handshake requested while another is in progress; skipping new attempt | account={account_id} current_state={self._wa_noiseprotocol.state} attempt_id={self._last_handshake_attempt}")
@@ -280,6 +348,14 @@ class YowNoiseLayer(YowLayer):
         import traceback
         thread_id = threading.current_thread().ident
         account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+        
+        # Limpa referência ao worker após handshake terminar (se estava usando thread local)
+        if self._handshake_worker is not None:
+            logger.debug(f"[HANDSHAKE-DEBUG] Limpando referência ao handshake worker após término | account={account_id} attempt_id={self._last_handshake_attempt}")
+            self._handshake_worker = None
+        else:
+            # Se estava usando HandshakeManager, apenas loga
+            logger.debug(f"[HANDSHAKE-DEBUG] Handshake finalizado via HandshakeManager | account={account_id} attempt_id={self._last_handshake_attempt}")
         
         if e is not None:
             logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] handshake finished with error | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} error={e} error_type={type(e).__name__}")
@@ -297,12 +373,70 @@ class YowNoiseLayer(YowLayer):
         else:
             logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] handshake finished successfully | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} state={self._wa_noiseprotocol.state}")
 
+    def _cleanup_old_handshake_worker(self):
+        """
+        Limpa thread de handshake anterior se existir e estiver rodando.
+        Garante que apenas uma thread de handshake esteja ativa por vez.
+        """
+        if self._handshake_worker is not None:
+            if hasattr(self._handshake_worker, 'is_alive') and self._handshake_worker.is_alive():
+                account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+                attempt_id = getattr(self._handshake_worker, '_attempt_id', self._last_handshake_attempt)
+                logger.warning(
+                    f"[HANDSHAKE-DEBUG] Limpando thread de handshake anterior ainda ativa | "
+                    f"account={account_id} attempt_id={attempt_id} thread_name={getattr(self._handshake_worker, 'name', 'unknown')}"
+                )
+                # A thread é daemon, então será terminada automaticamente quando o programa terminar
+                # Mas podemos marcar como None para evitar referências
+                self._handshake_worker = None
+            else:
+                # Thread já terminou, apenas limpa a referência
+                self._handshake_worker = None
+
     def _in_handshake(self):
         """
+        Verifica se há um handshake em progresso.
+        Considera tanto o estado do protocolo quanto se há uma thread de handshake ativa
+        ou se há um handshake registrado no HandshakeManager.
+        
         :return:
         :rtype: bool
         """
-        return self._wa_noiseprotocol.state == WANoiseProtocol.STATE_HANDSHAKE
+        # Verifica estado do protocolo
+        protocol_in_handshake = self._wa_noiseprotocol.state == WANoiseProtocol.STATE_HANDSHAKE
+        
+        # Verifica se há uma thread de handshake ativa (modo fallback)
+        worker_active = (
+            self._handshake_worker is not None and 
+            hasattr(self._handshake_worker, 'is_alive') and 
+            self._handshake_worker.is_alive()
+        )
+        
+        # Verifica se há handshake registrado no HandshakeManager
+        manager_handshake = False
+        try:
+            from zowsuplib.app.handshake_manager import HandshakeManager
+            handshake_manager = HandshakeManager.get_instance()
+            account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+            # Verifica se há handshake pendente para esta conta
+            manager_handshake = handshake_manager.get_handshake_count() > 0
+            # Verifica especificamente se esta conta tem handshake pendente
+            with handshake_manager._lock:
+                manager_handshake = account_id in handshake_manager._handshake_queue
+        except Exception:
+            # Se não conseguir verificar, assume que não há
+            manager_handshake = False
+        
+        # Se há thread ativa mas protocolo não está em handshake, limpa a thread
+        if worker_active and not protocol_in_handshake:
+            logger.warning(
+                f"[HANDSHAKE-DEBUG] Thread de handshake ativa mas protocolo não está em handshake, limpando | "
+                f"account={self.getStack().getProp('botId') or 'unknown'}"
+            )
+            self._cleanup_old_handshake_worker()
+            worker_active = False
+        
+        return protocol_in_handshake or worker_active or manager_handshake
 
     def _on_protocol_state_changed(self, state):
         import threading
