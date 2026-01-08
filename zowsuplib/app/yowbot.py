@@ -95,7 +95,10 @@ class YowBot:
         def _runner():
             self.run()
 
-        self.thread = threading.Thread(target=_runner)
+        self.thread = threading.Thread(
+            target=_runner,
+            name=f"YowBot-{self.botId or 'unknown'}"
+        )
         self.thread.daemon=True       
         self.thread.start()    
 

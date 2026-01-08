@@ -72,11 +72,21 @@ class _CommandDispatcher:
     Orquestra comandos assíncronos do SendLayer com sincronização thread-safe.
     """
 
-    def __init__(self, log_prefix: str) -> None:
+    def __init__(self, log_prefix: str, account_id: Optional[str] = None) -> None:
         self._handlers: Dict[str, Callable[[list, Dict[str, Any]], Any]] = {}
         self._events: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._log_prefix = log_prefix
+        self._account_id = account_id or "unknown"
+        
+        # Importa CommandManager apenas quando necessário
+        try:
+            from zowsuplib.app.command_manager import CommandManager
+            self._command_manager = CommandManager.get_instance()
+            self._use_command_manager = True
+        except Exception:
+            self._command_manager = None
+            self._use_command_manager = False
 
     def register(self, name: str, handler: Callable[[list, Dict[str, Any]], Any]) -> None:
         self._handlers[name] = handler
@@ -126,6 +136,7 @@ class _CommandDispatcher:
         Aguarda resultado de um comando via evento (100% orientado a eventos).
         
         Se o evento não existir ainda, cria um para aguardar resultados assíncronos.
+        Usa CommandManager se disponível para processamento centralizado.
         """
         with self._lock:
             obj = self._events.get(cmd_id)
@@ -135,11 +146,34 @@ class _CommandDispatcher:
                 self._events[cmd_id] = obj
 
         event = obj["event"]
+        
+        # Se CommandManager está disponível, registra o comando para monitoramento
+        if self._use_command_manager and self._command_manager:
+            def result_callback(result, error):
+                """Callback chamado quando o resultado chegar ou timeout ocorrer."""
+                # O resultado já foi setado via set_result/set_error, apenas limpa
+                pass
+            
+            self._command_manager.register_command(
+                account_id=self._account_id,
+                cmd_id=cmd_id,
+                event=event,
+                wait_time=float(wait_time),
+                result_callback=result_callback
+            )
+        
+        # Aguarda o evento (pode ser sinalizado pelo CommandManager ou diretamente)
         if not event.wait(wait_time):
             # Timeout: remove evento se não houve resultado
+            if self._use_command_manager and self._command_manager:
+                self._command_manager.unregister_command(cmd_id)
             with self._lock:
                 self._events.pop(cmd_id, None)
             return None, {"code": -999, "msg": "timeout"}
+
+        # Remove do CommandManager se estava registrado
+        if self._use_command_manager and self._command_manager:
+            self._command_manager.unregister_command(cmd_id)
 
         with self._lock:
             obj = self._events.pop(cmd_id, obj)
@@ -791,7 +825,7 @@ class ZowsupClient:
         self.send_layer.handshake_failed_callback = self._on_handshake_failed
 
         # Dispatcher central para comandos e eventos assíncronos
-        self._dispatcher = _CommandDispatcher(self._log_prefix)
+        self._dispatcher = _CommandDispatcher(self._log_prefix, account_id=self.account_id)
         self._register_command_handlers()
 
     def _start_stack_thread(self) -> Optional[threading.Thread]:
@@ -1090,7 +1124,11 @@ class ZowsupClient:
                 self._set_cmd_error(cmd_id, {"code": -1, "msg": str(e)})
         
         # Executa em thread separada para não bloquear
-        thread = threading.Thread(target=_init_async, daemon=True)
+        thread = threading.Thread(
+            target=_init_async,
+            name=f"AccountInit-{self.account_id}",
+            daemon=True
+        )
         thread.start()
         
         return cmd_id

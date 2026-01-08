@@ -85,7 +85,9 @@ class YowQrCodeThread(Thread):
         self.__logger = logger
         super(YowQrCodeThread, self).__init__()
         self.daemon = True
-        self.name = "YowQrCode-%s" % self.name
+        # Define nome identificável com account_id se disponível
+        account_id = getattr(layer.bot, 'botId', None) or 'unknown'
+        self.name = f"YowQrCode-{account_id}"
     
     def run(self):
         while not self._stop:
@@ -205,8 +207,11 @@ class SendLayer(YowInterfaceLayer):
                     # evita flood de forçar reconnect
                     self._mark_activity()
 
-        self._liveness_thread = threading.Thread(target=_loop, daemon=True)
-        self._liveness_thread.name = f"Liveness-{self.bot.botId or 'unknown'}"
+        self._liveness_thread = threading.Thread(
+            target=_loop,
+            name=f"LivenessMonitor-{self.bot.botId or 'unknown'}",
+            daemon=True
+        )
         self._liveness_thread.start()
 
     def _stop_liveness_monitor(self):

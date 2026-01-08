@@ -43,7 +43,7 @@ class Settings(BaseSettings):
         env="ZOWSUP_DB_MAX_OVERFLOW",
     )
     db_pool_timeout: int = Field(
-        default=30,
+        default=60,
         description="Seconds to wait for a connection from the pool (ignored for SQLite).",
         env="ZOWSUP_DB_POOL_TIMEOUT",
     )

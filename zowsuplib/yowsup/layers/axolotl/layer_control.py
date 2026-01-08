@@ -183,7 +183,12 @@ class AxolotlControlLayer(AxolotlBaseLayer):
                                 logger.info(f"Tentando reenviar prekeys (tentativa {current_retry_count + 1}/5)...")
                                 self.flush_keys(signed_prekey, prekeys, reboot_connection=reboot_connection, retry_count=current_retry_count)
                     
-                    threading.Thread(target=retry_flush_keys, daemon=True).start()
+                    retry_thread = threading.Thread(
+                        target=retry_flush_keys,
+                        name=f"PrekeyRetry-{self.getStack().getProp('botId') or 'unknown'}",
+                        daemon=True
+                    )
+                    retry_thread.start()
             else:
                 # Outros erros (não 503)
                 logger.error(f"Erro ao enviar prekeys: code={error_code}, text={error_text}. Não será feito retry automático.")

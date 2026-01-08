@@ -28,6 +28,10 @@ class WANoiseProtocolHandshakeWorker(threading.Thread):
         """
         super(WANoiseProtocolHandshakeWorker, self).__init__()
         self.daemon = True
+        
+        # Define nome identificável para a thread
+        account_id = client_config.username if client_config and hasattr(client_config, 'username') else 'unknown'
+        self.name = f"HandshakeWorker-{account_id}-{attempt_id or '1'}"
 
         self._protocol = wanoiseprotocol # type: WANoiseProtocol
         self._stream = stream # type: SegmentedStream

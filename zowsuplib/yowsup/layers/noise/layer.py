@@ -129,6 +129,9 @@ class YowNoiseLayer(YowLayer):
                 attempt_id = self._handshake_attempt
                 self._last_handshake_attempt = attempt_id
                 logger.info(f"[handshake {attempt_id}] performing registration handshake | mcc={mcc} mnc={mnc} deviceid={deviceid if jid is not None else None}")
+                # Obtém account_id para nome da thread
+                account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+                
                 self._handshake_worker = WANoiseProtocolHandshakeWorker(
                     self._wa_noiseprotocol, self._stream, client_config, keypair,rs = None,                    
                     finish_callback = self.on_handshake_finished,
@@ -137,6 +140,9 @@ class YowNoiseLayer(YowLayer):
                     deviceid = deviceid if jid is not None else None,
                     attempt_id = attempt_id
                 )
+                # Garante que o nome da thread está correto
+                if hasattr(self._handshake_worker, 'name'):
+                    self._handshake_worker.name = f"HandshakeWorker-Reg-{account_id}-{attempt_id or '1'}"
                 logger.debug(f"[handshake {attempt_id}] starting handshake worker")
                 self._stream.set_events_callback(self._handle_stream_event)
                 self._handshake_worker.start()
@@ -248,12 +254,18 @@ class YowNoiseLayer(YowLayer):
                     logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] client_config completo: platform={client_config.useragent.platform} app_version={client_config.useragent.app_version} os_version={client_config.useragent.os_version} manufacturer={client_config.useragent.manufacturer} device={client_config.useragent.device}")
                     logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] local_static presente: {local_static is not None} remote_static presente: {remote_static is not None}")
                     logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] stream object: {id(self._stream)} protocol state: {self._wa_noiseprotocol.state}")
+                    # Obtém account_id para nome da thread
+                    account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or username
+                    
                     self._handshake_worker = WANoiseProtocolHandshakeWorker(
                         self._wa_noiseprotocol, self._stream, client_config, local_static, remote_static,
                         self.on_handshake_finished,
                         deviceid = int(device) if device is not None else None,
                         attempt_id = attempt_id
                     )
+                    # Garante que o nome da thread está correto
+                    if hasattr(self._handshake_worker, 'name'):
+                        self._handshake_worker.name = f"HandshakeWorker-{account_id}-{attempt_id or '1'}"
                     logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] starting handshake worker | worker_thread_id={self._handshake_worker.ident if hasattr(self._handshake_worker, 'ident') else 'N/A'}")
                     self._stream.set_events_callback(self._handle_stream_event)
                     self._handshake_worker.start()
