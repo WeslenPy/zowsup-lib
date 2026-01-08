@@ -41,8 +41,11 @@ class AsyncoreConnectionDispatcher(YowConnectionDispatcher, asyncore.dispatcher_
             logger.debug("no proxy set, direct network")
 
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM,proxy)        
-        asyncore.dispatcher_with_send.connect(self, host)        
-        asyncore.loop(timeout=1,map=self.socket_map)           
+        asyncore.dispatcher_with_send.connect(self, host)
+        
+        # NÃO chama asyncore.loop() bloqueante aqui
+        # O StackLoopManager processará todos os socket_maps de forma não-bloqueante
+        # Apenas inicia a conexão, o loop será processado pelo manager centralizado
         
 
     def handle_connect(self):

@@ -14,6 +14,8 @@ from loguru import logger
 from zowsuplib.yowsup.stacks.yowstack import YowStack
 from zowsuplib.yowsup.layers import YowLayerEvent
 from zowsuplib.yowsup.layers.network.layer import YowNetworkLayer
+from zowsuplib.yowsup.layers.network.dispatcher.dispatcher_asyncore import AsyncoreConnectionDispatcher
+from zowsuplib.yowsup.common import asyncore
 
 
 @dataclass
@@ -135,6 +137,7 @@ class StackLoopManager:
         Loop principal que processa todos os stacks registrados.
         
         Processa cada stack de forma não-bloqueante em round-robin.
+        Também processa eventos asyncore de todas as conexões de rede.
         """
         logger.info("[StackLoopManager] Loop centralizado iniciado")
         
@@ -153,6 +156,37 @@ class StackLoopManager:
                 if not stacks_to_process:
                     time.sleep(0.1)
                     continue
+                
+                # Coleta todos os socket_maps de todos os dispatchers ativos
+                combined_socket_map = {}
+                for account_id, entry in stacks_to_process:
+                    try:
+                        # Obtém a interface da camada de rede do stack
+                        network_interface = entry.stack.getLayerInterface(YowNetworkLayer)
+                        if network_interface and hasattr(network_interface, '_layer'):
+                            network_layer = network_interface._layer
+                            if network_layer and hasattr(network_layer, '_dispatcher'):
+                                dispatcher = network_layer._dispatcher
+                                if isinstance(dispatcher, AsyncoreConnectionDispatcher):
+                                    # Adiciona todos os sockets deste dispatcher ao mapa combinado
+                                    if hasattr(dispatcher, 'socket_map') and dispatcher.socket_map:
+                                        combined_socket_map.update(dispatcher.socket_map)
+                    except Exception as e:
+                        logger.debug(f"[StackLoopManager] Erro ao obter socket_map de {account_id}: {e}")
+                
+                # Processa eventos asyncore de todas as conexões (não-bloqueante)
+                # Usa poll diretamente para evitar o sleep(0.2) bloqueante do loop()
+                if combined_socket_map:
+                    try:
+                        # Usa a mesma lógica do asyncore.loop() para escolher poll ou poll2
+                        import select
+                        use_poll = hasattr(select, 'poll')
+                        if use_poll:
+                            asyncore.poll2(timeout=0.0, map=combined_socket_map)
+                        else:
+                            asyncore.poll(timeout=0.0, map=combined_socket_map)
+                    except Exception as e:
+                        logger.debug(f"[StackLoopManager] Erro no asyncore.poll: {e}")
                 
                 # Processa cada stack
                 for account_id, entry in stacks_to_process:
