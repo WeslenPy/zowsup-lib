@@ -402,24 +402,6 @@ message AudioMessage {
 
 }
 
-
-message AudioMessage {
-	optional string url = 1;
-	optional string mimetype = 2;
-	optional bytes file_sha256 = 3;
-	optional uint64 file_length = 4;
-	optional uint32 seconds = 5;
-	optional bool ptt = 6;
-	optional bytes media_key = 7;
-	optional bytes file_enc_sha256 = 8;
-	optional string direct_path = 9;
-	optional int64 media_key_timestamp = 10;
-	optional bytes waveform = 19;
-	optional fixed32 background_argb = 20;
-	optional bool view_once = 21;
-	optional string accessibility_label = 22;
-}
-
 message DocumentMessage {
     optional string url = 1;
     optional string mimetype = 2;
@@ -457,6 +439,5 @@ message Command {
     repeated string params = 4;
     optional int64  timestamp = 5;
 }
-
 
 

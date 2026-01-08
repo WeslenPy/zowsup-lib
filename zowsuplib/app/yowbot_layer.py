@@ -1288,26 +1288,7 @@ class SendLayer(YowInterfaceLayer):
                 msg.type = wsend_pb2.Message.Type.Value("AUDIO") 
                 self.parseMediaCommonAttributes(msg.audio_message,messageProtocolEntity.downloadablemedia_specific_attributes)
                 msg.audio_message.seconds= messageProtocolEntity.seconds
-                msg.audio_message.ptt = messageProtocolEntity.ptt
-                if messageProtocolEntity.url is not None:
-                    msg.audio_message.url = messageProtocolEntity.url
-                if messageProtocolEntity.mimetype is not None:
-                    msg.audio_message.mimetype = messageProtocolEntity.mimetype
-                if messageProtocolEntity.file_sha256 is not None:
-                    msg.audio_message.file_sha256 = messageProtocolEntity.file_sha256
-                if messageProtocolEntity.file_length is not None:
-                    msg.audio_message.file_length = messageProtocolEntity.file_length
-                if messageProtocolEntity.media_key is not None:
-                    msg.audio_message.media_key = messageProtocolEntity.media_key
-                if messageProtocolEntity.file_enc_sha256 is not None:
-                    msg.audio_message.file_enc_sha256 = messageProtocolEntity.file_enc_sha256
-                if messageProtocolEntity.direct_path is not None:
-                    msg.audio_message.direct_path = messageProtocolEntity.direct_path
-                if messageProtocolEntity.media_key_timestamp is not None:
-                    msg.audio_message.media_key_timestamp = messageProtocolEntity.media_key_timestamp
-                if messageProtocolEntity.waveform is not None:
-                    msg.audio_message.waveform = messageProtocolEntity.waveform         
-
+                msg.audio_message.ptt = messageProtocolEntity.ptt  
 
                 logger.debug(f"[AudioDownloadableMediaMessageProtocolEntity] msg: {msg}")                                                       
                 self.messageCallback(msg)     
