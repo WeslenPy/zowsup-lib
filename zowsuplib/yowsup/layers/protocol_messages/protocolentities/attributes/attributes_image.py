@@ -73,12 +73,14 @@ class ImageAttributes(object):
     @staticmethod
     def from_filepath(filepath,mediaType=None,resultRequestMediaConnIqProtocolEntity=None, 
         dimensions=None, caption=None, jpeg_thumbnail=None):
-        assert os.path.exists(filepath)
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Arquivo de imagem não encontrado: {filepath}")
         if not jpeg_thumbnail:
             jpeg_thumbnail = ImageTools.generatePreviewFromImage(filepath)
         dimensions = dimensions or ImageTools.getImageDimensions(filepath)
         width, height = dimensions if dimensions else (None, None)
-        assert width and height, "Could not determine image dimensions, install pillow or pass dimensions"
+        if not width or not height:
+            raise ValueError("Could not determine image dimensions, install pillow or pass dimensions")
 
         return ImageAttributes(
             DownloadableMediaMessageAttributes.from_file(filepath,mediaType,resultRequestMediaConnIqProtocolEntity), width, height, caption, jpeg_thumbnail
@@ -95,7 +97,8 @@ class ImageAttributes(object):
             jpeg_thumbnail = ImageTools.generatePreviewFromImage(filepath)
         dimensions = dimensions or ImageTools.getImageDimensions(filepath)
         width, height = dimensions if dimensions else (None, None)
-        assert width and height, "Could not determine image dimensions, install pillow or pass dimensions"
+        if not width or not height:
+            raise ValueError("Could not determine image dimensions, install pillow or pass dimensions")
 
         return ImageAttributes(
             DownloadableMediaMessageAttributes.from_file(filepath,mediaType,resultRequestMediaConnIqProtocolEntity), width, height, caption, jpeg_thumbnail

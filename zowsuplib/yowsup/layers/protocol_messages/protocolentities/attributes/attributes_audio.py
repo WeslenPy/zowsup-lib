@@ -122,7 +122,8 @@ class AudioAttributes(object):
     @staticmethod
     def from_filepath(filepath,mediaType=None,resultRequestMediaConnIqProtocolEntity=None, 
         audioPropertis=None, ptt=False,streaming_sidecar=None, waveform=None):
-        assert os.path.exists(filepath)
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Arquivo de áudio não encontrado: {filepath}")
         audioPropertis = audioPropertis or AudioTools.getAudioProperties(filepath)
         seconds= audioPropertis if audioPropertis else None
         

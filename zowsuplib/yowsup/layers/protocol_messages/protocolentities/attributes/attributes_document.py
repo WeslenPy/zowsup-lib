@@ -94,6 +94,8 @@ class DocumentAttributes(object):
 
     @staticmethod
     def from_filepath(filepath,fileName,mediaType,resultRequestMediaConnIqProtocolEntity):
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Arquivo de documento não encontrado: {filepath}")
         return DocumentAttributes(
             DownloadableMediaMessageAttributes.from_file(filepath,mediaType,resultRequestMediaConnIqProtocolEntity),
             os.path.basename(filepath) if fileName is None else fileName,

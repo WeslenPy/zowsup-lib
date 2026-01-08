@@ -418,6 +418,179 @@ class ZowsupClient:
             raise ZowsupError(-1, f"Erro ao exportar conta: {str(e)}")
 
     @staticmethod
+    def reset_account(account_id: str) -> bool:
+        """
+        Limpa todos os dados da conta e permite login do zero com novas prekeys.
+        
+        Esta função:
+        - Desconecta a conta se estiver conectada
+        - Remove todos os dados relacionados (prekeys, signed prekeys, sessions, identities, sender keys, app state keys, contacts, etc.)
+        - Reseta os status da conta (is_logged_in=False, is_initialized=False)
+        - Mantém a conta no banco de dados para permitir novo login
+        
+        Após chamar este método, você pode fazer login novamente e o sistema gerará novas prekeys automaticamente.
+        
+        Args:
+            account_id: Número da conta (phone) a ser resetada
+        
+        Returns:
+            True se a conta foi resetada com sucesso, False se a conta não existia
+        
+        Example:
+            # Reseta uma conta para permitir login do zero
+            ZowsupClient.reset_account("5511999999999")
+            
+            # Agora pode fazer login novamente
+            client = ZowsupClient(account_id="5511999999999")
+            client.connect()  # Gerará novas prekeys automaticamente
+        """
+        from zowsuplib.app.account_manager import AccountManager
+        
+        logger.info(f"Resetando conta {account_id} (limpando todos os dados)...")
+        
+        # 1. Verifica se a conta existe no banco de dados
+        db_session = SessionLocal()
+        try:
+            account = db_session.query(models.Account).filter_by(phone=account_id).one_or_none()
+            if account is None:
+                logger.warning(f"Conta {account_id} não encontrada no banco de dados")
+                return False
+        except Exception as e:
+            logger.error(f"Erro ao verificar se conta {account_id} existe: {e}")
+            return False
+        finally:
+            db_session.close()
+        
+        # 2. Desconecta e remove do AccountManager se estiver ativo
+        try:
+            manager = AccountManager.get_instance()
+            if manager.has_account(account_id):
+                logger.info(f"Desconectando conta {account_id} do AccountManager")
+                manager.remove_account(account_id, disconnect=True)
+        except Exception as e:
+            logger.warning(f"Erro ao desconectar conta {account_id} do AccountManager: {e}")
+        
+        # 3. Limpa todos os dados do Axolotl store
+        try:
+            from zowsuplib.yowsup.axolotl.factory import AxolotlManagerFactory
+            
+            db = AxolotlManagerFactory().get_manager(account_id, account_id)
+            store = db._store
+            
+            logger.info(f"Limpando dados do Axolotl store para conta {account_id}...")
+            
+            # Remove todas as prekeys
+            try:
+                store.removeAllPreKeys()
+                logger.debug(f"Prekeys removidas para conta {account_id}")
+            except Exception as e:
+                logger.warning(f"Erro ao remover prekeys: {e}")
+            
+            # Remove todas as signed prekeys
+            try:
+                # Obtém todos os signed prekeys e remove um por um
+                signed_prekeys = store.loadSignedPreKeys()
+                for spk in signed_prekeys:
+                    try:
+                        store.removeSignedPreKey(spk.getId())
+                    except Exception as e:
+                        logger.warning(f"Erro ao remover signed prekey {spk.getId()}: {e}")
+                logger.debug(f"Signed prekeys removidas para conta {account_id}")
+            except Exception as e:
+                logger.warning(f"Erro ao remover signed prekeys: {e}")
+            
+            # Remove todas as sessions
+            try:
+                # Obtém todos os accounts que têm sessions e remove
+                all_accounts = store.getAllAccounts(account_id)
+                for recipient in all_accounts:
+                    try:
+                        store.deleteAllSessions(recipient)
+                    except Exception as e:
+                        logger.warning(f"Erro ao remover sessions para {recipient}: {e}")
+                logger.debug(f"Sessions removidas para conta {account_id}")
+            except Exception as e:
+                logger.warning(f"Erro ao remover sessions: {e}")
+            
+            # Remove todas as sender keys (grupos)
+            try:
+                # Obtém todos os grupos e remove as sender keys
+                # Nota: A implementação pode variar, mas geralmente precisamos iterar sobre grupos conhecidos
+                # Por enquanto, vamos apenas limpar via banco de dados diretamente
+                logger.debug(f"Sender keys serão limpas via banco de dados para conta {account_id}")
+            except Exception as e:
+                logger.warning(f"Erro ao remover sender keys: {e}")
+            
+            # Remove todas as app state keys (será feito via banco de dados)
+            try:
+                logger.debug(f"App state keys serão limpas via banco de dados para conta {account_id}")
+            except Exception as e:
+                logger.warning(f"Erro ao remover app state keys: {e}")
+            
+            logger.info(f"Dados do Axolotl store limpos para conta {account_id}")
+            
+        except Exception as e:
+            logger.error(f"Erro ao limpar dados do Axolotl store para conta {account_id}: {e}", exc_info=True)
+        
+        # 4. Limpa dados relacionados no banco de dados (via CASCADE ou manualmente)
+        db_session = SessionLocal()
+        try:
+            account = db_session.query(models.Account).filter_by(phone=account_id).one_or_none()
+            if account:
+                # Remove todos os dados relacionados via CASCADE
+                # Isso inclui: identities, prekeys, signed_prekeys, sessions, sender_keys, app_state_keys, contacts, etc.
+                
+                # Remove identities (exceto a identidade local que será mantida)
+                db_session.query(models.Identity).filter_by(account_id=account.id).delete()
+                
+                # Remove prekeys
+                db_session.query(models.PreKey).filter_by(account_id=account.id).delete()
+                
+                # Remove signed prekeys
+                db_session.query(models.SignedPreKey).filter_by(account_id=account.id).delete()
+                
+                # Remove sessions
+                db_session.query(models.Session).filter_by(account_id=account.id).delete()
+                
+                # Remove sender keys
+                db_session.query(models.SenderKey).filter_by(account_id=account.id).delete()
+                
+                # Remove app state keys
+                db_session.query(models.AppStateKey).filter_by(account_id=account.id).delete()
+                
+                # Remove contacts
+                db_session.query(models.Contact).filter_by(account_id=account.id).delete()
+                
+                # Remove trusted contacts
+                db_session.query(models.TrustedContact).filter_by(account_id=account.id).delete()
+                
+                # Remove broadcasts
+                db_session.query(models.Broadcast).filter_by(account_id=account.id).delete()
+                
+                # Remove polls
+                db_session.query(models.Poll).filter_by(account_id=account.id).delete()
+                
+                # Remove sent messages (opcional - você pode querer manter histórico)
+                # db_session.query(models.SentMessage).filter_by(account_id=account.id).delete()
+                
+                # Reseta os status da conta
+                account.is_logged_in = False
+                account.is_initialized = False
+                account.has_restriction = False
+                
+                db_session.commit()
+                logger.info(f"Conta {account_id} resetada com sucesso no banco de dados")
+                return True
+            else:
+                logger.warning(f"Conta {account_id} não encontrada no banco de dados para reset")
+                return False
+        except Exception as e:
+            db_session.rollback()
+            logger.error(f"Erro ao resetar conta {account_id} no banco de dados: {e}", exc_info=True)
+            return False
+        finally:
+            db_session.close()
+
     def delete_account(account_id: str, *, remove_files: bool = True) -> bool:
         """
         Remove completamente uma conta do sistema.

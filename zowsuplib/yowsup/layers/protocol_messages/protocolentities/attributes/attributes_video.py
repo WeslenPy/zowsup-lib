@@ -120,14 +120,16 @@ class VideoAttributes(object):
     @staticmethod
     def from_filepath(filepath,mediaType=None,resultRequestMediaConnIqProtocolEntity=None, 
         videoPropertis=None, caption=None, jpeg_thumbnail=None):
-        assert os.path.exists(filepath)
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Arquivo de vídeo não encontrado: {filepath}")
         if not jpeg_thumbnail:
             jpeg_thumbnail = VideoTools.generatePreviewFromVideo(filepath)
         videoPropertis = videoPropertis or VideoTools.getVideoProperties(filepath)
 
         width, height, bitRate, seconds, codec = videoPropertis if videoPropertis else (None, None,None,None)
 
-        assert width and height, "Could not determine video properties, install VideoStream or pass videoPropertis by code"
+        if not width or not height:
+            raise ValueError("Could not determine video properties, install VideoStream or pass videoPropertis by code")
 
         return VideoAttributes(
             DownloadableMediaMessageAttributes.from_file(filepath,mediaType,resultRequestMediaConnIqProtocolEntity), width, height, seconds, caption, False, jpeg_thumbnail,gif_attribution=0

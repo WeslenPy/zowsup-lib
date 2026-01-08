@@ -11,6 +11,9 @@ from zowsuplib.axolotl.ecc.curve import Curve
 import logging
 import binascii
 import base64
+import threading
+import time
+import random
 
 from loguru import logger
 
@@ -19,6 +22,8 @@ class AxolotlControlLayer(AxolotlBaseLayer):
         super(AxolotlControlLayer, self).__init__()
         self._unsent_prekeys = []
         self._reboot_connection = True
+        self._pending_keys_retry = None  # (signed_prekey, prekeys, reboot_connection, retry_count)
+        self._keys_retry_lock = threading.Lock()
 
     def send(self, node):       
 
@@ -92,7 +97,12 @@ class AxolotlControlLayer(AxolotlBaseLayer):
             self.setProp(YowAuthenticationProtocolLayer.PROP_PASSIVE, False)
             self.getLayerInterface(YowNetworkLayer).connect()
 
-    def flush_keys(self, signed_prekey, prekeys, reboot_connection=False):    
+    def flush_keys(self, signed_prekey, prekeys, reboot_connection=False, retry_count=0):    
+        # Armazena informações para retry se necessário
+        with self._keys_retry_lock:
+            # Sempre atualiza com as informações atuais (primeira tentativa ou retry)
+            self._pending_keys_retry = (signed_prekey, prekeys, reboot_connection, retry_count)
+        
         preKeysDict = {}
         for prekey in prekeys:
             keyPair = prekey.getKeyPair()
@@ -116,13 +126,73 @@ class AxolotlControlLayer(AxolotlBaseLayer):
         self._sendIq(setKeysIq, onResult, self.onSentKeysError)            
 
     def on_keys_flushed(self, prekeys, reboot_connection):
+        # Limpa retry pendente em caso de sucesso
+        with self._keys_retry_lock:
+            self._pending_keys_retry = None
+        
         self.manager.set_prekeys_as_sent(prekeys)        
         if reboot_connection:            
             self._reboot_connection = True            
             self.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_DISCONNECT))
 
     def onSentKeysError(self, errorNode, keysEntity):
-        logger.info("Sent keys were not accepted")        
+        """
+        Trata erros ao enviar prekeys para o servidor WhatsApp.
+        
+        Implementa retry com backoff exponencial para erros 503 (service-unavailable).
+        """
+        # Extrai informações do erro
+        error_child = errorNode.getChild("error")
+        if error_child:
+            error_code = error_child.getAttributeValue("code")
+            error_text = error_child.getAttributeValue("text")
+            backoff = error_child.getAttributeValue("backoff")
+            
+            logger.warning(f"Erro ao enviar prekeys: code={error_code}, text={error_text}, backoff={backoff}")
+            
+            # Se for erro 503 (service-unavailable), tenta retry com backoff
+            if error_code == "503":
+                with self._keys_retry_lock:
+                    if self._pending_keys_retry is None:
+                        # Não há informações de retry disponíveis (não deveria acontecer, mas trata o caso)
+                        logger.warning("Erro 503 ao enviar prekeys, mas não há informações de retry disponíveis. O sistema tentará novamente na próxima conexão.")
+                        return
+                    
+                    # Recupera informações das chaves que falharam
+                    signed_prekey, prekeys, reboot_connection, retry_count = self._pending_keys_retry
+                    retry_count += 1
+                    
+                    if retry_count >= 5:  # Máximo de 5 tentativas
+                        logger.error(f"Falha ao enviar prekeys após {retry_count} tentativas. Desistindo.")
+                        self._pending_keys_retry = None
+                        return
+                    
+                    # Calcula backoff exponencial com jitter
+                    backoff_seconds = min(2 ** retry_count + random.uniform(0, 1), 60)  # Máximo 60 segundos
+                    logger.info(f"Erro 503 ao enviar prekeys. Agendando retry {retry_count}/5 em {backoff_seconds:.1f} segundos...")
+                    
+                    # Atualiza o contador de retry
+                    self._pending_keys_retry = (signed_prekey, prekeys, reboot_connection, retry_count)
+                    
+                    # Agenda retry em thread separada
+                    def retry_flush_keys():
+                        time.sleep(backoff_seconds)
+                        with self._keys_retry_lock:
+                            if self._pending_keys_retry:
+                                signed_prekey, prekeys, reboot_connection, current_retry_count = self._pending_keys_retry
+                                logger.info(f"Tentando reenviar prekeys (tentativa {current_retry_count + 1}/5)...")
+                                self.flush_keys(signed_prekey, prekeys, reboot_connection=reboot_connection, retry_count=current_retry_count)
+                    
+                    threading.Thread(target=retry_flush_keys, daemon=True).start()
+            else:
+                # Outros erros (não 503)
+                logger.error(f"Erro ao enviar prekeys: code={error_code}, text={error_text}. Não será feito retry automático.")
+                with self._keys_retry_lock:
+                    self._pending_keys_retry = None
+        else:
+            logger.warning("Erro ao enviar prekeys, mas não foi possível extrair informações do erro")
+            with self._keys_retry_lock:
+                self._pending_keys_retry = None        
 
     def adjustArray(self, arr):
         return HexUtil.decodeHex(binascii.hexlify(arr))

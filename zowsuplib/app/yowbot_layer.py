@@ -1289,9 +1289,27 @@ class SendLayer(YowInterfaceLayer):
                 self.parseMediaCommonAttributes(msg.audio_message,messageProtocolEntity.downloadablemedia_specific_attributes)
                 msg.audio_message.seconds= messageProtocolEntity.seconds
                 msg.audio_message.ptt = messageProtocolEntity.ptt
+                if messageProtocolEntity.url is not None:
+                    msg.audio_message.url = messageProtocolEntity.url
+                if messageProtocolEntity.mimetype is not None:
+                    msg.audio_message.mimetype = messageProtocolEntity.mimetype
+                if messageProtocolEntity.file_sha256 is not None:
+                    msg.audio_message.file_sha256 = messageProtocolEntity.file_sha256
+                if messageProtocolEntity.file_length is not None:
+                    msg.audio_message.file_length = messageProtocolEntity.file_length
+                if messageProtocolEntity.media_key is not None:
+                    msg.audio_message.media_key = messageProtocolEntity.media_key
+                if messageProtocolEntity.file_enc_sha256 is not None:
+                    msg.audio_message.file_enc_sha256 = messageProtocolEntity.file_enc_sha256
+                if messageProtocolEntity.direct_path is not None:
+                    msg.audio_message.direct_path = messageProtocolEntity.direct_path
+                if messageProtocolEntity.media_key_timestamp is not None:
+                    msg.audio_message.media_key_timestamp = messageProtocolEntity.media_key_timestamp
                 if messageProtocolEntity.waveform is not None:
-                    msg.audio_message.waveform = messageProtocolEntity.waveform                                                                
+                    msg.audio_message.waveform = messageProtocolEntity.waveform         
 
+
+                logger.debug(f"[AudioDownloadableMediaMessageProtocolEntity] msg: {msg}")                                                       
                 self.messageCallback(msg)     
 
             elif isinstance(messageProtocolEntity,DocumentDownloadableMediaMessageProtocolEntity):
@@ -2484,6 +2502,11 @@ class SendLayer(YowInterfaceLayer):
                     if filePath.startswith("http://") or filePath.startswith("https://"):
                         attr_media = ImageAttributes.from_url(filePath,mediaType,resultRequestMediaConnIqProtocolEntity)
                     else:
+                        # Verifica se o arquivo existe antes de tentar usar
+                        if not os.path.exists(filePath):
+                            error_msg = f"Arquivo de imagem não encontrado: {filePath}"
+                            logger.error(error_msg)
+                            raise FileNotFoundError(error_msg)
                         attr_media = ImageAttributes.from_filepath(filePath,mediaType,resultRequestMediaConnIqProtocolEntity)
                     attr_media.caption = caption
                     
@@ -2496,6 +2519,11 @@ class SendLayer(YowInterfaceLayer):
                     if filePath.startswith("http://") or filePath.startswith("https://"):
                         attr_media = VideoAttributes.from_url(filePath,mediaType,resultRequestMediaConnIqProtocolEntity)
                     else:
+                        # Verifica se o arquivo existe antes de tentar usar
+                        if not os.path.exists(filePath):
+                            error_msg = f"Arquivo de vídeo não encontrado: {filePath}"
+                            logger.error(error_msg)
+                            raise FileNotFoundError(error_msg)
                         attr_media = VideoAttributes.from_filepath(filePath,mediaType,resultRequestMediaConnIqProtocolEntity)
                     attr_media.caption = caption            
                     entity = VideoDownloadableMediaMessageProtocolEntity(
@@ -2516,7 +2544,12 @@ class SendLayer(YowInterfaceLayer):
                             ptt=ptt,
                             waveform=waveform
                         )          
-                    else:      
+                    else:
+                        # Verifica se o arquivo existe antes de tentar usar
+                        if not os.path.exists(filePath):
+                            error_msg = f"Arquivo de áudio não encontrado: {filePath}"
+                            logger.error(error_msg)
+                            raise FileNotFoundError(error_msg)
                         attr_media = AudioAttributes.from_filepath(
                             filePath,
                             mediaType,
@@ -2533,6 +2566,11 @@ class SendLayer(YowInterfaceLayer):
                     if filePath.startswith("http://") or filePath.startswith("https://"):
                         attr_media = DocumentAttributes.from_url(filePath,fileName,mediaType,resultRequestMediaConnIqProtocolEntity)  
                     else:
+                        # Verifica se o arquivo existe antes de tentar usar
+                        if not os.path.exists(filePath):
+                            error_msg = f"Arquivo de documento não encontrado: {filePath}"
+                            logger.error(error_msg)
+                            raise FileNotFoundError(error_msg)
                         attr_media = DocumentAttributes.from_filepath(filePath,fileName,mediaType,resultRequestMediaConnIqProtocolEntity)          
                     entity = DocumentDownloadableMediaMessageProtocolEntity(
                         document_attrs=attr_media,
@@ -2593,18 +2631,41 @@ class SendLayer(YowInterfaceLayer):
                     'status': wsend_pb2.MsgLogItem.Status.Value("EXECUTED")                
                 })  
 
-                if "waitMsgId" in options:
-                    self.ctxMap[options["ctxId"]]["msgId"] = entity.getId()
-                    self.ctxMap[options["ctxId"]]["event"].set()            
+                if "waitMsgId" in options and "ctxId" in options:
+                    ctx_id = options["ctxId"]
+                    if ctx_id in self.ctxMap:
+                        self.ctxMap[ctx_id]["msgId"] = entity.getId()
+                        self.ctxMap[ctx_id]["event"].set()
+                    else:
+                        logger.warning(f"ctxId {ctx_id} não encontrado em ctxMap ao processar resultado de mídia. Pode ter sido removido prematuramente.")            
 
                 return entity.getId()                   
-            except:
-                print(traceback.format_exc())
-                logger.error("send media msg with exception")
+            except Exception as e:
+                logger.error(f"Erro ao enviar mensagem de mídia: {e}", exc_info=True)
+                # Se há waitMsgId e ctxId, sinaliza erro no ctxMap
+                if "waitMsgId" in options and "ctxId" in options:
+                    ctx_id = options.get("ctxId")
+                    if ctx_id and ctx_id in self.ctxMap:
+                        self.ctxMap[ctx_id]["error"] = {
+                            "code": -1,
+                            "msg": str(e)
+                        }
+                        self.ctxMap[ctx_id]["event"].set()
                 return None
                 
         def onRequestMediaConnError(cmdParams, errorRequestUploadIqProtocolEntity, requestUploadIqProtocolEntity):
             logger.error("Request upload for file failed")
+            # Se há waitMsgId, sinaliza erro no ctxMap
+            if "waitMsgId" in options and "ctxId" in options:
+                ctx_id = options["ctxId"]
+                if ctx_id in self.ctxMap:
+                    self.ctxMap[ctx_id]["error"] = {
+                        "code": errorRequestUploadIqProtocolEntity.code if hasattr(errorRequestUploadIqProtocolEntity, 'code') else "Unknown",
+                        "msg": str(errorRequestUploadIqProtocolEntity)
+                    }
+                    self.ctxMap[ctx_id]["event"].set()
+                else:
+                    logger.warning(f"ctxId {ctx_id} não encontrado em ctxMap ao processar erro de mídia.")
 
         mediaType = cmdParams[1]
         if not mediaType in ["image","video","audio","document","sticker"]:

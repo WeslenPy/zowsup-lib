@@ -124,13 +124,13 @@ class AxolotlReceivelayer(AxolotlBaseLayer):
             logger.warning(f"[AxolotlReceive] InvalidMessage para {author}: {error_msg}")
             
             retry_count = self._retries.get(node["id"], 0)
-            if retry_count >= 3:
+            if retry_count >= 2:
                 # Tentou 3 vezes, provavelmente é um problema do remetente ou sessão muito desincronizada
-                logger.warning(f"[AxolotlReceive] InvalidMessage após 3 tentativas para mensagem {node['id']}, enviando receipt e desistindo")
+                logger.warning(f"[AxolotlReceive] InvalidMessage após 2 tentativas para mensagem {node['id']}, enviando receipt e desistindo")
                 self.toLower(OutgoingReceiptProtocolEntity(node["id"], node["from"], participant=node["participant"]).toProtocolTreeNode())   
             else:            
                 # Envia retry para tentar sincronizar a sessão novamente
-                logger.debug(f"[AxolotlReceive] Enviando retry para mensagem {node['id']} (tentativa {retry_count + 1}/3)")
+                logger.debug(f"[AxolotlReceive] Enviando retry para mensagem {node['id']} (tentativa {retry_count + 1}/2)")
                 self.send_retry(node, self.manager.registration_id)                
 
         except exceptions.NoSessionException:            
