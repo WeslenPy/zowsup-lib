@@ -17,7 +17,7 @@ from zowsuplib.common.consolemain import ConsoleMain
     
 class Import6(ConsoleMain):
     def run(self,params,options):
-        Utils.init_log("INFO", "import6.log")    
+        Utils.init_log("CRITICAL", "import6.log")    
 
         self.commonOptionsProcess(options)
         

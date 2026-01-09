@@ -346,11 +346,11 @@ class Utils:
                 i+=1
         return params,options
 
-    def init_log(level: str = "INFO", name: str | None = None):
+    def init_log(level: str = "CRITICAL", name: str | None = None):
         """
         Inicializa o sistema de logs usando loguru, com saída em stdout e arquivo.
 
-        - level: nível mínimo de log (ex.: "DEBUG", "INFO", "WARNING")
+        - level: nível mínimo de log (ex.: "DEBUG", "INFO", "WARNING", "CRITICAL")
         - name: nome do arquivo de log dentro de SysVar.LOG_PATH (default: "default.log")
         """
 
@@ -373,13 +373,13 @@ class Utils:
         )
 
         # Arquivo
-        _logger.add(
-            log_dir / name,
-            level="DEBUG",
-            encoding="utf-8",
-            rotation="50 MB",
-            retention="7 days",
-        )
+        # _logger.add(
+        #     log_dir / name,
+        #     level="DEBUG",
+        #     encoding="utf-8",
+        #     rotation="50 MB",
+        #     retention="7 days",
+        # )
         
     def genMccMncList():
         """
