@@ -42,6 +42,12 @@ class Account(Base):
     has_restriction = Column(Boolean, nullable=False, default=False, index=True)
     is_initialized = Column(Boolean, nullable=False, default=False, index=True)
 
+    # Proxy configuration
+    proxy_host = Column(String(255), nullable=True)
+    proxy_port = Column(Integer, nullable=True)
+    proxy_username = Column(String(255), nullable=True)
+    proxy_password = Column(String(255), nullable=True)
+
     created_at = Column(DateTime, nullable=False, default=dt.datetime.utcnow)
     updated_at = Column(
         DateTime,

@@ -8,6 +8,10 @@ CREATE TABLE accounts (
   is_logged_in BOOLEAN NOT NULL DEFAULT 0,
   has_restriction BOOLEAN NOT NULL DEFAULT 0,
   is_initialized BOOLEAN NOT NULL DEFAULT 0,
+  proxy_host VARCHAR(255),
+  proxy_port INTEGER,
+  proxy_username VARCHAR(255),
+  proxy_password VARCHAR(255),
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

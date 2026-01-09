@@ -7,6 +7,8 @@ import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Set, Tuple
+import urllib.request
+import urllib.error
 
 import names
 from loguru import logger
@@ -1089,6 +1091,7 @@ class ZowsupClient:
         env: Optional[str] = None,
         proxy: Optional[str] = None,
         auto_connect: bool = False,
+        log_level: Optional[str] = "CRITICAL",
     ) -> None:
         """
         Cria um novo cliente de alto nível completamente isolado.
@@ -1101,7 +1104,8 @@ class ZowsupClient:
         Cada instância é completamente isolada - pode criar múltiplas sem conflitos.
         """
 
-        Utils.init_log("CRITICAL", "api.log")
+        Utils.init_log(log_level, "zowsupclient_account_" + account_id + ".log")
+
         self.account_id = account_id
         self._log_prefix = f"[ZowsupClient:{account_id}]"
         
@@ -1126,14 +1130,18 @@ class ZowsupClient:
         device_env = DeviceEnv(device_env_name, random=True)
 
         if proxy and proxy.upper() != "DIRECT":
-            network_env = NetworkEnv(NetworkEnv.TYPE_PROXY, proxyStr=proxy)
+            self.network_env = NetworkEnv(NetworkEnv.TYPE_PROXY, proxyStr=proxy)
             logger.debug(f"{self._log_prefix} Usando proxy: {proxy}")
         else:
-            network_env = NetworkEnv(NetworkEnv.TYPE_DIRECT)
+            self.network_env = NetworkEnv(NetworkEnv.TYPE_DIRECT)
             logger.debug(f"{self._log_prefix} Usando conexão direta (sem proxy)")
 
+
+
+        self._load_proxy_from_db()
+
         # Constrói stack direto com SendLayer (sem YowBot)
-        self._init_send_layer_stack(device_env, network_env)
+        self._init_send_layer_stack(device_env, self.network_env)
 
         self._started = False
         self._stack_thread: Optional[threading.Thread] = None
@@ -1143,6 +1151,8 @@ class ZowsupClient:
         self._auto_reply_config: Optional[Dict[str, Any]] = None
         self._original_callback = self.bot.callback
         self._last_login_error: Optional[str] = None
+
+        # Carrega proxy do banco de dados se existir
 
         logger.info(f"{self._log_prefix} Cliente inicializado com sucesso (isolado)")
 
@@ -1316,6 +1326,188 @@ class ZowsupClient:
         """
         self.send_layer.enableMessageNotifications()
         logger.info(f"{self._log_prefix} Notificações de mensagem reativadas")
+
+    def set_proxy(self, proxy_string: str, test_url: str = "https://www.google.com") -> bool:
+        """
+        Configura um proxy para as conexões após validar se está funcionando.
+
+        Args:
+            proxy_string: String de proxy no formato:
+                         - "host:port" (HTTP proxy sem autenticação)
+                         - "host:port:username:password" (HTTP proxy com autenticação)
+                         - "DIRECT" (desativa proxy)
+            test_url: URL para testar se o proxy está funcionando (padrão: google.com)
+
+        Returns:
+            bool: True se o proxy foi configurado com sucesso, False se falhou na validação
+
+        Raises:
+            ValueError: Se o formato do proxy_string for inválido
+
+        Exemplos:
+            # Proxy sem autenticação
+            client.set_proxy("192.168.1.100:8080")
+
+            # Proxy com autenticação
+            client.set_proxy("192.168.1.100:8080:user:password")
+
+            # Desativar proxy
+            client.set_proxy("DIRECT")
+
+            # Usar URL de teste personalizada
+            client.set_proxy("proxy.example.com:3128", test_url="https://httpbin.org/ip")
+        """
+        # Validar formato do proxy
+        if proxy_string.upper() == "DIRECT":
+            # Desativar proxy
+            self.network_env = NetworkEnv("direct")
+            logger.info(f"{self._log_prefix} Proxy desativado - conexão direta")
+            return True
+
+        # Parse do proxy string
+        try:
+            proxy_parts = proxy_string.split(":")
+            if len(proxy_parts) < 2:
+                raise ValueError("Formato de proxy inválido. Use 'host:port' ou 'host:port:username:password'")
+
+            host = proxy_parts[0]
+            port = int(proxy_parts[1])
+
+            # Validar porta
+            if not (1 <= port <= 65535):
+                raise ValueError(f"Porta inválida: {port}. Deve estar entre 1 e 65535")
+
+            username = None
+            password = None
+
+            if len(proxy_parts) >= 4:
+                username = proxy_parts[2]
+                password = proxy_parts[3]
+            elif len(proxy_parts) == 3:
+                raise ValueError("Formato de proxy inválido. Se fornecer username, deve fornecer password também")
+
+        except ValueError as e:
+            logger.error(f"{self._log_prefix} Erro no formato do proxy: {e}")
+            raise
+
+        # Testar se o proxy está funcionando
+        logger.info(f"{self._log_prefix} Testando proxy {host}:{port}...")
+
+        try:
+            # Configurar proxy para teste
+            proxy_handler = urllib.request.ProxyHandler({
+                'http': f"http://{username + ':' + password + '@' if username else ''}{host}:{port}",
+                'https': f"http://{username + ':' + password + '@' if username else ''}{host}:{port}"
+            })
+
+            # Configurar opener com timeout
+            opener = urllib.request.build_opener(proxy_handler)
+            opener.addheaders = [('User-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')]
+
+            # Fazer requisição de teste com timeout
+            req = urllib.request.Request(test_url)
+            with opener.open(req, timeout=10) as response:
+                if response.status == 200:
+                    logger.info(f"{self._log_prefix} ✅ Proxy validado com sucesso - resposta HTTP {response.status}")
+                else:
+                    logger.warning(f"{self._log_prefix} ⚠️  Proxy respondeu com status {response.status}, mas será configurado")
+
+        except urllib.error.URLError as e:
+            logger.error(f"{self._log_prefix} ❌ Proxy falhou no teste: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"{self._log_prefix} ❌ Erro inesperado ao testar proxy: {e}")
+            return False
+
+        # Configurar proxy no network environment
+        try:
+            proxy_str = f"{host}:{port}"
+            if username and password:
+                proxy_str += f":{username}:{password}"
+
+            self.network_env = NetworkEnv(NetworkEnv.TYPE_PROXY, proxyStr=proxy_str)
+            logger.info(f"{self._log_prefix} ✅ Proxy configurado com sucesso: {host}:{port}")
+
+            # Salva no banco de dados
+            try:
+                with SessionLocal() as session:
+                    account = session.query(models.Account).filter_by(phone=self.account_id).first()
+                    if account:
+                        account.proxy_host = host
+                        account.proxy_port = port
+                        account.proxy_username = username
+                        account.proxy_password = password
+                        session.commit()
+                        logger.info(f"{self._log_prefix} ✅ Proxy salvo no banco de dados")
+                    else:
+                        logger.warning(f"{self._log_prefix} ⚠️  Conta não encontrada no banco de dados para salvar proxy")
+            except Exception as e:
+                logger.error(f"{self._log_prefix} ❌ Erro ao salvar proxy no banco de dados: {e}")
+                # Não retorna False pois o proxy foi configurado na instância
+
+            return True
+
+        except Exception as e:
+            logger.error(f"{self._log_prefix} ❌ Erro ao configurar proxy: {e}")
+            return False
+
+    def remove_proxy(self) -> bool:
+        """
+        Remove a configuração de proxy do banco de dados e da instância atual.
+
+        Returns:
+            bool: True se o proxy foi removido com sucesso, False em caso de erro
+        """
+        try:
+            # Remove da instância atual
+            self.network_env = NetworkEnv("direct")
+
+            # Remove do banco de dados
+            with SessionLocal() as session:
+                account = session.query(models.Account).filter_by(phone=self.account_id).first()
+                if account:
+                    account.proxy_host = None
+                    account.proxy_port = None
+                    account.proxy_username = None
+                    account.proxy_password = None
+                    session.commit()
+                    logger.info(f"{self._log_prefix} ✅ Proxy removido do banco de dados")
+                else:
+                    logger.warning(f"{self._log_prefix} ⚠️  Conta não encontrada no banco de dados")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"{self._log_prefix} ❌ Erro ao remover proxy: {e}")
+            return False
+
+    def _load_proxy_from_db(self) -> bool:
+        """
+        Carrega a configuração de proxy do banco de dados e aplica na instância.
+
+        Returns:
+            bool: True se proxy foi carregado e configurado, False se não havia proxy ou erro
+        """
+        try:
+            with SessionLocal() as session:
+                account = session.query(models.Account).filter_by(phone=self.account_id).first()
+                if account and account.proxy_host and account.proxy_port:
+                    # Reconstrói a string de proxy
+                    proxy_string = account.proxy_host + ":" + str(account.proxy_port)
+                    if account.proxy_username and account.proxy_password:
+                        proxy_string += ":" + account.proxy_username + ":" + account.proxy_password
+
+                    # Aplica o proxy sem validação (já foi validado quando salvo)
+                    self.network_env = NetworkEnv(NetworkEnv.TYPE_PROXY, proxyStr=proxy_string)
+                    logger.info(f"{self._log_prefix} ✅ Proxy carregado do banco de dados: {account.proxy_host}:{account.proxy_port}")
+                    return True
+                else:
+                    logger.debug(f"{self._log_prefix} Nenhum proxy configurado no banco de dados")
+                    return False
+
+        except Exception as e:
+            logger.error(f"{self._log_prefix} ❌ Erro ao carregar proxy do banco de dados: {e}")
+            return False
 
     def connect_in_thread(self, *, wait_login: bool = True, retry_with_env_rotation: bool = True) -> threading.Thread:
         """
