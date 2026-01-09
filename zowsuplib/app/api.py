@@ -1481,6 +1481,36 @@ class ZowsupClient:
             logger.error(f"{self._log_prefix} ❌ Erro ao remover proxy: {e}")
             return False
 
+    def get_proxy(self) -> Optional[str]:
+        """
+        Obtém a configuração de proxy atual da conta do banco de dados.
+
+        Returns:
+            str: String do proxy no formato "host:port[:username[:password]]" ou None se não houver proxy configurado
+
+        Example:
+            proxy = client.get_proxy()
+            if proxy:
+                print(f"Proxy atual: {proxy}")
+            else:
+                print("Nenhum proxy configurado")
+        """
+        try:
+            with SessionLocal() as session:
+                account = session.query(models.Account).filter_by(phone=self.account_id).first()
+                if account and account.proxy_host and account.proxy_port:
+                    # Reconstrói a string de proxy
+                    proxy_string = account.proxy_host + ":" + str(account.proxy_port)
+                    if account.proxy_username and account.proxy_password:
+                        proxy_string += ":" + account.proxy_username + ":" + account.proxy_password
+                    return proxy_string
+                else:
+                    return None
+
+        except Exception as e:
+            logger.error(f"{self._log_prefix} ❌ Erro ao obter proxy do banco de dados: {e}")
+            return None
+
     def _load_proxy_from_db(self) -> bool:
         """
         Carrega a configuração de proxy do banco de dados e aplica na instância.

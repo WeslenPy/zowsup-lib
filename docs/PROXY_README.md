@@ -175,8 +175,11 @@ client.set_proxy(
 
 ```python
 # Verificar se proxy está configurado
-# Nota: A configuração é interna, mas pode ser verificada
-# através do comportamento de rede
+current_proxy = client.get_proxy()
+if current_proxy:
+    print(f"Proxy atual: {current_proxy}")
+else:
+    print("Nenhum proxy configurado")
 ```
 
 ## Solução de Problemas
@@ -250,6 +253,12 @@ Configura um proxy após validação.
 - `test_url`: URL para testar conectividade (padrão: Google)
 
 **Retorno:** `True` se configurado com sucesso, `False` se falhou
+
+### `get_proxy() -> Optional[str]`
+
+Obtém a configuração de proxy atual da conta.
+
+**Retorno:** String do proxy no formato "host:port[:user[:pass]]" ou `None` se não houver proxy
 
 ### `remove_proxy() -> bool`
 
