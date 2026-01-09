@@ -373,13 +373,13 @@ class Utils:
         )
 
         # Arquivo
-        _logger.add(
-            log_dir / name,
-            level="DEBUG",
-            encoding="utf-8",
-            rotation="50 MB",
-            retention="7 days",
-        )
+        # _logger.add(
+        #     log_dir / name,
+        #     level="DEBUG",
+        #     encoding="utf-8",
+        #     rotation="50 MB",
+        #     retention="7 days",
+        # )
         
     def genMccMncList():
         """
