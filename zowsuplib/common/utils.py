@@ -346,6 +346,7 @@ class Utils:
                 i+=1
         return params,options
 
+    @staticmethod
     def init_log(level: str = "CRITICAL", name: str | None = None):
         """
         Inicializa o sistema de logs usando loguru, com saída em stdout e arquivo.

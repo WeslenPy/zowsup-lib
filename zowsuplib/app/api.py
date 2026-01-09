@@ -1174,6 +1174,10 @@ class ZowsupClient:
         
         Cada instância é completamente isolada - pode criar múltiplas sem conflitos.
         """
+
+
+        Utils.init_log("CRITICAL", "api.log")
+        
         self.account_id = account_id
         self._log_prefix = f"[ZowsupClient:{account_id}]"
         
