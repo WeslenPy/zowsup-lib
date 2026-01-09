@@ -151,6 +151,19 @@ class SendLayer(YowInterfaceLayer):
         self._rate_limit_lock = threading.Lock()  # Lock para thread-safety
         self._handshake_error_detected = False  # Flag para detectar erros de handshake
         self._message_notifications_enabled = True  # Controle de callbacks de mensagem
+        # Configuração de tipos de mensagens ignoradas (pode ser customizada)
+        self._ignored_message_types = {
+            wsend_pb2.Message.Type.Value("TEXT"),      # Mensagens de texto
+            wsend_pb2.Message.Type.Value("AUDIO"),     # Mensagens de áudio
+            wsend_pb2.Message.Type.Value("DOCUMENT"),  # Documentos
+            wsend_pb2.Message.Type.Value("IMAGE"),     # Imagens
+            wsend_pb2.Message.Type.Value("VIDEO"),     # Vídeos
+            wsend_pb2.Message.Type.Value("STICKER"),   # Stickers
+            wsend_pb2.Message.Type.Value("PRODUCT"),   # Produtos
+            wsend_pb2.Message.Type.Value("BUTTONS"),   # Botões (não respostas)
+            wsend_pb2.Message.Type.Value("LIST"),      # Listas (não respostas)
+            wsend_pb2.Message.Type.Value("OTHER")      # Outros tipos não categorizados
+        }
         self._login_failed = False  # Flag para diferenciar falha de login x sucesso
         self._login_in_progress = False  # Flag para indicar que login está em andamento
         self._pending_notifications_count = 0  # Contador de notificações pendentes durante login
@@ -979,6 +992,43 @@ class SendLayer(YowInterfaceLayer):
         """Reativa a entrega de callbacks de mensagem."""
         self._message_notifications_enabled = True
         logger.info("Notificações de mensagem reativadas no SendLayer")
+
+    def setIgnoredMessageTypes(self, ignored_types):
+        """
+        Define quais tipos de mensagens devem ser ignorados.
+
+        Args:
+            ignored_types: Set ou lista de tipos de mensagens (valores do enum Message.Type)
+        """
+        self._ignored_message_types = set(ignored_types)
+        logger.info(f"Tipos de mensagens ignoradas configurados: {len(self._ignored_message_types)} tipos")
+
+    def addIgnoredMessageType(self, message_type):
+        """
+        Adiciona um tipo de mensagem à lista de ignorados.
+
+        Args:
+            message_type: Valor do enum Message.Type a ser ignorado
+        """
+        self._ignored_message_types.add(message_type)
+        logger.debug(f"Tipo de mensagem adicionado à lista de ignorados: {message_type}")
+
+    def removeIgnoredMessageType(self, message_type):
+        """
+        Remove um tipo de mensagem da lista de ignorados.
+
+        Args:
+            message_type: Valor do enum Message.Type a ser removido da lista de ignorados
+        """
+        if message_type in self._ignored_message_types:
+            self._ignored_message_types.remove(message_type)
+            logger.debug(f"Tipo de mensagem removido da lista de ignorados: {message_type}")
+        else:
+            logger.warning(f"Tipo de mensagem não encontrado na lista de ignorados: {message_type}")
+
+    def getIgnoredMessageTypes(self):
+        """Retorna o conjunto atual de tipos de mensagens ignoradas."""
+        return self._ignored_message_types.copy()
     
     def messageCallback(self,msg):
         #if msg.HasField("participant"):
@@ -986,6 +1036,12 @@ class SendLayer(YowInterfaceLayer):
         #    return
         if not self._message_notifications_enabled:
             logger.debug("Notificação de mensagem ignorada (desativada)")
+            return
+
+        # Filtrar notificações de mensagens não importantes
+        # Usar configuração configurável de tipos ignorados
+        if hasattr(msg, 'type') and msg.type in self._ignored_message_types:
+            logger.debug(f"Notificação de mensagem ignorada (tipo não importante): {msg.type}")
             return
         self._mark_activity()
         # Primeiro chama o callback customizado do SendLayer (se configurado)

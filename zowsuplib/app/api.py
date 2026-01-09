@@ -246,6 +246,13 @@ class ZowsupClient:
         client.enable_auto_reply("Olá! Estou ocupado no momento.")
         # ... o bot responderá automaticamente às mensagens recebidas
         client.disable_auto_reply()
+
+        # Filtrar mensagens não importantes
+        client = ZowsupClient(account_id="5511999999999")
+        client.connect()
+        client.ignore_common_message_types()  # Ignora texto, áudio, imagens, etc.
+        # Agora apenas notificações importantes serão processadas
+        # client.disable_message_filter()  # Para desativar o filtro
     """
 
     @staticmethod
@@ -800,6 +807,7 @@ class ZowsupClient:
         )
 
         self.send_layer = SendLayer(self.bot)
+        self.ignore_common_message_types()
 
         # Perfil isolado por conta (compat com YowBot)
         profile = YowProfile(self.account_id)
@@ -1210,10 +1218,12 @@ class ZowsupClient:
 
         logger.info(f"{self._log_prefix} Cliente inicializado com sucesso (isolado)")
 
+        # self.ignore_common_message_types()
+
         if auto_connect:
             logger.debug(f"{self._log_prefix} auto_connect=True, conectando automaticamente")
             self.connect(wait_login=True)
-            self.initialize()
+            # self.initialize()
 
     # ------------------------------------------------------------------ #
     # Ciclo de vida / conexão
@@ -1380,6 +1390,106 @@ class ZowsupClient:
         """
         self.send_layer.enableMessageNotifications()
         logger.info(f"{self._log_prefix} Notificações de mensagem reativadas")
+
+    def set_ignored_message_types(self, ignored_types: Set[int]) -> None:
+        """
+        Define quais tipos de mensagens devem ser ignorados nas notificações.
+
+        Args:
+            ignored_types: Conjunto de valores do enum Message.Type (wsend_pb2.Message.Type)
+                          que devem ser ignorados.
+
+        Exemplos de tipos comuns para ignorar:
+            - wsend_pb2.Message.Type.Value("TEXT")      # Mensagens de texto
+            - wsend_pb2.Message.Type.Value("AUDIO")     # Áudios
+            - wsend_pb2.Message.Type.Value("IMAGE")     # Imagens
+            - wsend_pb2.Message.Type.Value("VIDEO")     # Vídeos
+            - wsend_pb2.Message.Type.Value("DOCUMENT")  # Documentos
+            - wsend_pb2.Message.Type.Value("STICKER")   # Stickers
+        """
+        self.send_layer.setIgnoredMessageTypes(ignored_types)
+        logger.info(f"{self._log_prefix} Tipos de mensagens ignoradas configurados: {len(ignored_types)} tipos")
+
+    def ignore_common_message_types(self) -> None:
+        """
+        Configura o filtro para ignorar tipos comuns de mensagens de chat.
+
+        Ignora automaticamente:
+        - TEXT (mensagens de texto)
+        - AUDIO (mensagens de áudio/voz)
+        - DOCUMENT (documentos e arquivos)
+        - IMAGE (imagens/fotos)
+        - VIDEO (vídeos)
+        - STICKER (stickers/figurinhas)
+        - PRODUCT (mensagens de produto)
+        - BUTTONS (botões não respostas)
+        - LIST (listas não respostas)
+        - OTHER (outros tipos não categorizados)
+
+        Mantém notificações para:
+        - URL (links detectados)
+        - AD (anúncios/mensagens promocionais)
+        - BUTTONS_RESPONSE (respostas a botões)
+        - LIST_RESPONSE (respostas a listas)
+        - POLL (criação de enquetes)
+        - POLL_RESPONSE (respostas a enquetes)
+        - REACTION (reações a mensagens)
+        """
+        from zowsuplib.proto import wsend_pb2
+
+        common_ignored_types = {
+            wsend_pb2.Message.Type.Value("TEXT"),      # Mensagens de texto
+            wsend_pb2.Message.Type.Value("AUDIO"),     # Mensagens de áudio
+            wsend_pb2.Message.Type.Value("DOCUMENT"),  # Documentos
+            wsend_pb2.Message.Type.Value("IMAGE"),     # Imagens
+            wsend_pb2.Message.Type.Value("VIDEO"),     # Vídeos
+            wsend_pb2.Message.Type.Value("STICKER"),   # Stickers
+            wsend_pb2.Message.Type.Value("PRODUCT"),   # Produtos
+            wsend_pb2.Message.Type.Value("BUTTONS"),   # Botões (não respostas)
+            wsend_pb2.Message.Type.Value("LIST"),      # Listas (não respostas)
+            wsend_pb2.Message.Type.Value("OTHER")      # Outros tipos não categorizados
+        }
+
+        self.set_ignored_message_types(common_ignored_types)
+        logger.info(f"{self._log_prefix} Filtro configurado para ignorar mensagens comuns de chat")
+
+    def add_ignored_message_type(self, message_type: int) -> None:
+        """
+        Adiciona um tipo de mensagem à lista de ignorados.
+
+        Args:
+            message_type: Valor do enum Message.Type a ser ignorado
+        """
+        self.send_layer.addIgnoredMessageType(message_type)
+        logger.debug(f"{self._log_prefix} Tipo de mensagem adicionado aos ignorados: {message_type}")
+
+    def remove_ignored_message_type(self, message_type: int) -> None:
+        """
+        Remove um tipo de mensagem da lista de ignorados.
+
+        Args:
+            message_type: Valor do enum Message.Type a ser removido da lista de ignorados
+        """
+        self.send_layer.removeIgnoredMessageType(message_type)
+        logger.debug(f"{self._log_prefix} Tipo de mensagem removido dos ignorados: {message_type}")
+
+    def get_ignored_message_types(self) -> Set[int]:
+        """
+        Retorna o conjunto atual de tipos de mensagens ignoradas.
+
+        Returns:
+            Set[int]: Conjunto de valores do enum Message.Type atualmente ignorados
+        """
+        return self.send_layer.getIgnoredMessageTypes()
+
+    def disable_message_filter(self) -> None:
+        """
+        Desativa completamente o filtro de mensagens, permitindo todas as notificações.
+
+        Equivalente a configurar um conjunto vazio de tipos ignorados.
+        """
+        self.set_ignored_message_types(set())
+        logger.info(f"{self._log_prefix} Filtro de mensagens desativado - todas as notificações permitidas")
 
     def connect_in_thread(self, *, wait_login: bool = True, retry_with_env_rotation: bool = True) -> threading.Thread:
         """
