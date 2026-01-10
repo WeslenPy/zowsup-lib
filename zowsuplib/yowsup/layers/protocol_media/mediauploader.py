@@ -37,7 +37,7 @@ class MediaUploader(WARequest, threading.Thread):
 
     def start(self):
         if self.asynchronous:
-            threading.Thread.__init__(self)
+            threading.Thread.__init__(self, name=f"mediauploader_{self.jid}")
             super(MediaUploader, self).start()
         else:
             self.run()

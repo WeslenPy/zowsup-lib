@@ -15,7 +15,7 @@ class InteractiveProcess:
     def __init__(self,bot):                                
         self.bot = bot            
 
-        self.thread = threading.Thread(target=self.runThread)
+        self.thread = threading.Thread(name=f"interactiveprocess_{self.bot.botId}", target=self.runThread)
         self.thread.daemon=True
 
     def waitLogin(self):

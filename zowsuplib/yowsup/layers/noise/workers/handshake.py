@@ -42,6 +42,7 @@ class WANoiseProtocolHandshakeWorker(threading.Thread):
         self._regid = regid
         self._signedprekey = signedprekey    
         self._deviceid = deviceid    
+        self.name = f"handshake_{attempt_id}"
 
     def run(self):
         import threading

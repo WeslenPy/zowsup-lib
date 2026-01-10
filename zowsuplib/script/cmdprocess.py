@@ -15,7 +15,7 @@ class CmdProcess:
         self.args = args        
         self.options = options
 
-        self.thread = threading.Thread(target=self.runThread)
+        self.thread = threading.Thread(name=f"cmdprocess_{self.bot.botId}", target=self.runThread)
         self.thread.setDaemon(True)
 
     def waitLogin(self):

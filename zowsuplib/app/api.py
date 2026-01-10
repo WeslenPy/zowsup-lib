@@ -1065,7 +1065,7 @@ class ZowsupClient:
                 self._set_cmd_error(cmd_id, {"code": -1, "msg": str(e)})
         
         # Executa em thread separada para não bloquear
-        thread = threading.Thread(target=_init_async, daemon=True)
+        thread = threading.Thread(name=f"init_async_{self.account_id}",target=_init_async, daemon=True)
         thread.start()
         
         return cmd_id
