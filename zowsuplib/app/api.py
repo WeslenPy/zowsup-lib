@@ -1092,7 +1092,7 @@ class ZowsupClient:
         env: Optional[str] = None,
         proxy: Optional[str] = None,
         auto_connect: bool = False,
-        log_level: Optional[str] = "DEBUG",
+        log_level: Optional[str] = "CRITICAL",
     ) -> None:
         """
         Cria um novo cliente de alto nível completamente isolado.
