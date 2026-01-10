@@ -5,7 +5,7 @@ from typing import Generator, Optional, Dict
 import threading
 import time
 
-from sqlalchemy import QueuePool, SingletonThreadPool, create_engine
+from sqlalchemy import QueuePool, SingletonThreadPool, create_engine, text
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 
@@ -135,18 +135,29 @@ def _build_engine_kwargs(database_url: str) -> dict:
     For SQLite we keep the defaults (SingletonThreadPool) to avoid
     breaking the lightweight file‑based workflow. For other backends we
     expand the pool to handle many simultaneous accounts.
+    
+    Configurado para suportar concorrência multi-thread com isolamento adequado.
     """
     url = make_url(database_url)
-    kwargs = {"pool_pre_ping": True}
+    kwargs = {
+        "pool_pre_ping": True,  # Verifica conexões antes de usar
+        "pool_reset_on_return": "commit",  # Reseta transações ao retornar ao pool
+    }
 
     if url.get_backend_name() != "sqlite":
         # QueuePool é o padrão e ideal para MySQL com FastAPI e múltiplas threads
+        connect_args = {}
+        # Para MySQL, configura isolation level para melhor concorrência
+        if "mysql" in url.get_backend_name():
+            connect_args["isolation_level"] = "READ COMMITTED"
+        
         kwargs.update(
             poolclass=QueuePool,  # Explícito para MySQL
             pool_size=settings.db_pool_size,
             max_overflow=settings.db_max_overflow,
             pool_timeout=settings.db_pool_timeout,
             pool_recycle=settings.db_pool_recycle,
+            connect_args=connect_args,
         )
 
     if url.get_backend_name() == "sqlite":
@@ -170,6 +181,106 @@ engine = create_engine(
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+# Thread-local storage para sessões
+_thread_local = threading.local()
+
+
+class ThreadLocalSessionManager:
+    """
+    Gerenciador de sessões thread-safe usando thread-local storage.
+    Cada thread tem sua própria sessão isolada, garantindo que operações
+    concorrentes não compartilhem a mesma sessão.
+    """
+    def __init__(self, session_factory):
+        self._session_factory = session_factory
+        self._lock = threading.RLock()
+    
+    def get_session(self) -> Session:
+        """
+        Obtém ou cria uma sessão para a thread atual.
+        Thread-safe: cada thread tem sua própria sessão isolada.
+        
+        Returns:
+            Session: Sessão isolada para a thread atual
+        """
+        if not hasattr(_thread_local, 'session') or _thread_local.session is None:
+            _thread_local.session = self._session_factory()
+            _thread_local.session_refcount = 1
+        else:
+            # Verifica se a sessão ainda está válida
+            try:
+                _thread_local.session.execute(text("SELECT 1"))
+                _thread_local.session_refcount += 1
+            except Exception:
+                # Sessão inválida: cria nova
+                try:
+                    _thread_local.session.close()
+                except Exception:
+                    pass
+                _thread_local.session = self._session_factory()
+                _thread_local.session_refcount = 1
+        
+        return _thread_local.session
+    
+    def release_session(self):
+        """
+        Libera a sessão da thread atual.
+        Fecha a sessão quando o refcount chega a zero.
+        """
+        if hasattr(_thread_local, 'session') and _thread_local.session is not None:
+            _thread_local.session_refcount -= 1
+            if _thread_local.session_refcount <= 0:
+                try:
+                    _thread_local.session.close()
+                except Exception:
+                    pass
+                finally:
+                    _thread_local.session = None
+                    _thread_local.session_refcount = 0
+
+
+# Instância global do gerenciador
+_thread_session_manager = ThreadLocalSessionManager(SessionLocal)
+
+
+def get_thread_local_session() -> Session:
+    """
+    Obtém uma sessão isolada para a thread atual.
+    Cada thread tem sua própria sessão, garantindo isolamento completo.
+    
+    Returns:
+        Session: Sessão isolada para a thread atual
+    """
+    return _thread_session_manager.get_session()
+
+
+@contextmanager
+def thread_local_session():
+    """
+    Context manager para sessão thread-local.
+    Garante que a sessão seja fechada ao sair do contexto.
+    
+    Example:
+        with thread_local_session() as db:
+            account = db.query(models.Account).filter_by(phone="123").first()
+            account.is_logged_in = True
+            # Commit automático ao sair do with (se não houver exceção)
+    """
+    session = get_thread_local_session()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        _thread_session_manager.release_session()
+
+
+# Lock para operações críticas que precisam de serialização
+_critical_operation_lock = threading.RLock()
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -343,11 +454,12 @@ def record_group(
     Persiste grupo, criador e participantes no banco.
     - Cria o grupo se não existir.
     - Garante participantes únicos.
+    
+    Usa sessão thread-local para isolamento thread-safe.
     """
     from zowsuplib.app import models
 
-    db = SessionLocal()
-    try:
+    with thread_local_session() as db:
         # Resolve grupo (campos exatos)
         group_row = (
             db.query(models.Group.id, models.Group.creator_account_id)
@@ -423,15 +535,7 @@ def record_group(
         
         if new_participants:
             db.add_all(new_participants)
-
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        from loguru import logger
-
-        logger.error(f"Erro ao registrar grupo {group_jid}: {exc}")
-    finally:
-        db.close()
+        # Commit automático via context manager
 
 
 def update_account_status(
@@ -451,11 +555,12 @@ def update_account_status(
         has_restriction: Se a conta possui restrição (None para não atualizar)
         is_initialized: Se a conta já foi inicializada (None para não atualizar)
         env: Tipo de ambiente (android, smb_android, ios, smb_ios) (None para não atualizar)
+    
+    Usa sessão thread-local para isolamento thread-safe.
     """
     from zowsuplib.app import models  # noqa: F401
 
-    db = SessionLocal()
-    try:
+    with thread_local_session() as db:
         # ✅ OTIMIZAÇÃO: Usa cache para obter account_id
         account_id = _get_account_id_cached(db, phone, create_if_missing=True)
         
@@ -477,15 +582,9 @@ def update_account_status(
 
         if updates:
             db.query(models.Account).filter_by(id=account_id).update(updates, synchronize_session=False)
-            db.commit()
             # ✅ OTIMIZAÇÃO: Invalida cache quando account é atualizado
             invalidate_account_cache(phone)
-    except Exception as e:
-        db.rollback()
-        from loguru import logger
-        logger.error(f"Erro ao atualizar status da conta {phone}: {e}")
-    finally:
-        db.close()
+        # Commit automático via context manager
 
 
 def register_sent_message(
@@ -507,11 +606,12 @@ def register_sent_message(
         message_type: Tipo da mensagem (TEXT, IMAGE, VIDEO, etc.)
         status: Status da mensagem (EXECUTED, SENT, ERROR)
         error_code: Código de erro, se houver
+    
+    Usa sessão thread-local para isolamento thread-safe.
     """
     from zowsuplib.app import models  # noqa: F401
 
-    db = SessionLocal()
-    try:
+    with thread_local_session() as db:
         # ✅ OTIMIZAÇÃO: Usa cache para obter account_id
         account_id = _get_account_id_cached(db, phone, create_if_missing=True)
 
@@ -538,14 +638,7 @@ def register_sent_message(
             if error_code is not None:
                 updates["error_code"] = error_code
             db.query(models.SentMessage).filter_by(id=existing_id).update(updates, synchronize_session=False)
-
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        from loguru import logger
-        logger.error(f"Erro ao registrar mensagem enviada {msg_id} da conta {phone}: {e}")
-    finally:
-        db.close()
+        # Commit automático via context manager
 
 
 def is_account_initialized(phone: str) -> bool:
@@ -557,11 +650,12 @@ def is_account_initialized(phone: str) -> bool:
 
     Returns:
         True se a conta já foi inicializada, False caso contrário
+    
+    Usa sessão thread-local para isolamento thread-safe.
     """
     from zowsuplib.app import models  # noqa: F401
 
-    db = SessionLocal()
-    try:
+    with thread_local_session() as db:
         # ✅ OTIMIZAÇÃO: Usa cache para obter account_id, depois busca apenas o campo necessário
         account_id = _get_account_id_cached(db, phone, create_if_missing=False)
         if account_id is None:
@@ -569,12 +663,6 @@ def is_account_initialized(phone: str) -> bool:
         
         value = db.query(models.Account.is_initialized).filter_by(id=account_id).scalar()
         return bool(value)
-    except Exception as e:
-        from loguru import logger
-        logger.error(f"Erro ao verificar status de inicialização da conta {phone}: {e}")
-        return False
-    finally:
-        db.close()
 
 
 def get_sent_messages_count(
@@ -597,12 +685,13 @@ def get_sent_messages_count(
         Dicionário com:
         - total: Total de mensagens enviadas
         - by_recipient: Lista de dicionários com {recipient, count} para cada destinatário
+    
+    Usa sessão thread-local para isolamento thread-safe.
     """
     from zowsuplib.app import models  # noqa: F401
     from sqlalchemy import func
 
-    db = SessionLocal()
-    try:
+    with thread_local_session() as db:
         # ✅ OTIMIZAÇÃO: Usa cache para obter account_id
         account_id = _get_account_id_cached(db, phone, create_if_missing=False)
         if account_id is None:
@@ -651,12 +740,6 @@ def get_sent_messages_count(
             "total": total,
             "by_recipient": by_recipient,
         }
-    except Exception as e:
-        from loguru import logger
-        logger.error(f"Erro ao contar mensagens enviadas da conta {phone}: {e}")
-        return {"total": 0, "by_recipient": []}
-    finally:
-        db.close()
 
 
 def export_contacts_to_vcard(
@@ -685,8 +768,7 @@ def export_contacts_to_vcard(
     from loguru import logger
     from datetime import datetime
     
-    db = SessionLocal()
-    try:
+    with thread_local_session() as db:
         # Busca todos os contatos da conta
         contacts = (
             db.query(models.Account.phone, models.Account.pushname)
@@ -753,12 +835,6 @@ def export_contacts_to_vcard(
                 raise
         
         return vcard_content
-        
-    except Exception as e:
-        logger.error(f"Erro ao exportar contatos para vCard: {e}", exc_info=True)
-        raise
-    finally:
-        db.close()
 
 
 def _escape_vcard_field(value: str) -> str:
@@ -827,8 +903,7 @@ def get_all_imported_accounts(
     from zowsuplib.app import models
     from loguru import logger
     
-    db = SessionLocal()
-    try:
+    with thread_local_session() as db:
         # Query base (campos exatos)
         query = db.query(
             models.Account.phone,
@@ -881,12 +956,6 @@ def get_all_imported_accounts(
         
         logger.info(f"Carregadas {len(result)} contas do banco de dados")
         return result
-        
-    except Exception as e:
-        logger.error(f"Erro ao carregar contas do banco de dados: {e}", exc_info=True)
-        return []
-    finally:
-        db.close()
 
 
  
