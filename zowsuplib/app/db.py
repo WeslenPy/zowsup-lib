@@ -146,10 +146,6 @@ def _build_engine_kwargs(database_url: str) -> dict:
 
     if url.get_backend_name() != "sqlite":
         # QueuePool é o padrão e ideal para MySQL com FastAPI e múltiplas threads
-        connect_args = {}
-        # Para MySQL, configura isolation level para melhor concorrência
-        if "mysql" in url.get_backend_name():
-            connect_args["isolation_level"] = "READ COMMITTED"
         
         kwargs.update(
             poolclass=QueuePool,  # Explícito para MySQL
@@ -157,7 +153,6 @@ def _build_engine_kwargs(database_url: str) -> dict:
             max_overflow=settings.db_max_overflow,
             pool_timeout=settings.db_pool_timeout,
             pool_recycle=settings.db_pool_recycle,
-            connect_args=connect_args,
         )
 
     if url.get_backend_name() == "sqlite":
