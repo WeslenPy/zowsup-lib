@@ -141,12 +141,9 @@ class SendLayer(YowInterfaceLayer):
         self.message_callback = None  # Callback customizado para mensagens
         self.handshake_failed_callback = None  # Callback para erros de handshake
         
-        # Sistema anti-banimento: rate limiting e controle de envio
-        self._last_message_time = {}  # {recipient: timestamp} para rate limiting por destinatário
-        self._daily_message_count = {}  # {date: count} para controle diário
+        # Sistema anti-banimento: controle de envio
         self._last_sync_time = {}  # {jid: timestamp} para controle de sincronização
         self._invalid_numbers = set()  # Números inválidos conhecidos (evita tentar novamente)
-        self._rate_limit_lock = threading.Lock()  # Lock para thread-safety
         self._handshake_error_detected = False  # Flag para detectar erros de handshake
         self._message_notifications_enabled = True  # Controle de callbacks de mensagem
         self._login_failed = False  # Flag para diferenciar falha de login x sucesso
@@ -159,61 +156,10 @@ class SendLayer(YowInterfaceLayer):
         # Controle de reconexão com backoff
         self._reconnect_attempts = 0
         self._reconnect_timer: Optional[threading.Timer] = None
-        # Monitor de liveness: detecta inatividade e força reconexão
-        self._liveness_stop = threading.Event()
-        self._liveness_thread: Optional[threading.Thread] = None
-        self._liveness_check_interval = 30  # segundos
-        self._liveness_timeout = 320  # segundos sem tráfego para forçar reconnect
-        self._last_activity_ts = time.time()
         # Marca se ocorreu stream:error conflict
         self._last_stream_conflict = False
         # Armazena último erro IQ (ex: 463 account_reachout_restricted)
         self._last_iq_error: Optional[str] = None
-
-    # ------------------------------------------------------------------ #
-    # Liveness / watchdog
-    # ------------------------------------------------------------------ #
-    def _mark_activity(self):
-        """Atualiza o timestamp de última atividade (rx/tx relevante)."""
-        self._last_activity_ts = time.time()
-
-    def _start_liveness_monitor(self):
-        if self._liveness_thread and self._liveness_thread.is_alive():
-            return
-
-        self._liveness_stop.clear()
-
-        def _loop():
-            while not self._liveness_stop.wait(self._liveness_check_interval):
-                if not self.isConnected:
-                    continue
-                idle = time.time() - self._last_activity_ts
-                if idle > self._liveness_timeout:
-                    logger.warning(
-                        f"[{self.bot.botId}] Sem atividade há {idle:.0f}s; forçando reconnect"
-                    )
-                    # força ciclo de disconnect → reconnect
-                    try:
-                        self.getStack().broadcastEvent(
-                            YowLayerEvent(
-                                YowNetworkLayer.EVENT_STATE_DISCONNECT,
-                                reason="Liveness timeout",
-                            )
-                        )
-                    except Exception as exc:  # pragma: no cover - defensivo
-                        logger.error(f"Erro ao forçar reconnect por inatividade: {exc}")
-                    # evita flood de forçar reconnect
-                    self._mark_activity()
-
-        self._liveness_thread = threading.Thread(target=_loop, daemon=True)
-        self._liveness_thread.name = f"Liveness-{self.bot.botId or 'unknown'}"
-        self._liveness_thread.start()
-
-    def _stop_liveness_monitor(self):
-        self._liveness_stop.set()
-        if self._liveness_thread and self._liveness_thread.is_alive():
-            self._liveness_thread.join(timeout=1)
-        self._liveness_thread = None
 
     def _cancel_reconnect_timer(self):
         if self._reconnect_timer and self._reconnect_timer.is_alive():
@@ -339,13 +285,11 @@ class SendLayer(YowInterfaceLayer):
     def onTyping(self, event):
         logger.info("Typing")
         logger.info(f"Typing: {event}")
-        self._mark_activity()
 
     @EventCallback(YowNetworkLayer.EVENT_STATE_DISCONNECTED)
     def onDisconnected(self, yowLayerEvent):             
         logger.info("Disconnect")       
         error = self.getStack().getProp("exception")                
-        self._stop_liveness_monitor()
         # Cancela timers de reconexão pendentes
         for t in self._timers:
             try:
@@ -982,7 +926,6 @@ class SendLayer(YowInterfaceLayer):
         if not self._message_notifications_enabled:
             logger.debug("Notificação de mensagem ignorada (desativada)")
             return
-        self._mark_activity()
         # Primeiro chama o callback customizado do SendLayer (se configurado)
         if self.message_callback is not None:
             msg.bot_id = self.bot.botId
@@ -1007,7 +950,6 @@ class SendLayer(YowInterfaceLayer):
                             
         self.isConnected = True
         self._login_failed = False
-        self._mark_activity()
         
         # Limpa flag de login em progresso antes de setar evento
         # (permite que notificações pendentes sejam processadas normalmente após login)
@@ -1019,7 +961,6 @@ class SendLayer(YowInterfaceLayer):
         
         if notifications_during_login > 0:
             logger.info(f"[{self.bot.botId}] Login concluído com {notifications_during_login} notificações processadas durante login")
-        # self._start_liveness_monitor()
         self._reconnect_attempts = 0
         self._cancel_reconnect_timer()
         entity = AvailablePresenceProtocolEntity()
@@ -1422,54 +1363,6 @@ class SendLayer(YowInterfaceLayer):
             logger.warning(f"Erro ao verificar restrições da conta: {e}")
             return False
     
-    def _check_rate_limit(self, recipient_jid, min_delay_seconds=3):
-        """
-        Verifica e aplica rate limiting para evitar envios muito frequentes.
-        
-        Args:
-            recipient_jid: JID do destinatário
-            min_delay_seconds: Delay mínimo em segundos entre mensagens para o mesmo destinatário
-        
-        Returns:
-            True se pode enviar, False se precisa aguardar
-        """
-        with self._rate_limit_lock:
-            current_time = time.time()
-            last_time = self._last_message_time.get(recipient_jid, 0)
-            
-            if last_time > 0:
-                elapsed = current_time - last_time
-                if elapsed < min_delay_seconds:
-                    wait_time = min_delay_seconds - elapsed
-                    logger.info(f"Rate limit: aguardando {wait_time:.1f}s antes de enviar para {recipient_jid}")
-                    time.sleep(wait_time)
-            
-            self._last_message_time[recipient_jid] = time.time()
-            return True
-    
-    def _check_daily_limit(self, max_messages_per_day=50):
-        """
-        Verifica limite diário de mensagens.
-        
-        Args:
-            max_messages_per_day: Número máximo de mensagens por dia
-        
-        Returns:
-            True se pode enviar, False se excedeu o limite
-        """
-        from datetime import date
-        
-        with self._rate_limit_lock:
-            today = str(date.today())
-            count = self._daily_message_count.get(today, 0)
-            
-            # if count >= max_messages_per_day:
-            #     logger.warning(f"Limite diário de {max_messages_per_day} mensagens atingido para hoje")
-            #     return False
-            
-            self._daily_message_count[today] = count + 1
-            return True
-    
     def _is_number_invalid(self, phone_number):
         """
         Verifica se um número está na lista de números inválidos.
@@ -1580,11 +1473,6 @@ class SendLayer(YowInterfaceLayer):
                 logger.error(f"Não é possível enviar: conta {self.bot.botId} está com restrição")
                 raise RuntimeError(f"Conta {self.bot.botId} está com restrição")
             
-            # 2. Verifica limite diário
-            if not self._check_daily_limit():
-                logger.error(f"Limite diário de mensagens atingido para conta {self.bot.botId}")
-                raise RuntimeError("Limite diário de mensagens atingido")
-            
             isCompanion = "_" in self.bot.botId if self.bot.botId else False
             jid = Jid.normalize(to)
             
@@ -1694,8 +1582,6 @@ class SendLayer(YowInterfaceLayer):
                 return None  # Indica que está em processo de sincronização
             else:
                 logger.debug(f"Contato {jid} já existe nos contatos")
-                # Aplica rate limiting mesmo para contatos conhecidos
-                self._check_rate_limit(jid, min_delay_seconds=2.0)
                 send_func(cmdParams, options)
                 return False
                 
@@ -1766,14 +1652,6 @@ class SendLayer(YowInterfaceLayer):
                 error_msg = f"Número {phone} é inválido no WhatsApp (marcado como inválido anteriormente)"
                 logger.warning(error_msg)
                 raise ValueError(error_msg)
-            
-            # Aplica rate limiting (anti-banimento)
-            # Para status@broadcast, não aplica rate limiting (status são diferentes)
-            # Para grupos, usa delay menor; para contatos individuais, delay maior
-            if normalized_to != "status@broadcast" and not normalized_to.endswith("@broadcast"):
-                is_group = normalized_to.endswith("@g.us")
-                min_delay = .5 if is_group else 1.0  # Grupos podem ter delay menor
-                self._check_rate_limit(normalized_to, min_delay_seconds=min_delay)
             
             logger.debug(f"Enviando mensagem para {normalized_to} (original: {to})")
             
@@ -2128,10 +2006,6 @@ class SendLayer(YowInterfaceLayer):
             else:
                 participant_for_meta = None
             
-            # Aplica rate limiting (reações podem ter delay menor)
-            min_delay = 1.0 if is_group else 2.0
-            self._check_rate_limit(normalized_to, min_delay_seconds=min_delay)
-            
             logger.debug(f"Enviando reação {emoji} para mensagem {message_id} em {normalized_to}")
             
             # Cria ReactionAttributes (inclui participant no key para grupos)
@@ -2315,12 +2189,10 @@ class SendLayer(YowInterfaceLayer):
                 logger.warning(error_msg)
                 raise ValueError(error_msg)
             
-            # Aplica rate limiting (anti-banimento)
-            is_group = normalized_to.endswith("@g.us")
-            min_delay = 1.5 if is_group else 3.0
-            self._check_rate_limit(normalized_to, min_delay_seconds=min_delay)
-            
             logger.debug(f"Enviando mensagem de reply para {normalized_to} (original: {to}) respondendo {reply_to_message_id}")
+            
+            # Verifica se é grupo
+            is_group = normalized_to.endswith("@g.us")
             
             # Prepara context_info com informações do reply
             context_info = ContextInfoAttributes()
