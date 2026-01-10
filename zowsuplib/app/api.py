@@ -2051,6 +2051,18 @@ class ZowsupClient:
             if hasattr(self, '_stop_event'):
                 self._stop_event.set()
             
+            # Fechar sessão do axolotl_store para liberar conexão do pool
+            try:
+                store = self.axolotl_store
+                if store and hasattr(store, 'close'):
+                    store.close()
+                    logger.debug(f"{self._log_prefix} Sessão do axolotl_store fechada")
+            except Exception as e:
+                logger.debug(f"{self._log_prefix} Erro ao fechar axolotl_store (não crítico): {e}")
+            
+            # Limpar cache do axolotl_manager
+            self.clear_axolotl_cache()
+            
             self.send_layer.userQuit = True
             self.send_layer.setProp("FORCEQUIT", 1)
             if self._stack is not None:

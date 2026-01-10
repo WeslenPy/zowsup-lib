@@ -876,41 +876,112 @@ class SqlAxolotlStore(AxolotlStore):
     It wraps the per‑table stores above and exposes the same public surface
     as LiteAxolotlStore so that AxolotlManager and the rest of the stack
     can work unchanged.
+    
+    IMPORTANT: This store maintains a session for performance, but it should be
+    closed explicitly via close() when the store is no longer needed to prevent
+    connection pool exhaustion. The session is automatically recreated if needed.
     """
 
     def __init__(self, username: str):
         """
         :param username: phone / account identifier (same as AxolotlManager.username)
         """
-        self._db: Session = SessionLocal()
-        self._account: models.Account = _get_or_create_account(self._db, username)
+        self._username = username
+        self._db: Optional[Session] = None
+        self._account: Optional[models.Account] = None
+        self._account_id: Optional[int] = None
+        self._closed = False
+        
+        # Inicializa sessão e account (lazy initialization)
+        self._ensure_session()
 
-        # Sub‑stores
-        self.identityKeyStore = SqlIdentityKeyStore(self._db, self._account)
-        self.preKeyStore = SqlPreKeyStore(self._db, self._account)
-        self.signedPreKeyStore = SqlSignedPreKeyStore(self._db, self._account)
-        self.sessionStore = SqlSessionStore(self._db, self._account)
-        self.senderKeyStore = SqlSenderKeyStore(self._db, self._account)
-        self.pollStore = SqlPollStore(self._db, self._account)
-        self.appStateStore = SqlAppStateStore(self._db, self._account)
-        self.contactStore = SqlContactStore(self._db, self._account)
-        self.broadcastStore = SqlBroadcastStore(self._db, self._account)
-        self.trustedContactStore = SqlTrustedContactStore(self._db, self._account)
+    def _ensure_session(self):
+        """
+        Garante que há uma sessão ativa. Cria uma nova se necessário.
+        """
+        if self._closed:
+            raise RuntimeError("SqlAxolotlStore foi fechado. Não é possível reutilizar.")
+        
+        # Verifica se precisa recriar sessão (None, fechada ou inativa)
+        needs_new_session = (
+            self._db is None or 
+            not hasattr(self._db, 'is_active') or 
+            not self._db.is_active
+        )
+        
+        if needs_new_session:
+            # Fecha sessão anterior se existir e estiver inativa
+            if self._db is not None:
+                try:
+                    self._db.close()
+                except Exception:
+                    pass
+            
+            # Cria nova sessão
+            self._db = SessionLocal()
+            self._account = _get_or_create_account(self._db, self._username)
+            self._account_id = self._account.id
+            
+            # Recria sub-stores com nova sessão
+            self.identityKeyStore = SqlIdentityKeyStore(self._db, self._account)
+            self.preKeyStore = SqlPreKeyStore(self._db, self._account)
+            self.signedPreKeyStore = SqlSignedPreKeyStore(self._db, self._account)
+            self.sessionStore = SqlSessionStore(self._db, self._account)
+            self.senderKeyStore = SqlSenderKeyStore(self._db, self._account)
+            self.pollStore = SqlPollStore(self._db, self._account)
+            self.appStateStore = SqlAppStateStore(self._db, self._account)
+            self.contactStore = SqlContactStore(self._db, self._account)
+            self.broadcastStore = SqlBroadcastStore(self._db, self._account)
+            self.trustedContactStore = SqlTrustedContactStore(self._db, self._account)
+    
+    def close(self):
+        """
+        Fecha a sessão do banco de dados explicitamente.
+        
+        Deve ser chamado quando o store não for mais necessário para liberar
+        a conexão do pool. Após fechar, o store não pode ser reutilizado.
+        """
+        if self._db is not None:
+            try:
+                self._db.close()
+            except Exception as e:
+                logger.warning(f"Erro ao fechar sessão do SqlAxolotlStore para {self._username}: {e}")
+            finally:
+                self._db = None
+                self._account = None
+                self._account_id = None
+                self._closed = True
+    
+    def __del__(self):
+        """
+        Cleanup automático quando o objeto é destruído.
+        Não confiável, mas ajuda a prevenir vazamentos.
+        """
+        if self._db is not None:
+            try:
+                self._db.close()
+            except Exception:
+                pass
 
     def __str__(self):
-        return "mysql:account=%s" % self._account.phone
+        account_phone = self._account.phone if self._account else self._username
+        return "mysql:account=%s" % account_phone
 
     # Identity store facade
     def getIdentityKeyPair(self):
+        self._ensure_session()
         return self.identityKeyStore.getIdentityKeyPair()
 
     def getLocalRegistrationId(self):
+        self._ensure_session()
         return self.identityKeyStore.getLocalRegistrationId()
 
     def saveIdentity(self, recipientId, deviceId, identityKey):
+        self._ensure_session()
         self.identityKeyStore.saveIdentity(recipientId, deviceId, identityKey)
 
     def isTrustedIdentity(self, recipientId, deviceId, identityKey):
+        self._ensure_session()
         return self.identityKeyStore.isTrustedIdentity(recipientId, deviceId, identityKey)
 
     # Helper for migration/import flows: update local identity row
@@ -922,6 +993,8 @@ class SqlAxolotlStore(AxolotlStore):
         This is used by legacy import/export flows that previously updated
         the SQLite 'identities' table directly.
         """
+        self._ensure_session()
+        
         row = (
             self._db.query(models.Identity)
             .filter(

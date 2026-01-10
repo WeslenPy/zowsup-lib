@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Generator, Optional
 
 from sqlalchemy import QueuePool, SingletonThreadPool, create_engine
@@ -35,7 +36,9 @@ def _build_engine_kwargs(database_url: str) -> dict:
     kwargs = {"pool_pre_ping": True}
 
     if url.get_backend_name() != "sqlite":
+        # QueuePool é o padrão e ideal para MySQL com FastAPI e múltiplas threads
         kwargs.update(
+            poolclass=QueuePool,  # Explícito para MySQL
             pool_size=settings.db_pool_size,
             max_overflow=settings.db_max_overflow,
             pool_timeout=settings.db_pool_timeout,
@@ -75,6 +78,30 @@ def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
+    finally:
+        db.close()
+
+
+@contextmanager
+def get_db_session():
+    """
+    Context manager para sessões do banco de dados.
+    
+    Garante commit automático em sucesso, rollback em erro e fechamento da sessão.
+    
+    Example:
+        with get_db_session() as db:
+            account = db.query(models.Account).filter_by(phone="123").first()
+            account.is_logged_in = True
+            # Commit automático ao sair do with (se não houver exceção)
+    """
+    db = SessionLocal()
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
