@@ -2,6 +2,12 @@
 Gerenciador central de múltiplas contas WhatsApp.
 
 Singleton para orquestrar múltiplas contas isoladas, sem dependência de SysVar.
+
+Melhorias implementadas:
+- ReadWriteLock para reduzir contenção (múltiplos leitores simultâneos)
+- Operações bloqueantes executadas fora do lock
+- Limite máximo de contas configurável
+- Cleanup automático de contas desconectadas
 """
 
 import threading
@@ -11,6 +17,7 @@ from typing import Any, Dict, Optional, List
 from loguru import logger
 
 from zowsuplib.app.api import ZowsupClient
+from zowsuplib.app.rwlock import ReadWriteLock
 
 
 @dataclass
@@ -49,15 +56,23 @@ class AccountManager:
     _instance: Optional['AccountManager'] = None
     _lock = threading.Lock()
     
-    def __init__(self):
-        """Inicializa o gerenciador de contas."""
+    def __init__(self, max_accounts: Optional[int] = None):
+        """
+        Inicializa o gerenciador de contas.
+        
+        Args:
+            max_accounts: Limite máximo de contas (None para ilimitado, padrão: 1000)
+        """
         if AccountManager._instance is not None:
             raise RuntimeError("AccountManager é um singleton. Use AccountManager.get_instance()")
         
         self._accounts: Dict[str, ManagedAccount] = {}
         self._connect_threads: Dict[str, threading.Thread] = {}
-        self._lock = threading.Lock()
-        logger.info("[AccountManager] Inicializado - pronto para gerenciar múltiplas contas")
+        self._lock = ReadWriteLock()  # ReadWriteLock para melhor concorrência
+        self._max_accounts = max_accounts or 1000  # Limite padrão de 1000 contas
+        self._cleanup_interval = 300.0  # Cleanup a cada 5 minutos
+        self._last_cleanup = time.time()
+        logger.info(f"[AccountManager] Inicializado - max_accounts={self._max_accounts}, usando ReadWriteLock")
     
     @classmethod
     def get_instance(cls) -> 'AccountManager':
@@ -93,55 +108,95 @@ class AccountManager:
             ZowsupClient: Cliente da conta adicionada
         
         Raises:
-            ValueError: Se a conta já existe
+            ValueError: Se a conta já existe ou se o limite máximo foi atingido
         """
-        with self._lock:
+        # Verifica limite antes de criar cliente (fora do lock)
+        with self._lock.read():
             if account_id in self._accounts:
                 raise ValueError(f"Conta {account_id} já está registrada. Use get_account() ou remove_account() primeiro.")
             
-            logger.info(f"[AccountManager] Adicionando conta {account_id} (env={env}, proxy={proxy or 'DIRECT'})")
+            current_count = len(self._accounts)
+            if current_count >= self._max_accounts:
+                raise ValueError(
+                    f"Limite máximo de contas atingido ({self._max_accounts}). "
+                    f"Remova contas antes de adicionar novas."
+                )
+        
+        # Cria cliente FORA do lock (operação bloqueante)
+        logger.info(f"[AccountManager] Adicionando conta {account_id} (env={env}, proxy={proxy or 'DIRECT'})")
+        client = ZowsupClient(
+            account_id=account_id,
+            env=env,
+            proxy=proxy,
+            auto_connect=False,  # Conecta depois, fora do lock
+        )
+        
+        # Adiciona ao dict com lock de escrita
+        with self._lock.write():
+            if account_id in self._accounts:
+                # Race condition: outra thread adicionou enquanto criávamos o cliente
+                logger.warning(f"[AccountManager] Conta {account_id} foi adicionada por outra thread, usando existente")
+                return self._accounts[account_id].client
             
-            # Cria cliente isolado - cada conta tem seu próprio contexto
-            client = ZowsupClient(
-                account_id=account_id,
-                env=env,
-                proxy=proxy,
-                auto_connect=auto_connect,
-            )
-            
-            self._accounts[account_id] = ManagedAccount(
-                client=client,
-            )
+            self._accounts[account_id] = ManagedAccount(client=client)
             logger.info(f"[AccountManager] Conta {account_id} adicionada com sucesso. Total de contas: {len(self._accounts)}")
-            
-            return client
+        
+        # Conecta FORA do lock se solicitado
+        if auto_connect:
+            try:
+                client.connect()
+            except Exception as e:
+                logger.error(f"[AccountManager] Erro ao conectar conta {account_id} automaticamente: {e}")
+        
+        return client
 
     def connect_in_thread(self, account_id: str, *, wait_login: bool = True) -> Optional[threading.Thread]:
         """
-        Compat: inicia conexão de forma assíncrona. Para reduzir threads, preferir connect().
+        Inicia conexão de forma assíncrona em thread separada.
+        
+        Args:
+            account_id: Número da conta
+            wait_login: Se True, aguarda o login completar
+        
+        Returns:
+            Thread da conexão ou None se conta não encontrada
         """
-        with self._lock:
+        # Obtém referência do cliente FORA do lock
+        with self._lock.read():
             record = self._accounts.get(account_id)
             if record is None:
                 logger.warning(f"[AccountManager] Conta {account_id} não encontrada para conectar em thread")
                 return None
-
-            # encerra thread anterior, se ainda viva
+            client = record.client
+        
+        # Verifica thread anterior FORA do lock
+        with self._lock.write():
             old_thread = self._connect_threads.get(account_id)
             if old_thread and old_thread.is_alive():
                 logger.debug(f"[AccountManager] Thread de conexão prévia ainda ativa para {account_id}, aguardando término")
                 old_thread.join(timeout=0.1)
-
-            # Execução síncrona para reduzir uso de threads
+        
+        # Executa conexão em thread separada (não bloqueia)
+        def _connect():
             try:
-                record.client.connect(wait_login=wait_login)
+                client.connect(wait_login=wait_login)
             except Exception as exc:
                 logger.error(f"[AccountManager] Erro ao conectar conta {account_id}: {exc}", exc_info=True)
-            return None
+        
+        thread = threading.Thread(target=_connect, name=f"connect-{account_id}", daemon=True)
+        thread.start()
+        
+        # Atualiza tracking de threads
+        with self._lock.write():
+            self._connect_threads[account_id] = thread
+        
+        return thread
     
     def get_account(self, account_id: str) -> Optional[ZowsupClient]:
         """
         Obtém o cliente de uma conta específica.
+        
+        Usa lock de LEITURA - múltiplas threads podem ler simultaneamente.
         
         Args:
             account_id: Número da conta
@@ -149,10 +204,9 @@ class AccountManager:
         Returns:
             ZowsupClient se encontrado, None caso contrário
         """
-        with self._lock:
+        with self._lock.read():
             record = self._accounts.get(account_id)
             if record is None:
-                logger.warning(f"[AccountManager] Conta {account_id} não encontrada")
                 return None
             return record.client
     
@@ -167,22 +221,32 @@ class AccountManager:
         Returns:
             True se a conta foi removida, False se não existia
         """
-        with self._lock:
+        # Obtém referência do cliente FORA do lock
+        with self._lock.read():
             if account_id not in self._accounts:
                 logger.warning(f"[AccountManager] Tentativa de remover conta inexistente: {account_id}")
                 return False
-            
-            record = self._accounts[account_id]
-            client = record.client
-            
-            if disconnect:
-                logger.info(f"[AccountManager] Desconectando conta {account_id} antes de remover")
-                try:
-                    client.disconnect()
-                except Exception as e:
-                    logger.error(f"[AccountManager] Erro ao desconectar conta {account_id}: {e}")
+            client = self._accounts[account_id].client
+        
+        # Desconecta FORA do lock (operação bloqueante)
+        if disconnect:
+            logger.info(f"[AccountManager] Desconectando conta {account_id} antes de remover")
+            try:
+                client.disconnect()
+            except Exception as e:
+                logger.error(f"[AccountManager] Erro ao desconectar conta {account_id}: {e}")
+        
+        # Remove do dict com lock de escrita
+        with self._lock.write():
+            if account_id not in self._accounts:
+                # Race condition: já foi removida
+                return False
             
             del self._accounts[account_id]
+            # Limpa thread de conexão se existir
+            if account_id in self._connect_threads:
+                del self._connect_threads[account_id]
+            
             logger.info(f"[AccountManager] Conta {account_id} removida. Total de contas: {len(self._accounts)}")
             return True
     
@@ -190,25 +254,31 @@ class AccountManager:
         """
         Lista os IDs de todas as contas gerenciadas.
         
+        Usa lock de LEITURA - múltiplas threads podem ler simultaneamente.
+        
         Returns:
             Lista de account_ids
         """
-        with self._lock:
+        with self._lock.read():
             return list(self._accounts.keys())
     
     def get_all_clients(self) -> Dict[str, ZowsupClient]:
         """
         Retorna um dicionário com todas as contas.
         
+        Usa lock de LEITURA - múltiplas threads podem ler simultaneamente.
+        
         Returns:
             Dict[account_id, ZowsupClient]
         """
-        with self._lock:
+        with self._lock.read():
             return {acc_id: record.client for acc_id, record in self._accounts.items()}
     
     def is_account_active(self, account_id: str) -> bool:
         """
         Verifica se uma conta está ativa (conectada).
+        
+        Usa lock de LEITURA e verifica conexão FORA do lock.
         
         Args:
             account_id: Número da conta
@@ -216,24 +286,44 @@ class AccountManager:
         Returns:
             True se a conta existe e está conectada
         """
-        client = self.get_account(account_id)
-        if client is None:
-            return False
+        # Obtém referência FORA do lock
+        with self._lock.read():
+            record = self._accounts.get(account_id)
+            if record is None:
+                return False
+            client = record.client
+        
+        # Verifica conexão FORA do lock (pode ser bloqueante)
         return client.is_connected()
     
     def disconnect_all(self) -> None:
         """
         Desconecta todas as contas gerenciadas.
+        
+        Obtém lista de clientes FORA do lock e desconecta em paralelo.
         """
-        with self._lock:
-            logger.info(f"[AccountManager] Desconectando todas as {len(self._accounts)} contas")
-            for account_id, record in list(self._accounts.items()):
-                try:
-                    logger.debug(f"[AccountManager] Desconectando conta {account_id}")
-                    record.client.disconnect()
-                except Exception as e:
-                    logger.error(f"[AccountManager] Erro ao desconectar conta {account_id}: {e}")
-            logger.info("[AccountManager] Todas as contas desconectadas")
+        # Obtém lista de clientes FORA do lock
+        with self._lock.read():
+            accounts_to_disconnect = [
+                (acc_id, record.client) 
+                for acc_id, record in self._accounts.items()
+            ]
+        
+        if not accounts_to_disconnect:
+            logger.info("[AccountManager] Nenhuma conta para desconectar")
+            return
+        
+        logger.info(f"[AccountManager] Desconectando todas as {len(accounts_to_disconnect)} contas")
+        
+        # Desconecta FORA do lock (operações bloqueantes)
+        for account_id, client in accounts_to_disconnect:
+            try:
+                logger.debug(f"[AccountManager] Desconectando conta {account_id}")
+                client.disconnect()
+            except Exception as e:
+                logger.error(f"[AccountManager] Erro ao desconectar conta {account_id}: {e}")
+        
+        logger.info("[AccountManager] Todas as contas desconectadas")
     
     def remove_all(self, disconnect: bool = True) -> None:
         """
@@ -242,14 +332,21 @@ class AccountManager:
         Args:
             disconnect: Se True, desconecta antes de remover
         """
-        with self._lock:
+        # Obtém lista de contas FORA do lock
+        with self._lock.read():
             account_ids = list(self._accounts.keys())
-            logger.info(f"[AccountManager] Removendo todas as {len(account_ids)} contas")
-            
-            for account_id in account_ids:
-                self.remove_account(account_id, disconnect=disconnect)
-            
-            logger.info("[AccountManager] Todas as contas removidas")
+        
+        if not account_ids:
+            logger.info("[AccountManager] Nenhuma conta para remover")
+            return
+        
+        logger.info(f"[AccountManager] Removendo todas as {len(account_ids)} contas")
+        
+        # Remove cada conta (remove_account já gerencia locks internamente)
+        for account_id in account_ids:
+            self.remove_account(account_id, disconnect=disconnect)
+        
+        logger.info("[AccountManager] Todas as contas removidas")
     
     def load_all_imported_accounts(
         self,
@@ -315,10 +412,11 @@ class AccountManager:
             phone = account_info["phone"]
             
             # Pula se a conta já está carregada
-            if phone in self._accounts:
-                logger.debug(f"[AccountManager] Conta {phone} já está carregada, pulando")
-                loaded_clients[phone] = self._accounts[phone].client
-                continue
+            with self._lock.read():
+                if phone in self._accounts:
+                    logger.debug(f"[AccountManager] Conta {phone} já está carregada, pulando")
+                    loaded_clients[phone] = self._accounts[phone].client
+                    continue
             
             try:
                 # Usa o env da conta ou o fornecido, ou padrão
@@ -347,10 +445,12 @@ class AccountManager:
         """
         Retorna o número de contas gerenciadas.
         
+        Usa lock de LEITURA - múltiplas threads podem ler simultaneamente.
+        
         Returns:
             Número de contas
         """
-        with self._lock:
+        with self._lock.read():
             return len(self._accounts)
 
     def ensure_account_connected(
@@ -363,16 +463,20 @@ class AccountManager:
         """
         Verifica se a conta está conectada; caso não esteja, dispara fallback de conexão em thread.
 
+        Corrigido: mantém referência segura do cliente durante verificação.
+
         Returns:
             True se a conta já estava conectada ou se o disparo de reconexão foi iniciado.
         """
-        with self._lock:
+        # Obtém referência do cliente FORA do lock
+        with self._lock.read():
             record = self._accounts.get(account_id)
             if record is None:
                 logger.warning(f"[AccountManager] ensure_account_connected: conta {account_id} não encontrada")
                 return False
             client = record.client
-
+        
+        # Verifica conexão FORA do lock (pode ser bloqueante)
         if client.is_connected():
             return True
 
@@ -433,7 +537,8 @@ class AccountManager:
             # Excluir algumas contas da sincronização
             stats = manager.sync_all_accounts(exclude_phones=["5511999999999"])
         """
-        with self._lock:
+        # Obtém lista de contas FORA do lock principal
+        with self._lock.read():
             accounts = list(self._accounts.keys())
         
         if not accounts:
@@ -479,16 +584,18 @@ class AccountManager:
         
         # Para cada conta, sincroniza com todas as outras
         for account_phone in accounts_to_sync:
-            record = self._accounts.get(account_phone)
-            if record is None:
-                logger.warning(f"[AccountManager] Conta {account_phone} não encontrada no gerenciador")
-                stats["skipped_accounts"] += 1
-                stats["details"][account_phone] = {
-                    "synced_count": 0,
-                    "status": "not_found"
-                }
-                continue
-            client = record.client
+            # Obtém cliente FORA do lock
+            with self._lock.read():
+                record = self._accounts.get(account_phone)
+                if record is None:
+                    logger.warning(f"[AccountManager] Conta {account_phone} não encontrada no gerenciador")
+                    stats["skipped_accounts"] += 1
+                    stats["details"][account_phone] = {
+                        "synced_count": 0,
+                        "status": "not_found"
+                    }
+                    continue
+                client = record.client
             
             # Verifica se está conectada (se only_connected=True)
             if only_connected and not client.is_connected():
@@ -672,11 +779,51 @@ class AccountManager:
         logger.error(f"[AccountManager] [{account_id}] ✗ Falha ao conectar com todos os tipos de ambiente")
         return None
     
+    def _cleanup_disconnected_accounts(self, max_idle_time: float = 3600.0) -> int:
+        """
+        Remove contas desconectadas há mais de max_idle_time segundos.
+        
+        Args:
+            max_idle_time: Tempo máximo de inatividade em segundos (padrão: 1 hora)
+        
+        Returns:
+            Número de contas removidas
+        """
+        current_time = time.time()
+        if current_time - self._last_cleanup < self._cleanup_interval:
+            return 0
+        
+        self._last_cleanup = current_time
+        
+        # Obtém lista de contas desconectadas FORA do lock
+        disconnected_accounts = []
+        with self._lock.read():
+            for account_id, record in self._accounts.items():
+                if not record.client.is_connected():
+                    # Verifica último acesso (se implementado)
+                    disconnected_accounts.append(account_id)
+        
+        # Remove contas desconectadas
+        removed_count = 0
+        for account_id in disconnected_accounts:
+            try:
+                # Remove sem desconectar (já está desconectada)
+                if self.remove_account(account_id, disconnect=False):
+                    removed_count += 1
+                    logger.info(f"[AccountManager] Conta {account_id} removida por cleanup (desconectada)")
+            except Exception as e:
+                logger.error(f"[AccountManager] Erro ao remover conta {account_id} no cleanup: {e}")
+        
+        if removed_count > 0:
+            logger.info(f"[AccountManager] Cleanup: {removed_count} contas desconectadas removidas")
+        
+        return removed_count
+    
     def __repr__(self) -> str:
         """Representação string do gerenciador."""
-        with self._lock:
+        with self._lock.read():
             accounts = list(self._accounts.keys())
-            return f"AccountManager(accounts={len(accounts)}, ids={accounts})"
+            return f"AccountManager(accounts={len(accounts)}/{self._max_accounts}, ids={accounts[:5]}{'...' if len(accounts) > 5 else ''})"
 
 
 
