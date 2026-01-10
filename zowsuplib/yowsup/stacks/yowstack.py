@@ -191,7 +191,36 @@ class YowStack(object):
         self.__class__.__detachedQueue.put(fn)
 
     def loop(self, *args, **kwargs):
+        """
+        Executa o loop do stack processando callbacks da queue.
+        
+        Args:
+            stop_event: threading.Event opcional para sinalizar parada do loop
+        """
+        stop_event = kwargs.get('stop_event', None)
+        
         while True:
+            # Verificar flag de parada se fornecido (prioridade máxima)
+            if stop_event is not None and stop_event.is_set():
+                logger.debug("Stack loop interrompido por stop_event")
+                break
+            
+            # Verificar flags de parada do SendLayer se disponível
+            try:
+                # Tentar obter SendLayer verificando se tem userQuit
+                send_layer = None
+                for inst in self.__stackInstances:
+                    if hasattr(inst, 'userQuit'):
+                        send_layer = inst
+                        break
+                
+                if send_layer and (getattr(send_layer, 'userQuit', False) or 
+                                  self.getProp("FORCEQUIT", 0)):
+                    logger.debug("Stack loop interrompido por userQuit/FORCEQUIT")
+                    break
+            except Exception:
+                pass  # Ignorar erros ao verificar flags
+            
             try:
                 callback = self.__class__.__detachedQueue.get(False) #doesn't block
                 callback()

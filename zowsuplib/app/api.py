@@ -818,7 +818,8 @@ class ZowsupClient:
         logger.info(f"{self._log_prefix} Login start")
         try:
             self._stack.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT))
-            self._stack.loop()
+            # Passar stop_event para o loop permitir parada controlada
+            self._stack.loop(stop_event=self._stop_event)
             logger.info(f"{self._log_prefix} LOOP ENDED")
         except (OSError, TimeoutError, ConnectionError) as exc:
             # Erros de conexão de rede - não faz retry, apenas loga e desconecta
@@ -1105,7 +1106,7 @@ class ZowsupClient:
         Cada instância é completamente isolada - pode criar múltiplas sem conflitos.
         """
 
-        # Utils.init_log(log_level, "zowsupclient_account_" + account_id + ".log")
+        Utils.init_log(log_level, "zowsupclient_account_" + account_id + ".log")
 
         self.account_id = account_id
         self._log_prefix = f"[ZowsupClient:{account_id}]"
@@ -1147,6 +1148,8 @@ class ZowsupClient:
 
         self._started = False
         self._stack_thread: Optional[threading.Thread] = None
+        # Event para sinalizar parada do loop do stack (mitiga bug no FastAPI)
+        self._stop_event = threading.Event()
         # Histórico de ambientes que já conectaram com sucesso (não rotacionar se já funcionou)
         self._successful_envs: Set[str] = set()
         self._auto_reply_enabled = False
@@ -1221,6 +1224,11 @@ class ZowsupClient:
         # Configura callback para detectar erros de handshake
         if retry_with_env_rotation:
             self.send_layer.handshake_failed_callback = self._on_handshake_failed
+        
+        # Resetar stop_event para nova conexão
+        if hasattr(self, '_stop_event'):
+            self._stop_event.clear()
+        
         self._stack_thread = self._start_stack_thread()
         self._started = True
 
@@ -2039,6 +2047,10 @@ class ZowsupClient:
         
         logger.info(f"{self._log_prefix} Desconectando...")
         try:
+            # Sinalizar parada do loop do stack
+            if hasattr(self, '_stop_event'):
+                self._stop_event.set()
+            
             self.send_layer.userQuit = True
             self.send_layer.setProp("FORCEQUIT", 1)
             if self._stack is not None:
