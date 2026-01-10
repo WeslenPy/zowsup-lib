@@ -1495,7 +1495,7 @@ class SendLayer(YowInterfaceLayer):
         self._invalid_numbers.add(phone)
         logger.warning(f"Número {phone} marcado como inválido")
     
-    def _validate_contact_sync_result(self, sync_result, requested_jid):
+    def _validate_contact_sync_result(self, sync_result:ResultSyncIqProtocolEntity, requested_jid):
         """
         Valida o resultado da sincronização de contato.
         
@@ -1509,11 +1509,18 @@ class SendLayer(YowInterfaceLayer):
             - jid_found: JID encontrado (pode ser diferente do solicitado)
             - phone_number: Número de telefone extraído
         """
+
+        logger.debug(f"validate_contact_sync_result: sync_result: {type(sync_result)}")
+
+        # logger.debug(f"validate_contact_sync_result: sync_result: {sync_result.toProtocolTreeNode()}")
+
         if not sync_result or not hasattr(sync_result, 'inNumbers'):
             return False, None, None
         
         # Extrai o número do JID solicitado
         phone = requested_jid.split('@')[0] if '@' in requested_jid else requested_jid
+        # phone = phone.replace("+", "")
+        logger.debug(f"validate_contact_sync_result: phone: {phone}")
         
         # Verifica se está na lista de números inválidos (prioridade)
         invalid_users = getattr(sync_result, 'invalidUsers', [])
@@ -1522,13 +1529,13 @@ class SendLayer(YowInterfaceLayer):
             return False, None, phone
         
         # Verifica se está em inNumbers (números válidos que têm você nos contatos)
-        if phone in sync_result.inNumbers:
+        if phone in sync_result.getInNumbers():
             jid_found = sync_result.inNumbers[phone]
             logger.info(f"Número {phone} válido (inNumbers), JID: {jid_found}")
             return True, jid_found, phone
         
         # Verifica se está em outNumbers (números válidos que você tem nos contatos)
-        if phone in sync_result.outNumbers:
+        if phone in sync_result.getOutNumbers():
             jid_found = sync_result.outNumbers[phone]
             logger.info(f"Número {phone} válido (outNumbers), JID: {jid_found}")
             return True, jid_found, phone
@@ -1614,6 +1621,8 @@ class SendLayer(YowInterfaceLayer):
                 
                 self.db._store.addContact(jid)
                 entity = GetSyncIqProtocolEntity([phone], mode="delta")
+
+                logger.debug(f"GetSyncIqProtocolEntity: {entity}")
                 
                 # Usa uma lista para armazenar o JID atualizado (permite modificação dentro da closure)
                 jid_container = [jid]

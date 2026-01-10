@@ -11,6 +11,8 @@ build
 .idea
 .tox
 
+migrations/
+
 integrity.py
 config.conf
 poetry.lock

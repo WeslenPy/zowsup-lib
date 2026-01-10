@@ -34,6 +34,7 @@ from zowsuplib.app.yowbot_values import YowBotType
 from zowsuplib.app.db import SessionLocal, record_group
 from zowsuplib.common.utils import Utils
 from zowsuplib.settings.conf import settings
+from zowsuplib.yowsup.layers.protocol_groups.structs.group import Group
 
 class ZowsupError(Exception):
     """
@@ -1091,7 +1092,7 @@ class ZowsupClient:
         env: Optional[str] = None,
         proxy: Optional[str] = None,
         auto_connect: bool = False,
-        log_level: Optional[str] = "CRITICAL",
+        log_level: Optional[str] = "DEBUG",
     ) -> None:
         """
         Cria um novo cliente de alto nível completamente isolado.
@@ -1104,10 +1105,11 @@ class ZowsupClient:
         Cada instância é completamente isolada - pode criar múltiplas sem conflitos.
         """
 
-        Utils.init_log(log_level, "zowsupclient_account_" + account_id + ".log")
+        # Utils.init_log(log_level, "zowsupclient_account_" + account_id + ".log")
 
         self.account_id = account_id
         self._log_prefix = f"[ZowsupClient:{account_id}]"
+        self._axolotl_manager_cache: Optional[Any] = None  # Cache do AxolotlManager
         
         logger.info(f"{self._log_prefix} Inicializando cliente isolado (env={env}, proxy={'DIRECT' if not proxy or proxy.upper() == 'DIRECT' else 'PROXY'})")
         
@@ -1510,6 +1512,333 @@ class ZowsupClient:
         except Exception as e:
             logger.error(f"{self._log_prefix} ❌ Erro ao obter proxy do banco de dados: {e}")
             return None
+
+    @property
+    def axolotl_manager(self) -> Optional[Any]:
+        """
+        Acesso simplificado ao AxolotlManager da conta.
+        
+        Tenta múltiplas fontes em ordem de prioridade:
+        1. Cache interno (se já foi acessado)
+        2. Profile do stack (se conectado)
+        3. SendLayer.db (fallback)
+        4. Factory (último recurso)
+        
+        Returns:
+            AxolotlManager ou None se não disponível
+        """
+        # 1. Retorna cache se disponível
+        if hasattr(self, '_axolotl_manager_cache') and self._axolotl_manager_cache is not None:
+            return self._axolotl_manager_cache
+        
+        # 2. Tenta obter do profile do stack
+        try:
+            if hasattr(self, '_stack') and self._stack:
+                profile = self._stack.getProp("profile")
+                if profile and hasattr(profile, 'axolotl_manager') and profile.axolotl_manager:
+                    self._axolotl_manager_cache = profile.axolotl_manager
+                    logger.debug(f"{self._log_prefix} Manager obtido do profile do stack")
+                    return self._axolotl_manager_cache
+        except Exception as e:
+            logger.debug(f"{self._log_prefix} Erro ao obter manager do stack: {e}")
+        
+        # 3. Tenta obter do SendLayer
+        try:
+            if hasattr(self, 'send_layer') and self.send_layer:
+                if hasattr(self.send_layer, 'db') and self.send_layer.db:
+                    self._axolotl_manager_cache = self.send_layer.db
+                    logger.debug(f"{self._log_prefix} Manager obtido do send_layer.db")
+                    return self._axolotl_manager_cache
+        except Exception as e:
+            logger.debug(f"{self._log_prefix} Erro ao obter manager do send_layer: {e}")
+        
+        # 4. Último recurso: Factory (cria nova instância)
+        try:
+            factory = AxolotlManagerFactory()
+            self._axolotl_manager_cache = factory.get_manager(self.account_id, self.account_id)
+            logger.debug(f"{self._log_prefix} Manager criado via Factory (fallback)")
+            return self._axolotl_manager_cache
+        except Exception as e:
+            logger.error(f"{self._log_prefix} Erro ao criar manager via Factory: {e}")
+            return None
+    
+    @property
+    def axolotl_store(self) -> Optional[Any]:
+        """
+        Acesso direto ao AxolotlStore (banco de dados criptográfico).
+        
+        Returns:
+            SqlAxolotlStore ou None se não disponível
+        """
+        manager = self.axolotl_manager
+        if manager and hasattr(manager, '_store'):
+            return manager._store
+        return None
+    
+    def get_axolotl_manager(self, force_new: bool = False) -> Optional[Any]:
+        """
+        Obtém o AxolotlManager com opção de forçar nova instância.
+        
+        Args:
+            force_new: Se True, ignora cache e cria nova instância
+            
+        Returns:
+            AxolotlManager ou None
+        """
+        if force_new:
+            self._axolotl_manager_cache = None
+        
+        return self.axolotl_manager
+    
+    def clear_axolotl_cache(self) -> None:
+        """
+        Limpa o cache do AxolotlManager, forçando nova obtenção na próxima chamada.
+        Útil quando o manager foi recriado ou reinicializado.
+        """
+        if hasattr(self, '_axolotl_manager_cache'):
+            self._axolotl_manager_cache = None
+            logger.debug(f"{self._log_prefix} Cache do AxolotlManager limpo")
+
+    def force_key_exchange(self, contact_jid: str, send_test_message: bool = False) -> bool:
+        """
+        Força uma nova troca de chaves criptográficas com um contato específico.
+
+        Este método remove a sessão criptográfica existente e força o estabelecimento
+        de uma nova sessão na próxima mensagem enviada. Útil para resolver problemas
+        de "Bad Mac" ou mensagens inválidas.
+
+        IMPORTANTE: Este método limpa sessões tanto pelo número quanto pelo LID (Linked ID),
+        pois mensagens podem vir com diferentes identificadores. Isso resolve problemas
+        de desincronização quando mensagens são recebidas com LID diferente do número.
+
+        Args:
+            contact_jid: JID do contato (ex: "5511999999999@s.whatsapp.net" ou "5356260450362:0@lid")
+            send_test_message: Se True, envia uma mensagem de teste invisível para forçar a troca
+
+        Returns:
+            bool: True se conseguiu forçar a troca, False em caso de erro
+
+        Example:
+            # Forçar troca de chaves com um contato
+            success = client.force_key_exchange("5511999999999@s.whatsapp.net")
+            if success:
+                print("Troca de chaves forçada com sucesso")
+
+            # Com mensagem de teste
+            client.force_key_exchange("5511999999999@s.whatsapp.net", send_test_message=True)
+        """
+        try:
+            logger.info(f"{self._log_prefix} 🔄 Forçando troca de chaves com {contact_jid}")
+
+            # Acesso simplificado ao manager e store
+            manager = self.axolotl_manager
+            store = self.axolotl_store
+            
+            if not manager:
+                logger.error(f"{self._log_prefix} ❌ AxolotlManager não disponível")
+                return False
+            
+            if not store:
+                logger.error(f"{self._log_prefix} ❌ AxolotlStore não disponível")
+                return False
+
+            # Extrair recipient_id e device_id do JID
+            is_lid = False
+            if '@' in contact_jid:
+                # JID completo: 5511999999999@s.whatsapp.net ou 5356260450362:0@lid
+                if '@lid' in contact_jid:
+                    # É um LID: 5356260450362:0@lid
+                    is_lid = True
+                    lid_part = contact_jid.split('@')[0]  # 5356260450362:0
+                    if ':' in lid_part:
+                        recipient_id, device_str = lid_part.split(':')
+                        device_id = int(device_str) if device_str.isdigit() else 0
+                    else:
+                        recipient_id = lid_part
+                        device_id = 0
+                else:
+                    # JID normal: 5511999999999@s.whatsapp.net
+                    recipient_id = contact_jid.split('@')[0]
+                    device_id = 0
+            else:
+                # Apenas número: 5511999999999
+                recipient_id = contact_jid
+                device_id = 0
+
+            # IDs para limpar (número principal e possíveis LIDs)
+            ids_to_clear = []
+            
+            # 1. Adicionar o ID principal (número ou LID fornecido)
+            ids_to_clear.append((recipient_id, device_id, "principal"))
+            
+            # 2. Se foi fornecido um número (não LID), tentar limpar também pelo LID derivado
+            if not is_lid:
+                try:
+                    # Gera LID derivado do número (pode não ser o LID real, mas tenta)
+                    lid_jid = Group.phone_to_lid(recipient_id, device_id)
+                    lid_recipient_id = lid_jid.split(':')[0].split('@')[0]
+                    ids_to_clear.append((lid_recipient_id, device_id, "LID derivado"))
+                    logger.debug(f"{self._log_prefix} LID derivado calculado: {lid_recipient_id}")
+                except Exception as e:
+                    logger.debug(f"{self._log_prefix} Não foi possível derivar LID: {e}")
+            
+            # 3. Limpar todas as sessões identificadas
+            # Usar deleteAllSessions para garantir que todos os device_ids sejam limpos
+            cleared_sessions = []
+            unique_recipients = set()  # Para evitar limpar o mesmo recipient múltiplas vezes
+            
+            for rid, did, source in ids_to_clear:
+                recipient_key = int(rid)
+                if recipient_key not in unique_recipients:
+                    unique_recipients.add(recipient_key)
+                    try:
+                        # Limpa todas as sessões deste recipient (todos os device_ids)
+                        store.deleteAllSessions(recipient_key)
+                        cleared_sessions.append(f"{rid} (todos devices, {source})")
+                        logger.debug(f"{self._log_prefix} Todas as sessões removidas para recipient {rid} ({source})")
+                    except Exception as e:
+                        logger.debug(f"{self._log_prefix} Erro ao remover todas as sessões de {rid}: {e}")
+                        # Tenta remover sessão específica como fallback
+                        try:
+                            store.deleteSession(recipient_key, did)
+                            cleared_sessions.append(f"{rid}:{did} ({source}, fallback)")
+                            logger.debug(f"{self._log_prefix} Sessão específica removida: {rid}:{did} ({source}, fallback)")
+                        except Exception as e2:
+                            logger.debug(f"{self._log_prefix} Sessão {rid}:{did} não encontrada: {e2}")
+
+            if cleared_sessions:
+                logger.info(f"{self._log_prefix} Sessões removidas: {', '.join(cleared_sessions)}")
+            else:
+                logger.warning(f"{self._log_prefix} Nenhuma sessão encontrada para remover")
+
+            # Limpar cache de sessão no layer para todos os IDs possíveis
+            # Limpa todos os caches que começam com o recipient_id (para cobrir todos os device_ids)
+            if hasattr(self.send_layer, 'sessionCiphers'):
+                cleared_caches = []
+                for rid, did, source in ids_to_clear:
+                    # Limpa cache específico do device_id fornecido
+                    key = f"{rid}-{did}"
+                    if key in self.send_layer.sessionCiphers:
+                        del self.send_layer.sessionCiphers[key]
+                        cleared_caches.append(f"{key} ({source})")
+                        logger.debug(f"{self._log_prefix} Cache de sessão limpo: {key} ({source})")
+                    
+                    # Limpa todos os caches que começam com este recipient_id (para outros device_ids)
+                    keys_to_remove = [k for k in self.send_layer.sessionCiphers.keys() if k.startswith(f"{rid}-")]
+                    for key_to_remove in keys_to_remove:
+                        if key_to_remove != key:  # Já foi removido acima
+                            del self.send_layer.sessionCiphers[key_to_remove]
+                            cleared_caches.append(f"{key_to_remove} (outro device, {source})")
+                            logger.debug(f"{self._log_prefix} Cache adicional limpo: {key_to_remove} ({source})")
+                
+                if cleared_caches:
+                    logger.debug(f"{self._log_prefix} Caches limpos: {', '.join(cleared_caches)}")
+                else:
+                    logger.debug(f"{self._log_prefix} Nenhum cache encontrado para limpar")
+
+            # Opcionalmente enviar mensagem de teste
+            if send_test_message:
+                try:
+                    logger.debug(f"{self._log_prefix} Enviando mensagem de teste para {contact_jid}")
+                    logger.info(f"{self._log_prefix} 💬 Na próxima mensagem enviada para {contact_jid}, uma nova sessão será estabelecida")
+                except Exception as e:
+                    logger.warning(f"{self._log_prefix} Erro ao enviar mensagem de teste: {e}")
+
+            logger.info(f"{self._log_prefix} ✅ Troca de chaves forçada com sucesso para {contact_jid}")
+            return True
+
+        except Exception as e:
+            logger.error(f"{self._log_prefix} ❌ Erro ao forçar troca de chaves com {contact_jid}: {e}", exc_info=True)
+            return False
+
+    def clear_all_sessions(self) -> bool:
+        """
+        Limpa todas as sessões criptográficas da conta.
+        
+        Returns:
+            bool: True se conseguiu limpar, False em caso de erro
+        """
+        try:
+            store = self.axolotl_store
+            if not store:
+                logger.error(f"{self._log_prefix} ❌ AxolotlStore não disponível")
+                return False
+            
+            # Obtém todos os recipients que têm sessões
+            all_accounts = store.getAllAccounts(self.account_id)
+            cleared_count = 0
+            
+            for recipient in all_accounts:
+                try:
+                    store.deleteAllSessions(recipient)
+                    cleared_count += 1
+                except Exception as e:
+                    logger.warning(f"{self._log_prefix} Erro ao limpar sessões de {recipient}: {e}")
+            
+            logger.info(f"{self._log_prefix} ✅ {cleared_count} sessões limpas")
+            return True
+            
+        except Exception as e:
+            logger.error(f"{self._log_prefix} ❌ Erro ao limpar todas as sessões: {e}", exc_info=True)
+            return False
+    
+    def get_encryption_stats(self) -> Dict[str, Any]:
+        """
+        Retorna estatísticas sobre o estado da criptografia da conta.
+        
+        Returns:
+            dict com informações sobre prekeys, sessões, etc.
+        """
+        try:
+            manager = self.axolotl_manager
+            store = self.axolotl_store
+            
+            if not manager or not store:
+                return {"error": "Manager ou Store não disponível"}
+            
+            stats = {
+                "prekeys_count": 0,
+                "signed_prekeys_count": 0,
+                "sessions_count": 0,
+                "registration_id": None,
+                "has_identity": False
+            }
+            
+            try:
+                prekeys = store.loadPreKeys()
+                stats["prekeys_count"] = len(prekeys) if prekeys else 0
+            except Exception as e:
+                logger.debug(f"{self._log_prefix} Erro ao contar prekeys: {e}")
+            
+            try:
+                signed_prekeys = store.loadSignedPreKeys()
+                stats["signed_prekeys_count"] = len(signed_prekeys) if signed_prekeys else 0
+            except Exception as e:
+                logger.debug(f"{self._log_prefix} Erro ao contar signed prekeys: {e}")
+            
+            try:
+                all_sessions = store.getAllSessions()
+                stats["sessions_count"] = len(all_sessions) if all_sessions else 0
+            except Exception as e:
+                logger.debug(f"{self._log_prefix} Erro ao contar sessões: {e}")
+            
+            try:
+                if hasattr(manager, 'registration_id'):
+                    stats["registration_id"] = manager.registration_id
+            except Exception as e:
+                logger.debug(f"{self._log_prefix} Erro ao obter registration_id: {e}")
+            
+            try:
+                identity = store.getIdentityKeyPair()
+                stats["has_identity"] = identity is not None
+            except Exception as e:
+                logger.debug(f"{self._log_prefix} Erro ao verificar identidade: {e}")
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"{self._log_prefix} ❌ Erro ao obter estatísticas de criptografia: {e}", exc_info=True)
+            return {"error": str(e)}
 
     def _load_proxy_from_db(self) -> bool:
         """
@@ -3016,7 +3345,7 @@ class ZowsupClient:
         else:
             raise ZowsupError(-1, "SendLayer não disponível")
 
-    def initialize(self, name: Optional[str] = None) -> CommandResponse:
+    def initialize(self, name: Optional[str] = None,force_initialize: bool = False) -> CommandResponse:
         """
         Inicializa a conta (para o primeiro login).
 
@@ -3038,9 +3367,9 @@ class ZowsupClient:
         from zowsuplib.app.db import is_account_initialized
 
         # Verifica se a conta já foi inicializada
-        # if is_account_initialized(self.bot.botId):
-        #     logger.info(f"Conta {self.bot.botId} já foi inicializada anteriormente. Pulando inicialização.")
-        #     return CommandResponse(data={"message": "Conta já inicializada", "skipped": True})
+        if is_account_initialized(self.bot.botId) and not force_initialize:
+            logger.info(f"Conta {self.bot.botId} já foi inicializada anteriormente. Pulando inicialização.")
+            return CommandResponse(data={"message": "Conta já inicializada", "skipped": True})
 
         self._bind_sysvar_context()
 

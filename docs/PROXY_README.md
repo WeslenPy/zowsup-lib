@@ -266,6 +266,16 @@ Remove configuração de proxy do banco de dados e instância.
 
 **Retorno:** `True` se removido com sucesso
 
+### `force_key_exchange(contact_jid, send_test_message=False) -> bool`
+
+Força uma nova troca de chaves criptográficas com um contato específico.
+
+**Parâmetros:**
+- `contact_jid`: JID do contato (ex: "5511999999999@s.whatsapp.net")
+- `send_test_message`: Se True, tenta enviar uma mensagem de teste
+
+**Retorno:** `True` se conseguiu forçar a troca, `False` em caso de erro
+
 ### Carregamento Automático
 
 O proxy é carregado automaticamente na inicialização do `ZowsupClient` se existir configuração salva no banco de dados.
