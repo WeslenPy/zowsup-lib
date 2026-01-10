@@ -17,6 +17,7 @@ import threading,logging,uuid,base64,os
 from zowsuplib.common.utils import Utils
 from zowsuplib.app.yowbot_values import YowBotType
 from zowsuplib.settings.conf import settings
+import threading
 
 from loguru import logger
 try:
@@ -382,33 +383,32 @@ class YowNoiseLayer(YowLayer):
         Returns:
             bool: True se a atualização foi bem-sucedida, False caso contrário
         """
-        import threading
-        thread_id = threading.current_thread().ident
-        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+        try: 
+            thread_id = threading.current_thread().ident
+            account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+            
+            if new_rs is None:
+                logger.warning(f"[HANDSHAKE-DEBUG] Tentativa de atualizar server_static_public com None | account={account_id}")
+                return False
+            
+            # Verifica se realmente mudou
+            # Compara os dados das chaves (bytes)
+            old_rs_data = self._rs.data if self._rs is not None and hasattr(self._rs, 'data') else None
+            new_rs_data = new_rs.data if hasattr(new_rs, 'data') else None
+            
+            if old_rs_data is not None and new_rs_data is not None and old_rs_data == new_rs_data:
+                logger.debug(f"[HANDSHAKE-DEBUG] server_static_public não mudou, ignorando atualização | account={account_id}")
+                return True
+            
+            old_rs_str = f"{old_rs_data.hex()[:16]}..." if old_rs_data else "None"
+            new_rs_str = f"{new_rs_data.hex()[:16]}..." if new_rs_data else "None"
+            
+            logger.info(
+                f"[HANDSHAKE-DEBUG] Atualizando server_static_public | "
+                f"account={account_id} thread_id={thread_id} "
+                f"old_rs={old_rs_str} new_rs={new_rs_str}"
+            )
         
-        if new_rs is None:
-            logger.warning(f"[HANDSHAKE-DEBUG] Tentativa de atualizar server_static_public com None | account={account_id}")
-            return False
-        
-        # Verifica se realmente mudou
-        # Compara os dados das chaves (bytes)
-        old_rs_data = self._rs.data if self._rs is not None and hasattr(self._rs, 'data') else None
-        new_rs_data = new_rs.data if hasattr(new_rs, 'data') else None
-        
-        if old_rs_data is not None and new_rs_data is not None and old_rs_data == new_rs_data:
-            logger.debug(f"[HANDSHAKE-DEBUG] server_static_public não mudou, ignorando atualização | account={account_id}")
-            return True
-        
-        old_rs_str = f"{old_rs_data.hex()[:16]}..." if old_rs_data else "None"
-        new_rs_str = f"{new_rs_data.hex()[:16]}..." if new_rs_data else "None"
-        
-        logger.info(
-            f"[HANDSHAKE-DEBUG] Atualizando server_static_public | "
-            f"account={account_id} thread_id={thread_id} "
-            f"old_rs={old_rs_str} new_rs={new_rs_str}"
-        )
-        
-        try:
             if self._profile is None:
                 logger.error(f"[HANDSHAKE-DEBUG] Profile não disponível para atualizar server_static_public | account={account_id}")
                 return False
@@ -432,8 +432,7 @@ class YowNoiseLayer(YowLayer):
         except Exception as e:
             logger.error(
                 f"[HANDSHAKE-DEBUG] Erro ao atualizar server_static_public | "
-                f"account={account_id} thread_id={thread_id} error={e}",
-                exc_info=True
+                f"account={account_id} thread_id={thread_id} error={e}"
             )
             return False
 

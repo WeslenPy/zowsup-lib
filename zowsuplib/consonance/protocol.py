@@ -35,7 +35,8 @@ class WANoiseProtocol(object):
         ['start', STATE_ERROR, STATE_HANDSHAKE]
     ]
 
-    def __init__(self, version_major, version_minor, protocol_state_callbacks=None, recovery_callback=None):
+    def __init__(self, version_major, version_minor, 
+                    protocol_state_callbacks=None, recovery_callback=None):
         """
         :param version_major:
         :type version_major: int
