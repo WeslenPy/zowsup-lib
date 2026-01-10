@@ -79,8 +79,9 @@ class BlockingQueueSegmentedStream(SegmentedStream):
         :return:
         :rtype: bytes
         """
-        if self._events_callback is not None:
-            self._events_callback(self.EVENT_WRITE)
+        # NÃO chamar callback aqui - isso causa recursão infinita!
+        # O callback é chamado em write_segment() quando dados são colocados na queue.
+        # Este método apenas retira dados da queue.
         
         data = self._writequeue.get(block=True)
         
