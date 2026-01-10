@@ -420,6 +420,86 @@ class ZowsupClient:
             logger.error(f"{self._log_prefix} Erro ao exportar conta para six_parts: {e}", exc_info=True)
             raise ZowsupError(-1, f"Erro ao exportar conta: {str(e)}")
 
+    def reimport(self, *, env: Optional[str] = None) -> str:
+        """
+        Reimporta a conta atual: exporta para six_parts, deleta completamente e reimporta.
+        
+        Este método:
+        1. Exporta a conta atual para o formato six_parts
+        2. Deleta a conta completamente do sistema (sem deixar nenhum vínculo)
+        3. Reimporta a conta usando os dados exportados
+        
+        Isso é útil para:
+        - Limpar completamente uma conta e recriá-la do zero
+        - Resolver problemas de corrupção de dados
+        - Garantir que não há vínculos residuais no banco de dados
+        
+        Args:
+            env: Ambiente a ser usado na reimportação (default: "android")
+        
+        Returns:
+            O account_id (phone) da conta reimportada
+        
+        Raises:
+            ZowsupError: Se não for possível exportar, deletar ou reimportar a conta
+        
+        Example:
+            client = ZowsupClient(account_id="5511999999999")
+            account_id = client.reimport()
+            print(f"Conta {account_id} reimportada com sucesso")
+        """
+        logger.info(f"{self._log_prefix} Iniciando reimportação da conta {self.account_id}...")
+        
+        try:
+
+            if env is None:
+                env = self.account_env
+            if env is None:
+                env = self.config.default_env
+
+
+            # 1. Exporta a conta para six_parts
+            logger.info(f"{self._log_prefix} Exportando conta {self.account_id} para formato six_parts...")
+            six_parts_data = self.export_to_six_parts()
+            logger.info(f"{self._log_prefix} Conta {self.account_id} exportada com sucesso")
+            
+            # 2. Desconecta a conta se estiver conectada
+            try:
+                if self.is_connected():
+                    logger.info(f"{self._log_prefix} Desconectando conta {self.account_id} antes da reimportação...")
+                    self.disconnect()
+            except Exception as e:
+                logger.warning(f"{self._log_prefix} Erro ao desconectar conta {self.account_id}: {e}, continuando...")
+            
+            # 3. Deleta a conta completamente (sem deixar nenhum vínculo)
+            logger.info(f"{self._log_prefix} Deletando conta {self.account_id} completamente...")
+            deleted = ZowsupClient.delete_account(self.account_id, remove_files=True)
+            if not deleted:
+                raise ZowsupError(-1, f"Não foi possível deletar a conta {self.account_id}")
+            logger.info(f"{self._log_prefix} Conta {self.account_id} deletada com sucesso")
+            
+            # 4. Reimporta a conta usando os dados exportados
+            logger.info(f"{self._log_prefix} Reimportando conta {self.account_id} usando dados exportados...")
+            imported_account_id = ZowsupClient.import_account_from_six_parts(
+                six_parts_data=six_parts_data,
+                env=env
+            )
+            
+            if imported_account_id != self.account_id:
+                logger.warning(
+                    f"{self._log_prefix} Account ID mudou durante reimportação: "
+                    f"original={self.account_id}, novo={imported_account_id}"
+                )
+            
+            logger.info(f"{self._log_prefix} Conta {imported_account_id} reimportada com sucesso")
+            return imported_account_id
+            
+        except ZowsupError:
+            raise
+        except Exception as e:
+            logger.error(f"{self._log_prefix} Erro ao reimportar conta {self.account_id}: {e}", exc_info=True)
+            raise ZowsupError(-1, f"Erro ao reimportar conta: {str(e)}")
+
     @staticmethod
     def reset_account(account_id: str) -> bool:
         """
@@ -574,7 +654,7 @@ class ZowsupClient:
                 db_session.query(models.Poll).filter_by(account_id=account.id).delete()
                 
                 # Remove sent messages (opcional - você pode querer manter histórico)
-                # db_session.query(models.SentMessage).filter_by(account_id=account.id).delete()
+                db_session.query(models.SentMessage).filter_by(account_id=account.id).delete()
                 
                 # Reseta os status da conta
                 account.is_logged_in = False
@@ -1117,11 +1197,11 @@ class ZowsupClient:
         # Cria config isolada por conta (sem AppConfig)
         self.config = self._build_account_config()
         # Resolve env: prioridade para argumento, depois env salvo na Account, depois default
-        account_env = None
+        self.account_env = None
         if env is None:
             try:
                 with SessionLocal() as _db:
-                    account_env = (
+                    self.account_env = (
                         _db.query(models.Account.env)
                         .filter_by(phone=account_id)
                         .scalar()
@@ -1129,7 +1209,7 @@ class ZowsupClient:
             except Exception as exc:
                 logger.warning(f"{self._log_prefix} Não foi possível ler env da conta no DB: {exc}")
 
-        device_env_name = env or account_env or self.config.default_env
+        device_env_name = env or self.account_env or self.config.default_env
         device_env = DeviceEnv(device_env_name, random=True)
 
         if proxy and proxy.upper() != "DIRECT":
