@@ -149,6 +149,11 @@ class SendLayer(YowInterfaceLayer):
         self._login_failed = False  # Flag para diferenciar falha de login x sucesso
         self._login_in_progress = False  # Flag para indicar que login está em andamento
         self._pending_notifications_count = 0  # Contador de notificações pendentes durante login
+        
+        # Sistema de filtragem de notificações
+        self._notification_filter_enabled = True  # Ativa/desativa filtragem
+        self._important_notification_types = self._get_default_important_notifications()
+        self._ignored_notification_types = self._get_default_ignored_notifications()
         self._login_timeout = 20  # Timeout padrão para login (segundos)
         self._max_login_timeout = 120  # Timeout máximo para login com notificações pendentes
         # Threads auxiliares: usar timers para reagendar ações sem bloquear a thread do stack
@@ -405,6 +410,12 @@ class SendLayer(YowInterfaceLayer):
 
         if not self._message_notifications_enabled:
             logger.debug("Notificação de mensagem ignorada (desativada)")
+            return
+
+        # Sistema de filtragem de notificações
+        if not self._is_notification_important(entity):
+            entity_type = type(entity).__name__
+            logger.debug(f"[{self.bot.botId}] Notificação ignorada pelo filtro: {entity_type}")
             return
 
         if isinstance(entity,MexUpdateNotificationProtocolEntity):            
@@ -918,6 +929,133 @@ class SendLayer(YowInterfaceLayer):
         """Reativa a entrega de callbacks de mensagem."""
         self._message_notifications_enabled = True
         logger.info("Notificações de mensagem reativadas no SendLayer")
+    
+    def _get_default_important_notifications(self):
+        """
+        Retorna conjunto de tipos de notificações importantes por padrão.
+        Essas notificações sempre serão processadas, mesmo com filtro ativo.
+        """
+        return {
+            'AccountSyncNotificationProtocolEntity',
+            'LinkCodeCompanionRegNotificationProtocolEntity',
+            'CreateGroupsNotificationProtocolEntity',
+            'AddGroupsNotificationProtocolEntity',
+            'RemoveGroupsNotificationProtocolEntity',
+            'SetPictureNotificationProtocolEntity',
+            'DeletePictureNotificationProtocolEntity',
+            'BusinessNameUpdateNotificationProtocolEntity',
+            'BusinessRemoveNotificationProtocolEntity',
+            'DisapperingModeNotificationProtocolEntity',
+            'DeviceLogoutNotificationProtocolEntity',
+            'StatusNotificationProtocolEntity',  # Status pode ser importante para alguns bots
+        }
+    
+    def _get_default_ignored_notifications(self):
+        """
+        Retorna conjunto de tipos de notificações que podem ser ignoradas por padrão.
+        Essas notificações serão descartadas se o filtro estiver ativo.
+        """
+        return {
+            'MexUpdateNotificationProtocolEntity',  # Atualizações mex (geralmente não importantes)
+            'WaOldCodeNotificationProtocolEntity',  # Código antigo de registro
+        }
+    
+    def _is_notification_important(self, entity) -> bool:
+        """
+        Verifica se uma notificação é importante e deve ser processada.
+        
+        Args:
+            entity: Entidade de notificação
+            
+        Returns:
+            True se a notificação deve ser processada, False caso contrário
+        """
+        if not self._notification_filter_enabled:
+            return True  # Se filtro desativado, processa tudo
+        
+        # Obtém o nome da classe da entidade
+        entity_type = type(entity).__name__
+        
+        # Verifica se está na lista de importantes
+        if entity_type in self._important_notification_types:
+            return True
+        
+        # Verifica se está na lista de ignoradas
+        if entity_type in self._ignored_notification_types:
+            return False
+        
+        # Por padrão, se não está em nenhuma lista, processa (comportamento conservador)
+        # Isso permite que novas notificações sejam processadas até serem explicitamente ignoradas
+        return True
+    
+    def enable_notification_filter(self):
+        """
+        Ativa o sistema de filtragem de notificações.
+        Apenas notificações importantes serão processadas.
+        """
+        self._notification_filter_enabled = True
+        logger.info(f"[{self.bot.botId}] Filtro de notificações ativado")
+    
+    def disable_notification_filter(self):
+        """
+        Desativa o sistema de filtragem de notificações.
+        Todas as notificações serão processadas.
+        """
+        self._notification_filter_enabled = False
+        logger.info(f"[{self.bot.botId}] Filtro de notificações desativado")
+    
+    def add_important_notification_type(self, notification_type: str):
+        """
+        Adiciona um tipo de notificação à lista de importantes.
+        
+        Args:
+            notification_type: Nome da classe da notificação (ex: 'MexUpdateNotificationProtocolEntity')
+        """
+        self._important_notification_types.add(notification_type)
+        logger.debug(f"[{self.bot.botId}] Tipo de notificação adicionado como importante: {notification_type}")
+    
+    def remove_important_notification_type(self, notification_type: str):
+        """
+        Remove um tipo de notificação da lista de importantes.
+        
+        Args:
+            notification_type: Nome da classe da notificação
+        """
+        self._important_notification_types.discard(notification_type)
+        logger.debug(f"[{self.bot.botId}] Tipo de notificação removido de importantes: {notification_type}")
+    
+    def add_ignored_notification_type(self, notification_type: str):
+        """
+        Adiciona um tipo de notificação à lista de ignoradas.
+        
+        Args:
+            notification_type: Nome da classe da notificação
+        """
+        self._ignored_notification_types.add(notification_type)
+        logger.debug(f"[{self.bot.botId}] Tipo de notificação adicionado como ignorado: {notification_type}")
+    
+    def remove_ignored_notification_type(self, notification_type: str):
+        """
+        Remove um tipo de notificação da lista de ignoradas.
+        
+        Args:
+            notification_type: Nome da classe da notificação
+        """
+        self._ignored_notification_types.discard(notification_type)
+        logger.debug(f"[{self.bot.botId}] Tipo de notificação removido de ignorados: {notification_type}")
+    
+    def get_notification_filter_status(self) -> dict:
+        """
+        Retorna status atual do filtro de notificações.
+        
+        Returns:
+            Dict com informações sobre o filtro
+        """
+        return {
+            'enabled': self._notification_filter_enabled,
+            'important_types': sorted(self._important_notification_types),
+            'ignored_types': sorted(self._ignored_notification_types),
+        }
     
     def messageCallback(self,msg):
         #if msg.HasField("participant"):

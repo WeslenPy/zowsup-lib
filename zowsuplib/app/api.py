@@ -1336,6 +1336,74 @@ class ZowsupClient:
         """
         self.send_layer.enableMessageNotifications()
         logger.info(f"{self._log_prefix} Notificações de mensagem reativadas")
+    
+    def enable_notification_filter(self) -> None:
+        """
+        Ativa o sistema de filtragem de notificações.
+        Apenas notificações importantes serão processadas.
+        """
+        self.send_layer.enable_notification_filter()
+        logger.info(f"{self._log_prefix} Filtro de notificações ativado")
+    
+    def disable_notification_filter(self) -> None:
+        """
+        Desativa o sistema de filtragem de notificações.
+        Todas as notificações serão processadas.
+        """
+        self.send_layer.disable_notification_filter()
+        logger.info(f"{self._log_prefix} Filtro de notificações desativado")
+    
+    def add_important_notification_type(self, notification_type: str) -> None:
+        """
+        Adiciona um tipo de notificação à lista de importantes.
+        
+        Args:
+            notification_type: Nome da classe da notificação (ex: 'MexUpdateNotificationProtocolEntity')
+        """
+        self.send_layer.add_important_notification_type(notification_type)
+        logger.debug(f"{self._log_prefix} Tipo de notificação adicionado como importante: {notification_type}")
+    
+    def remove_important_notification_type(self, notification_type: str) -> None:
+        """
+        Remove um tipo de notificação da lista de importantes.
+        
+        Args:
+            notification_type: Nome da classe da notificação
+        """
+        self.send_layer.remove_important_notification_type(notification_type)
+        logger.debug(f"{self._log_prefix} Tipo de notificação removido de importantes: {notification_type}")
+    
+    def add_ignored_notification_type(self, notification_type: str) -> None:
+        """
+        Adiciona um tipo de notificação à lista de ignoradas.
+        
+        Args:
+            notification_type: Nome da classe da notificação
+        """
+        self.send_layer.add_ignored_notification_type(notification_type)
+        logger.debug(f"{self._log_prefix} Tipo de notificação adicionado como ignorado: {notification_type}")
+    
+    def remove_ignored_notification_type(self, notification_type: str) -> None:
+        """
+        Remove um tipo de notificação da lista de ignoradas.
+        
+        Args:
+            notification_type: Nome da classe da notificação
+        """
+        self.send_layer.remove_ignored_notification_type(notification_type)
+        logger.debug(f"{self._log_prefix} Tipo de notificação removido de ignorados: {notification_type}")
+    
+    def get_notification_filter_status(self) -> dict:
+        """
+        Retorna status atual do filtro de notificações.
+        
+        Returns:
+            Dict com informações sobre o filtro:
+            - enabled: Se o filtro está ativo
+            - important_types: Lista de tipos importantes
+            - ignored_types: Lista de tipos ignorados
+        """
+        return self.send_layer.get_notification_filter_status()
 
     def set_proxy(self, proxy_string: str, test_url: str = "https://www.google.com") -> bool:
         """

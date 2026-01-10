@@ -62,6 +62,9 @@ class GroupCipher:
         except (InvalidKeyException, InvalidKeyIdException) as e:
             raise InvalidMessageException(e)
 
+        except ValueError as e:
+            raise InvalidMessageException(e)
+
     def getSenderKey(self, senderKeyState, iteration):
         senderChainKey = senderKeyState.getSenderChainKey()
 
