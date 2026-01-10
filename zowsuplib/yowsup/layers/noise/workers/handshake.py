@@ -62,9 +62,17 @@ class WANoiseProtocolHandshakeWorker(threading.Thread):
             
         except HandshakeFailedException as e:
             error = e
-            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] HandshakeFailedException capturada | thread_id={thread_id} error={e} error_type={type(e).__name__}")
-            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] HandshakeFailedException traceback:\n{traceback.format_exc()}")
-            logger.error(f"[handshake {self._attempt_id}] handshake failed: {e}")
+            error_msg = str(e)
+            is_cancelled = "cancelled" in error_msg.lower() or "Stream cancelled" in error_msg
+            
+            if is_cancelled:
+                # Stream foi cancelado (provavelmente por desconexão) - não é um erro crítico
+                logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] Handshake cancelled | thread_id={thread_id} error={error_msg}")
+            else:
+                # Erro real durante handshake
+                logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] HandshakeFailedException capturada | thread_id={thread_id} error={e} error_type={type(e).__name__}")
+                logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] HandshakeFailedException traceback:\n{traceback.format_exc()}")
+                logger.error(f"[handshake {self._attempt_id}] handshake failed: {e}")
         except Exception as e:
             error = e
             logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] Exception inesperada capturada | thread_id={thread_id} error={e} error_type={type(e).__name__}")

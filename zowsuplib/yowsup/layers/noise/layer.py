@@ -50,7 +50,28 @@ class YowNoiseLayer(YowLayer):
 
     @EventCallback(YowNetworkLayer.EVENT_STATE_DISCONNECTED)
     def on_disconnected(self, event):
+        import threading
+        from loguru import logger
+        
+        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+        thread_id = threading.current_thread().ident
+        
+        logger.info(f"[HANDSHAKE-DEBUG] on_disconnected chamado | account={account_id} thread_id={thread_id}")
+        
+        # Resetar protocolo
         self._wa_noiseprotocol.reset()
+        
+        # Cancelar stream para desbloquear handshake worker bloqueado
+        if self._stream:
+            logger.debug(f"[HANDSHAKE-DEBUG] Cancelando stream | account={account_id}")
+            self._stream.cancel()
+        
+        # Limpar referência do worker (a thread vai terminar naturalmente após detectar cancelamento)
+        if self._handshake_worker is not None:
+            worker_thread_id = self._handshake_worker.ident if hasattr(self._handshake_worker, 'ident') else 'N/A'
+            logger.debug(f"[HANDSHAKE-DEBUG] Handshake worker ativo, será finalizado | account={account_id} worker_thread_id={worker_thread_id}")
+            # Não fazer join() aqui para não bloquear - a thread vai terminar após detectar cancelamento
+            self._handshake_worker = None
 
     @EventCallback(YowAuthenticationProtocolLayer.EVENT_AUTH)
     def on_auth(self, event):        
@@ -269,21 +290,46 @@ class YowNoiseLayer(YowLayer):
         thread_id = threading.current_thread().ident
         account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
         
+        # Limpar referência do worker quando terminar
+        self._handshake_worker = None
+        
         if e is not None:
-            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] handshake finished with error | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} error={e} error_type={type(e).__name__}")
-            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] error details: {str(e)}")
-            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] protocol state: {self._wa_noiseprotocol.state}")
-            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] stream state: {id(self._stream)}")
-            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] full traceback:\n{traceback.format_exc()}")
-            self._maybe_break("NOISE_BREAK_ON_HANDSHAKE_ERROR")
-            self.emitEvent(YowLayerEvent(self.EVENT_HANDSHAKE_FAILED, reason=e))
-            data=WriteEncoder(TokenDictionary()).protocolTreeNodeToBytes(
-                ProtocolTreeNode("failure", {"reason": str(e)})
-            )
-            self.toUpper(data)            
-            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] An error occurred during handshake, try login again. | account={account_id}")
+            error_msg = str(e)
+            is_cancelled = "cancelled" in error_msg.lower() or "Stream cancelled" in error_msg
+            
+            if is_cancelled:
+                # Handshake foi cancelado (provavelmente por desconexão) - não é um erro crítico
+                logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] handshake cancelled | account={account_id} thread_id={thread_id} error={error_msg}")
+            else:
+                # Erro real durante handshake
+                logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] handshake finished with error | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} error={e} error_type={type(e).__name__}")
+                logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] error details: {str(e)}")
+                logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] protocol state: {self._wa_noiseprotocol.state}")
+                logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] stream state: {id(self._stream)}")
+                logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] full traceback:\n{traceback.format_exc()}")
+                self._maybe_break("NOISE_BREAK_ON_HANDSHAKE_ERROR")
+                self.emitEvent(YowLayerEvent(self.EVENT_HANDSHAKE_FAILED, reason=e))
+                data=WriteEncoder(TokenDictionary()).protocolTreeNodeToBytes(
+                    ProtocolTreeNode("failure", {"reason": str(e)})
+                )
+                self.toUpper(data)            
+                logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] An error occurred during handshake, try login again. | account={account_id}")
         else:
             logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] handshake finished successfully | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} state={self._wa_noiseprotocol.state}")
+            
+            # Fallback: Salvar server_static_public se disponível e ainda não foi salvo
+            # Isso garante que a chave seja salva mesmo se _on_protocol_state_changed não for chamado
+            if self._wa_noiseprotocol.rs is not None:
+                # Verificar se já foi salvo (comparando com _rs local)
+                needs_save = True
+                if self._rs is not None and hasattr(self._rs, 'data') and hasattr(self._wa_noiseprotocol.rs, 'data'):
+                    if self._rs.data == self._wa_noiseprotocol.rs.data:
+                        needs_save = False
+                        logger.debug(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] server_static_public já está salvo | account={account_id}")
+                
+                if needs_save:
+                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] Fallback: Salvando server_static_public em on_handshake_finished | account={account_id} state={self._wa_noiseprotocol.state}")
+                    self._update_server_static_public(self._wa_noiseprotocol.rs)
 
     def _in_handshake(self):
         """
@@ -302,9 +348,14 @@ class YowNoiseLayer(YowLayer):
         if state == WANoiseProtocol.STATE_TRANSPORT:
             logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] entering TRANSPORT state | account={account_id}")
             
-            # Atualiza server_static_public se mudou
+            # Atualiza server_static_public se mudou (inclui nova chave estática recebida durante fallback XX)
+            # Este é o caminho PRINCIPAL para salvar a chave estática
             if self._wa_noiseprotocol.rs is not None:
+                new_rs_hex = self._wa_noiseprotocol.rs.data.hex()[:32] if hasattr(self._wa_noiseprotocol.rs, 'data') and self._wa_noiseprotocol.rs.data else "N/A"
+                logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] [PRINCIPAL] Nova chave estática remota disponível, salvando no profile via _on_protocol_state_changed | account={account_id} rs_preview={new_rs_hex}...")
                 self._update_server_static_public(self._wa_noiseprotocol.rs)
+            else:
+                logger.warning(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] Entrando em TRANSPORT mas rs é None | account={account_id}")
             
             self._flush_incoming_buffer()
             
@@ -338,12 +389,16 @@ class YowNoiseLayer(YowLayer):
             return False
         
         # Verifica se realmente mudou
-        if self._rs is not None and self._rs.data == new_rs.data:
+        # Compara os dados das chaves (bytes)
+        old_rs_data = self._rs.data if self._rs is not None and hasattr(self._rs, 'data') else None
+        new_rs_data = new_rs.data if hasattr(new_rs, 'data') else None
+        
+        if old_rs_data is not None and new_rs_data is not None and old_rs_data == new_rs_data:
             logger.debug(f"[HANDSHAKE-DEBUG] server_static_public não mudou, ignorando atualização | account={account_id}")
             return True
         
-        old_rs_str = f"{self._rs.data.hex()[:16]}..." if self._rs else "None"
-        new_rs_str = f"{new_rs.data.hex()[:16]}..." if new_rs else "None"
+        old_rs_str = f"{old_rs_data.hex()[:16]}..." if old_rs_data else "None"
+        new_rs_str = f"{new_rs_data.hex()[:16]}..." if new_rs_data else "None"
         
         logger.info(
             f"[HANDSHAKE-DEBUG] Atualizando server_static_public | "
@@ -363,9 +418,12 @@ class YowNoiseLayer(YowLayer):
             # Atualiza a referência local
             self._rs = new_rs
             
+            # Log detalhado da nova chave salva
+            saved_rs_hex = new_rs_data.hex() if new_rs_data else "N/A"
             logger.info(
                 f"[HANDSHAKE-DEBUG] server_static_public atualizado com sucesso | "
-                f"account={account_id} thread_id={thread_id}"
+                f"account={account_id} thread_id={thread_id} "
+                f"new_rs_full_hex={saved_rs_hex[:64]}... (total {len(saved_rs_hex)//2} bytes)"
             )
             return True
             

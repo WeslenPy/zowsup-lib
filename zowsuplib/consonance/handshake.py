@@ -121,8 +121,13 @@ class WAHandshake(object):
                     logger.info(f"[HANDSHAKE-DEBUG] WAHandshake.perform() _start_handshake_ik retornou com sucesso | thread_id={thread_id}")
                 except NewRemoteStaticException as ex:
                     logger.warning(f"[HANDSHAKE-DEBUG] WAHandshake.perform() NewRemoteStaticException, fazendo fallback para XX | thread_id={thread_id} exception={ex}")
+                    logger.info(f"[HANDSHAKE-DEBUG] WAHandshake.perform() Nova chave estática remota detectada no server_hello, será salva após handshake | thread_id={thread_id}")
                     cipherstatepair = self._switch_handshake_xxfallback(stream, dissononce_s, client_payload, ex.server_hello)
                     logger.info(f"[HANDSHAKE-DEBUG] WAHandshake.perform() _switch_handshake_xxfallback retornou com sucesso | thread_id={thread_id}")
+                    # A nova chave estática remota (rs) estará disponível em self._handshakestate.rs após o fallback
+                    if self._handshakestate.rs:
+                        new_rs_hex = self._handshakestate.rs.data.hex()[:32] if self._handshakestate.rs.data else "N/A"
+                        logger.info(f"[HANDSHAKE-DEBUG] WAHandshake.perform() Nova chave estática remota obtida: {new_rs_hex}... | thread_id={thread_id}")
             else:
                 logger.info(f"[HANDSHAKE-DEBUG] WAHandshake.perform() usando handshake XX (rs ausente) | thread_id={thread_id}")
                 cipherstatepair = self._start_handshake_xx(stream, client_payload, dissononce_s)
