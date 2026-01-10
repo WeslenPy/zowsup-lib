@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.exc import PendingRollbackError, InvalidRequestError
 
 from zowsuplib.axolotl.identitykey import IdentityKey
@@ -26,14 +26,26 @@ from loguru import logger
 def _get_or_create_account(db: Session, phone: str) -> models.Account:
     """
     Ensures there is an Account row for the given phone.
+    ✅ OTIMIZAÇÃO: Usa cache para reduzir queries.
     """
-    account = db.query(models.Account).filter_by(phone=phone).one_or_none()
-    if account is None:
+    from zowsuplib.app.db import _get_account_id_cached
+    
+    # ✅ OTIMIZAÇÃO: Usa cache para obter account_id
+    account_id = _get_account_id_cached(db, phone, create_if_missing=True)
+    
+    if account_id is None:
+        # Edge case: se create_if_missing=True mas ainda retornou None, cria manualmente
         account = models.Account(phone=phone)
         db.add(account)
-        db.commit()
+        db.flush()
         db.refresh(account)
+        from zowsuplib.app.db import _account_id_cache
+        _account_id_cache.set(phone, account.id)
         logger.info(f"Created new Account row for phone={phone} (id={account.id})")
+        return account
+    
+    # Busca o objeto Account completo pelo ID (mais eficiente que buscar por phone)
+    account = db.query(models.Account).filter_by(id=account_id).one()
     return account
 
 
@@ -898,41 +910,108 @@ class SqlAxolotlStore(AxolotlStore):
     def _ensure_session(self):
         """
         Garante que há uma sessão ativa. Cria uma nova se necessário.
+        Otimizado para não recriar sub-stores desnecessariamente.
         """
         if self._closed:
             raise RuntimeError("SqlAxolotlStore foi fechado. Não é possível reutilizar.")
         
-        # Verifica se precisa recriar sessão (None, fechada ou inativa)
-        needs_new_session = (
-            self._db is None or 
-            not hasattr(self._db, 'is_active') or 
-            not self._db.is_active
-        )
+        # Primeira inicialização: cria sessão e sub-stores
+        if self._db is None:
+            self._db = SessionLocal()
+            self._account = _get_or_create_account(self._db, self._username)
+            self._account_id = self._account.id
+            self._create_sub_stores()
+            return
         
-        if needs_new_session:
-            # Fecha sessão anterior se existir e estiver inativa
-            if self._db is not None:
-                try:
-                    self._db.close()
-                except Exception:
-                    pass
+        # Sessão existe: verifica se ainda está válida com query leve
+        try:
+            self._db.execute(text("SELECT 1"))
+            # Sessão válida: apenas atualiza referências se account mudou ou não foi carregado
+            if self._account_id is None or self._account is None:
+                self._account = _get_or_create_account(self._db, self._username)
+                self._account_id = self._account.id
+                # Atualiza sub-stores apenas se foram criados anteriormente
+                if hasattr(self, 'identityKeyStore') and self.identityKeyStore is not None:
+                    self._update_sub_stores_account()
+        except Exception:
+            # Sessão inválida: recria apenas sessão e account, atualiza sub-stores
+            old_account_id = self._account_id
+            try:
+                self._db.close()
+            except Exception:
+                pass
             
-            # Cria nova sessão
             self._db = SessionLocal()
             self._account = _get_or_create_account(self._db, self._username)
             self._account_id = self._account.id
             
-            # Recria sub-stores com nova sessão
-            self.identityKeyStore = SqlIdentityKeyStore(self._db, self._account)
-            self.preKeyStore = SqlPreKeyStore(self._db, self._account)
-            self.signedPreKeyStore = SqlSignedPreKeyStore(self._db, self._account)
-            self.sessionStore = SqlSessionStore(self._db, self._account)
-            self.senderKeyStore = SqlSenderKeyStore(self._db, self._account)
-            self.pollStore = SqlPollStore(self._db, self._account)
-            self.appStateStore = SqlAppStateStore(self._db, self._account)
-            self.contactStore = SqlContactStore(self._db, self._account)
-            self.broadcastStore = SqlBroadcastStore(self._db, self._account)
-            self.trustedContactStore = SqlTrustedContactStore(self._db, self._account)
+            # Atualiza apenas referências dos sub-stores (não recria objetos)
+            if old_account_id != self._account_id:
+                self._update_sub_stores_account()
+            else:
+                # Mesmo account: apenas atualiza referências de db
+                self._update_sub_stores_db()
+    
+    def _create_sub_stores(self):
+        """
+        Cria sub-stores uma única vez durante inicialização.
+        """
+        self.identityKeyStore = SqlIdentityKeyStore(self._db, self._account)
+        self.preKeyStore = SqlPreKeyStore(self._db, self._account)
+        self.signedPreKeyStore = SqlSignedPreKeyStore(self._db, self._account)
+        self.sessionStore = SqlSessionStore(self._db, self._account)
+        self.senderKeyStore = SqlSenderKeyStore(self._db, self._account)
+        self.pollStore = SqlPollStore(self._db, self._account)
+        self.appStateStore = SqlAppStateStore(self._db, self._account)
+        self.contactStore = SqlContactStore(self._db, self._account)
+        self.broadcastStore = SqlBroadcastStore(self._db, self._account)
+        self.trustedContactStore = SqlTrustedContactStore(self._db, self._account)
+    
+    def _update_sub_stores_account(self):
+        """
+        Atualiza referências de account e db nos sub-stores existentes.
+        Mais eficiente que recriar todos os objetos.
+        """
+        stores = [
+            self.identityKeyStore,
+            self.preKeyStore,
+            self.signedPreKeyStore,
+            self.sessionStore,
+            self.senderKeyStore,
+            self.pollStore,
+            self.appStateStore,
+            self.contactStore,
+            self.broadcastStore,
+            self.trustedContactStore,
+        ]
+        
+        for store in stores:
+            if store is not None:
+                if hasattr(store, 'account'):
+                    store.account = self._account
+                if hasattr(store, 'db'):
+                    store.db = self._db
+    
+    def _update_sub_stores_db(self):
+        """
+        Atualiza apenas a referência de db nos sub-stores (account não mudou).
+        """
+        stores = [
+            self.identityKeyStore,
+            self.preKeyStore,
+            self.signedPreKeyStore,
+            self.sessionStore,
+            self.senderKeyStore,
+            self.pollStore,
+            self.appStateStore,
+            self.contactStore,
+            self.broadcastStore,
+            self.trustedContactStore,
+        ]
+        
+        for store in stores:
+            if store is not None and hasattr(store, 'db'):
+                store.db = self._db
     
     def close(self):
         """
@@ -1020,109 +1099,142 @@ class SqlAxolotlStore(AxolotlStore):
 
     # PreKey store facade
     def loadPreKey(self, preKeyId):
+        self._ensure_session()
         return self.preKeyStore.loadPreKey(preKeyId)
 
     def loadPreKeys(self):
+        self._ensure_session()
         return self.preKeyStore.loadPendingPreKeys()
 
     def storePreKey(self, preKeyId, preKeyRecord):
+        self._ensure_session()
         self.preKeyStore.storePreKey(preKeyId, preKeyRecord)
 
     def containsPreKey(self, preKeyId):
+        self._ensure_session()
         return self.preKeyStore.containsPreKey(preKeyId)
 
     def removePreKey(self, preKeyId):
+        self._ensure_session()
         self.preKeyStore.removePreKey(preKeyId)
 
     def removeAllPreKeys(self):
+        self._ensure_session()
         self.preKeyStore.clear()
 
     # Session store facade
     def loadSession(self, account, deviceId):
+        self._ensure_session()
         return self.sessionStore.loadSession(account, deviceId)
 
     def getSubDeviceSessions(self, account):
+        self._ensure_session()
         return self.sessionStore.getSubDeviceSessions(account)
 
     def storeSession(self, account, deviceId, sessionRecord):
+        self._ensure_session()
         self.sessionStore.storeSession(account, deviceId, sessionRecord)
 
     def containsSession(self, account, deviceId):
+        self._ensure_session()
         return self.sessionStore.containsSession(account, deviceId)
 
     def deleteSession(self, account, deviceId):
+        self._ensure_session()
         self.sessionStore.deleteSession(account, deviceId)
 
     def deleteAllSessions(self, account):
+        self._ensure_session()
         self.sessionStore.deleteAllSessions(account)
 
     def getAllAccounts(self, account):
+        self._ensure_session()
         return self.sessionStore.getAllAccounts(account)
 
     # Signed prekey facade
     def loadSignedPreKey(self, signedPreKeyId):
+        self._ensure_session()
         return self.signedPreKeyStore.loadSignedPreKey(signedPreKeyId)
 
     def loadSignedPreKeys(self):
+        self._ensure_session()
         return self.signedPreKeyStore.loadSignedPreKeys()
 
     def storeSignedPreKey(self, signedPreKeyId, signedPreKeyRecord):
+        self._ensure_session()
         self.signedPreKeyStore.storeSignedPreKey(signedPreKeyId, signedPreKeyRecord)
 
     def containsSignedPreKey(self, signedPreKeyId):
+        self._ensure_session()
         return self.signedPreKeyStore.containsSignedPreKey(signedPreKeyId)
 
     def removeSignedPreKey(self, signedPreKeyId):
+        self._ensure_session()
         self.signedPreKeyStore.removeSignedPreKey(signedPreKeyId)
 
     # Sender key facade
     def loadSenderKey(self, senderKeyName):
+        self._ensure_session()
         return self.senderKeyStore.loadSenderKey(senderKeyName)
 
     def storeSenderKey(self, senderKeyName, senderKeyRecord):
+        self._ensure_session()
         self.senderKeyStore.storeSenderKey(senderKeyName, senderKeyRecord)
 
     # App state keys
     def addAppStateKeys(self, keys):
+        self._ensure_session()
         return self.appStateStore.addAppStateKeys(keys)
 
     def getOneAppStateKey(self):
+        self._ensure_session()
         return self.appStateStore.getOneAppStateKey()
 
     def getAppStateKey(self, key_id):
+        self._ensure_session()
         return self.appStateStore.getAppStateKey(key_id)
 
     def removeAppStateKey(self, key_id):
+        self._ensure_session()
         return self.appStateStore.deleteAppStateKey(key_id)
 
     # Contacts
     def addContact(self, jid):
+        self._ensure_session()
         return self.contactStore.addContact(jid, "")
 
     def removeContact(self, jid):
+        self._ensure_session()
         return self.contactStore.removeContact(jid)
 
     def getAllContact(self):
+        self._ensure_session()
         return self.contactStore.getAllContact()
 
     def findContact(self, jid):
+        self._ensure_session()
         return self.contactStore.findContact(jid)
 
     def isNewContact(self, jid):
+        self._ensure_session()
         return self.contactStore.isNewContact(jid)
 
     # Broadcasts
     def addBroadcast(self, jids, senderJid, name=None):
+        self._ensure_session()
         return self.broadcastStore.addBroadcast(jids, senderJid, name)
 
     def findParticipantsByBcid(self, bcid):
+        self._ensure_session()
         return self.broadcastStore.findParticipantsByBcid(bcid)
 
     # Trusted contacts
     def updateTrustedContact(self, jid, tctoken):
+        self._ensure_session()
         return self.trustedContactStore.updateTrustedContact(jid, tctoken)
 
     def getTcToken(self, jid):
+        self._ensure_session()
         return self.trustedContactStore.getTcToken(jid)
 
 

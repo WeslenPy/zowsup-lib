@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Generator, Optional
+from typing import Generator, Optional, Dict
+import threading
+import time
 
 from sqlalchemy import QueuePool, SingletonThreadPool, create_engine
 from sqlalchemy.engine.url import make_url
@@ -12,6 +14,108 @@ from zowsuplib.settings.conf import settings
 
 # Declarative base for all ORM models
 Base = declarative_base()
+
+
+# Cache thread-safe para account_id por phone
+class _AccountIdCache:
+    """
+    Cache thread-safe para mapear phone -> account_id.
+    Reduz queries repetidas ao banco de dados.
+    """
+    def __init__(self, ttl_seconds: int = 300):
+        """
+        Args:
+            ttl_seconds: Time-to-live do cache em segundos (padrão: 5 minutos)
+        """
+        self._cache: Dict[str, tuple[int, float]] = {}  # phone -> (account_id, timestamp)
+        self._lock = threading.RLock()
+        self._ttl = ttl_seconds
+    
+    def get(self, phone: str) -> Optional[int]:
+        """
+        Obtém account_id do cache se disponível e válido.
+        
+        Returns:
+            account_id ou None se não estiver no cache ou expirado
+        """
+        with self._lock:
+            if phone not in self._cache:
+                return None
+            
+            account_id, timestamp = self._cache[phone]
+            
+            # Verifica se expirou
+            if time.time() - timestamp > self._ttl:
+                del self._cache[phone]
+                return None
+            
+            return account_id
+    
+    def set(self, phone: str, account_id: int) -> None:
+        """
+        Armazena account_id no cache.
+        """
+        with self._lock:
+            self._cache[phone] = (account_id, time.time())
+    
+    def invalidate(self, phone: str) -> None:
+        """
+        Remove entrada do cache (útil quando account é atualizado).
+        """
+        with self._lock:
+            self._cache.pop(phone, None)
+    
+    def clear(self) -> None:
+        """
+        Limpa todo o cache.
+        """
+        with self._lock:
+            self._cache.clear()
+    
+    def get_many(self, phones: list[str]) -> Dict[str, Optional[int]]:
+        """
+        Obtém múltiplos account_ids do cache de uma vez.
+        
+        Returns:
+            Dict[phone, account_id] - None para phones não encontrados ou expirados
+        """
+        result = {}
+        now = time.time()
+        
+        with self._lock:
+            for phone in phones:
+                if phone not in self._cache:
+                    result[phone] = None
+                    continue
+                
+                account_id, timestamp = self._cache[phone]
+                
+                # Verifica se expirou
+                if now - timestamp > self._ttl:
+                    del self._cache[phone]
+                    result[phone] = None
+                else:
+                    result[phone] = account_id
+        
+        return result
+    
+    def set_many(self, phone_to_id: Dict[str, int]) -> None:
+        """
+        Armazena múltiplos account_ids no cache de uma vez.
+        """
+        with self._lock:
+            now = time.time()
+            for phone, account_id in phone_to_id.items():
+                self._cache[phone] = (account_id, now)
+    
+    def size(self) -> int:
+        """Retorna número de entradas no cache."""
+        with self._lock:
+            return len(self._cache)
+
+
+# Instância global do cache (singleton)
+_account_id_cache = _AccountIdCache(ttl_seconds=300)  # 5 minutos TTL
 
 
 def _build_database_url() -> str:
@@ -118,6 +222,117 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
 
 
+def _get_account_id_cached(db: Session, phone: str, create_if_missing: bool = False) -> Optional[int]:
+    """
+    Obtém account_id por phone usando cache.
+    
+    Args:
+        db: Sessão do banco de dados
+        phone: Número de telefone
+        create_if_missing: Se True, cria a conta se não existir
+    
+    Returns:
+        account_id ou None se não existir e create_if_missing=False
+    """
+    from zowsuplib.app import models
+    
+    # Verifica cache primeiro
+    account_id = _account_id_cache.get(phone)
+    if account_id is not None:
+        return account_id
+    
+    # Não está no cache: busca no banco
+    if create_if_missing:
+        account = db.query(models.Account).filter_by(phone=phone).one_or_none()
+        if account is None:
+            account = models.Account(phone=phone)
+            db.add(account)
+            db.flush()
+            db.refresh(account)
+        
+        account_id = account.id
+    else:
+        account_id = db.query(models.Account.id).filter_by(phone=phone).scalar()
+    
+    # Armazena no cache se encontrado
+    if account_id is not None:
+        _account_id_cache.set(phone, account_id)
+    
+    return account_id
+
+
+def _get_account_ids_bulk_cached(db: Session, phones: list[str], create_if_missing: bool = False) -> Dict[str, int]:
+    """
+    Obtém múltiplos account_ids usando cache e bulk query.
+    
+    Args:
+        db: Sessão do banco de dados
+        phones: Lista de números de telefone
+        create_if_missing: Se True, cria contas que não existem
+    
+    Returns:
+        Dict[phone, account_id] - apenas phones encontrados/criados
+    """
+    from zowsuplib.app import models
+    
+    if not phones:
+        return {}
+    
+    # Verifica cache primeiro
+    cached_results = _account_id_cache.get_many(phones)
+    
+    # Separa phones que estão no cache e os que precisam ser buscados
+    phones_to_query = [p for p in phones if cached_results.get(p) is None]
+    
+    if not phones_to_query:
+        # Todos estão no cache
+        return {p: aid for p, aid in cached_results.items() if aid is not None}
+    
+    # Busca phones que não estão no cache
+    existing_accounts = {
+        row.phone: row.id 
+        for row in db.query(models.Account.phone, models.Account.id)
+                      .filter(models.Account.phone.in_(phones_to_query))
+                      .all()
+    }
+    
+    # Cria contas que não existem se solicitado
+    if create_if_missing:
+        new_phones = [p for p in phones_to_query if p not in existing_accounts]
+        if new_phones:
+            new_accounts = [models.Account(phone=phone) for phone in new_phones]
+            db.add_all(new_accounts)
+            db.flush()
+            # Atualiza dict com novos IDs
+            for acc in new_accounts:
+                existing_accounts[acc.phone] = acc.id
+    
+    # Atualiza cache com resultados
+    _account_id_cache.set_many(existing_accounts)
+    
+    # Combina resultados do cache e do banco
+    result = {p: aid for p, aid in cached_results.items() if aid is not None}
+    result.update(existing_accounts)
+    
+    return result
+
+
+def invalidate_account_cache(phone: str) -> None:
+    """
+    Invalida entrada do cache para um phone específico.
+    Útil quando account é atualizado ou removido.
+    """
+    _account_id_cache.invalidate(phone)
+
+
+def clear_account_cache() -> None:
+    """
+    Limpa todo o cache de accounts.
+    Útil para forçar refresh completo.
+    """
+    _account_id_cache.clear()
+
+
 def record_group(
     group_jid: str,
     creator_phone: str | None,
@@ -142,11 +357,8 @@ def record_group(
 
         creator_id = None
         if creator_phone:
-            creator_id = (
-                db.query(models.Account.id)
-                .filter_by(phone=creator_phone)
-                .scalar()
-            )
+            # ✅ OTIMIZAÇÃO: Usa cache para creator_phone
+            creator_id = _get_account_id_cached(db, creator_phone, create_if_missing=True)
 
         if group_row is None:
             group = models.Group(
@@ -171,29 +383,46 @@ def record_group(
                     synchronize_session=False,
                 )
 
-        # Adiciona participantes
+        # Adiciona participantes (otimizado com bulk operations)
         unique_phones = [p for p in dict.fromkeys(participants) if p]  # de-dupe preservando ordem
+        
+        if not unique_phones:
+            db.commit()
+            return
+        
+        # ✅ OTIMIZAÇÃO: Usa cache + bulk query para todos os phones de uma vez
+        existing_accounts = _get_account_ids_bulk_cached(db, unique_phones, create_if_missing=True)
+        
+        # Mapeia phones para account_ids (existing_accounts já é um dict phone->id)
+        phone_to_account_id = existing_accounts
+        account_ids = list(existing_accounts.values())
+        
+        # ✅ OTIMIZAÇÃO: Bulk query para participantes existentes
+        existing_participants = {
+            (row.group_id, row.account_id)
+            for row in db.query(models.GroupParticipant.group_id, 
+                               models.GroupParticipant.account_id)
+                          .filter(models.GroupParticipant.group_id == group_id,
+                                 models.GroupParticipant.account_id.in_(account_ids))
+                          .all()
+        }
+        
+        # Adiciona apenas participantes novos (bulk insert)
+        new_participants = []
         for phone in unique_phones:
-            acc_id = db.query(models.Account.id).filter_by(phone=phone).scalar()
-            if acc_id is None:
-                acc = models.Account(phone=phone)
-                db.add(acc)
-                db.flush()
-                acc_id = acc.id
-
-            exists_id = (
-                db.query(models.GroupParticipant.id)
-                .filter_by(group_id=group_id, account_id=acc_id)
-                .scalar()
-            )
-            if exists_id is None:
-                db.add(
+            acc_id = phone_to_account_id[phone]
+            if (group_id, acc_id) not in existing_participants:
+                role = "owner" if creator_id and acc_id == creator_id else "member"
+                new_participants.append(
                     models.GroupParticipant(
                         group_id=group_id,
                         account_id=acc_id,
-                        role="owner" if creator_id and acc_id == creator_id else "member",
+                        role=role,
                     )
                 )
+        
+        if new_participants:
+            db.add_all(new_participants)
 
         db.commit()
     except Exception as exc:
@@ -227,13 +456,14 @@ def update_account_status(
 
     db = SessionLocal()
     try:
-        account_id = db.query(models.Account.id).filter_by(phone=phone).scalar()
+        # ✅ OTIMIZAÇÃO: Usa cache para obter account_id
+        account_id = _get_account_id_cached(db, phone, create_if_missing=True)
+        
         if account_id is None:
-            # Cria a conta se não existir
-            account = models.Account(phone=phone)
-            db.add(account)
-            db.flush()
-            account_id = account.id
+            # Não deveria acontecer se create_if_missing=True, mas trata edge case
+            from loguru import logger
+            logger.warning(f"Conta {phone} não pôde ser criada/encontrada")
+            return
 
         updates = {}
         if is_logged_in is not None:
@@ -247,8 +477,9 @@ def update_account_status(
 
         if updates:
             db.query(models.Account).filter_by(id=account_id).update(updates, synchronize_session=False)
-
-        db.commit()
+            db.commit()
+            # ✅ OTIMIZAÇÃO: Invalida cache quando account é atualizado
+            invalidate_account_cache(phone)
     except Exception as e:
         db.rollback()
         from loguru import logger
@@ -281,12 +512,8 @@ def register_sent_message(
 
     db = SessionLocal()
     try:
-        account_id = db.query(models.Account.id).filter_by(phone=phone).scalar()
-        if account_id is None:
-            account = models.Account(phone=phone)
-            db.add(account)
-            db.flush()
-            account_id = account.id
+        # ✅ OTIMIZAÇÃO: Usa cache para obter account_id
+        account_id = _get_account_id_cached(db, phone, create_if_missing=True)
 
         # Verifica se a mensagem já foi registrada (evita duplicatas)
         existing_id = (
@@ -335,7 +562,12 @@ def is_account_initialized(phone: str) -> bool:
 
     db = SessionLocal()
     try:
-        value = db.query(models.Account.is_initialized).filter_by(phone=phone).scalar()
+        # ✅ OTIMIZAÇÃO: Usa cache para obter account_id, depois busca apenas o campo necessário
+        account_id = _get_account_id_cached(db, phone, create_if_missing=False)
+        if account_id is None:
+            return False
+        
+        value = db.query(models.Account.is_initialized).filter_by(id=account_id).scalar()
         return bool(value)
     except Exception as e:
         from loguru import logger
@@ -371,7 +603,8 @@ def get_sent_messages_count(
 
     db = SessionLocal()
     try:
-        account_id = db.query(models.Account.id).filter_by(phone=phone).scalar()
+        # ✅ OTIMIZAÇÃO: Usa cache para obter account_id
+        account_id = _get_account_id_cached(db, phone, create_if_missing=False)
         if account_id is None:
             return {"total": 0, "by_recipient": []}
 
