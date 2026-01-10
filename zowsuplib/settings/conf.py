@@ -33,7 +33,7 @@ class Settings(BaseSettings):
         env="ZOWSUP_DB_URL",
     )
     db_pool_size: int = Field(
-        default=100,
+        default=400,
         description="Base pool size for SQLAlchemy engine (ignored for SQLite).",
         env="ZOWSUP_DB_POOL_SIZE",
     )
@@ -43,12 +43,12 @@ class Settings(BaseSettings):
         env="ZOWSUP_DB_MAX_OVERFLOW",
     )
     db_pool_timeout: int = Field(
-        default=30,
+        default=120,
         description="Seconds to wait for a connection from the pool (ignored for SQLite).",
         env="ZOWSUP_DB_POOL_TIMEOUT",
     )
     db_pool_recycle: int = Field(
-        default=1800,
+        default=28000,
         description="Seconds before recycling a connection (ignored for SQLite).",
         env="ZOWSUP_DB_POOL_RECYCLE",
     )
