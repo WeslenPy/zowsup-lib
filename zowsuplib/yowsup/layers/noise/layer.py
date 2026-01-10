@@ -31,7 +31,9 @@ class YowNoiseLayer(YowLayer):
     def __init__(self):
         super(YowNoiseLayer, self).__init__()
         self._wa_noiseprotocol = WANoiseProtocol(
-            6, 3, protocol_state_callbacks=self._on_protocol_state_changed
+            6, 3, 
+            protocol_state_callbacks=self._on_protocol_state_changed,
+            recovery_callback=self._maybe_retry_handshake
         )  # type: WANoiseProtocol
 
         self._handshake_worker = None
@@ -464,8 +466,9 @@ class YowNoiseLayer(YowLayer):
         :return:
         :rtype:
         """
-        data = bytes(data) if type(data) is not bytes else data        
-        self._wa_noiseprotocol.send(data)
+        data = bytes(data) if type(data) is not bytes else data
+        # Passa recovery_callback para o protocol.send()
+        self._wa_noiseprotocol.send(data, recovery_callback=self._maybe_retry_handshake)
 
     def _flush_incoming_buffer(self):
         self._flush_lock.acquire()
@@ -504,6 +507,73 @@ class YowNoiseLayer(YowLayer):
             logger.debug(f"[handshake {self._last_handshake_attempt}] incoming segment preview {self._last_segment_preview}")
         except Exception as e:
             logger.debug(f"[handshake {self._last_handshake_attempt}] could not preview segment: {e}")
+
+    def _maybe_retry_handshake(self, reason=None):
+        """
+        Tenta recuperar de um estado congelado reiniciando o handshake.
+        
+        Args:
+            reason: Razão pela qual a recuperação foi acionada
+        """
+        import threading
+        thread_id = threading.current_thread().ident
+        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+        
+        # Não tenta recuperar se já há um handshake em progresso
+        if self._in_handshake() or self._handshake_worker is not None:
+            logger.debug(
+                f"[HANDSHAKE-DEBUG] _maybe_retry_handshake ignorado: "
+                f"handshake já em progresso | account={account_id} "
+                f"state={self._wa_noiseprotocol.state} worker={self._handshake_worker is not None}"
+            )
+            return
+        
+        current_state = self._wa_noiseprotocol.state
+        
+        # Só tenta recuperar se estiver em ERROR ou HANDSHAKE preso
+        if current_state not in (WANoiseProtocol.STATE_ERROR, WANoiseProtocol.STATE_HANDSHAKE):
+            logger.debug(
+                f"[HANDSHAKE-DEBUG] _maybe_retry_handshake ignorado: "
+                f"estado não requer recuperação | account={account_id} state={current_state}"
+            )
+            return
+        
+        logger.warning(
+            f"[HANDSHAKE-DEBUG] Tentando recuperar de estado congelado | "
+            f"account={account_id} thread_id={thread_id} state={current_state} reason={reason}"
+        )
+        
+        # Reseta o protocolo
+        self._wa_noiseprotocol.reset()
+        
+        # Tenta reiniciar o handshake se houver profile disponível
+        if self._profile is None:
+            logger.warning(
+                f"[HANDSHAKE-DEBUG] Não é possível recuperar: profile não disponível | "
+                f"account={account_id}"
+            )
+            return
+        
+        # Emite evento de autenticação para tentar novo handshake
+        # Isso será tratado pelo on_auth() que iniciará um novo handshake
+        try:
+            logger.info(
+                f"[HANDSHAKE-DEBUG] Emitindo evento AUTH para reiniciar handshake | "
+                f"account={account_id}"
+            )
+            # Emite evento de autenticação para forçar novo handshake
+            self.broadcastEvent(
+                YowLayerEvent(
+                    YowAuthenticationProtocolLayer.EVENT_AUTH,
+                    passive=False
+                )
+            )
+        except Exception as e:
+            logger.error(
+                f"[HANDSHAKE-DEBUG] Erro ao tentar recuperar handshake | "
+                f"account={account_id} error={e}",
+                exc_info=True
+            )
 
     def _maybe_break(self, env_var):
         if env_var in settings.debug_break_flags:

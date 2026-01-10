@@ -19,10 +19,10 @@ class Settings(BaseSettings):
     config: str = Field(default="conf/config.conf", env="ZOWSUP_CONFIG")
 
     # Caminhos principais
-    account_path: Path = Field(default=Path("/data/account/"), env="ZOWSUP_ACCOUNT_PATH")
-    download_path: Path = Field(default=Path("/data/download/"), env="ZOWSUP_DOWNLOAD_PATH")
-    upload_path: Path = Field(default=Path("/data/upload/"), env="ZOWSUP_UPLOAD_PATH")
-    log_path: Path = Field(default=Path("/data/log/"), env="ZOWSUP_LOG_PATH")
+    account_path: Path = Field(default=Path("./data/account/"), env="ZOWSUP_ACCOUNT_PATH")
+    download_path: Path = Field(default=Path("./data/download/"), env="ZOWSUP_DOWNLOAD_PATH")
+    upload_path: Path = Field(default=Path("./data/upload/"), env="ZOWSUP_UPLOAD_PATH")
+    log_path: Path = Field(default=Path("./data/log/"), env="ZOWSUP_LOG_PATH")
     default_env: str = Field(default="android", env="ZOWSUP_DEFAULT_ENV")
     cmd_wait: Optional[int] = Field(default=None, env="ZOWSUP_CMD_WAIT")
 
