@@ -292,6 +292,7 @@ class YowNoiseLayer(YowLayer):
         """
         return self._wa_noiseprotocol.state == WANoiseProtocol.STATE_HANDSHAKE
 
+        
     def _on_protocol_state_changed(self, state):
         import threading
         thread_id = threading.current_thread().ident
@@ -300,20 +301,83 @@ class YowNoiseLayer(YowLayer):
         
         if state == WANoiseProtocol.STATE_TRANSPORT:
             logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] entering TRANSPORT state | account={account_id}")
-            if self._rs != self._wa_noiseprotocol.rs:
-                logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] remote static changed | account={account_id} old_rs={self._rs} new_rs={self._wa_noiseprotocol.rs}")
-                if self._profile is not None:
-                    config = self._profile.config
-                    config.server_static_public = self._wa_noiseprotocol.rs                    
-                    self._profile.write_config(config)
-                    self._rs = self._wa_noiseprotocol.rs
-
+            
+            # Atualiza server_static_public se mudou
+            if self._wa_noiseprotocol.rs is not None:
+                self._update_server_static_public(self._wa_noiseprotocol.rs)
+            
             self._flush_incoming_buffer()
+            
         if state == WANoiseProtocol.STATE_ERROR and self._last_segment_preview:
             logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] protocol entered ERROR | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} last incoming segment {self._last_segment_preview}")
             self._maybe_break("NOISE_BREAK_ON_STATE_ERROR")
         logger.debug(f"[handshake {self._last_handshake_attempt}] protocol state changed to {state}")
 
+
+    def _update_server_static_public(self, new_rs):
+        """
+        Atualiza a chave pública estática do servidor (server_static_public) no config
+        e persiste no banco de dados.
+        
+        Este método é chamado quando o servidor do WhatsApp envia uma nova chave estática
+        durante o handshake (por exemplo, quando ocorre NewRemoteStaticException e fallback
+        para handshake XX).
+        
+        Args:
+            new_rs: Nova chave pública estática do servidor (PublicKey)
+        
+        Returns:
+            bool: True se a atualização foi bem-sucedida, False caso contrário
+        """
+        import threading
+        thread_id = threading.current_thread().ident
+        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+        
+        if new_rs is None:
+            logger.warning(f"[HANDSHAKE-DEBUG] Tentativa de atualizar server_static_public com None | account={account_id}")
+            return False
+        
+        # Verifica se realmente mudou
+        if self._rs is not None and self._rs.data == new_rs.data:
+            logger.debug(f"[HANDSHAKE-DEBUG] server_static_public não mudou, ignorando atualização | account={account_id}")
+            return True
+        
+        old_rs_str = f"{self._rs.data.hex()[:16]}..." if self._rs else "None"
+        new_rs_str = f"{new_rs.data.hex()[:16]}..." if new_rs else "None"
+        
+        logger.info(
+            f"[HANDSHAKE-DEBUG] Atualizando server_static_public | "
+            f"account={account_id} thread_id={thread_id} "
+            f"old_rs={old_rs_str} new_rs={new_rs_str}"
+        )
+        
+        try:
+            if self._profile is None:
+                logger.error(f"[HANDSHAKE-DEBUG] Profile não disponível para atualizar server_static_public | account={account_id}")
+                return False
+            
+            config = self._profile.config
+            config.server_static_public = new_rs
+            self._profile.write_config(config)
+            
+            # Atualiza a referência local
+            self._rs = new_rs
+            
+            logger.info(
+                f"[HANDSHAKE-DEBUG] server_static_public atualizado com sucesso | "
+                f"account={account_id} thread_id={thread_id}"
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(
+                f"[HANDSHAKE-DEBUG] Erro ao atualizar server_static_public | "
+                f"account={account_id} thread_id={thread_id} error={e}",
+                exc_info=True
+            )
+            return False
+
+            
     def _handle_stream_event(self, event):
         import threading
         thread_id = threading.current_thread().ident
