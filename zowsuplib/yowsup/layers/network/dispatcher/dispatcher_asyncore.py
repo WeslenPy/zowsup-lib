@@ -77,6 +77,18 @@ class AsyncoreConnectionDispatcher(YowConnectionDispatcher, asyncore.dispatcher_
             self.connectionCallbacks.onConnected()
 
     def handle_close(self):
+        import threading
+        thread_id = threading.current_thread().ident
+        account_id = "unknown"
+        if hasattr(self.connectionCallbacks, 'getStack'):
+            stack = self.connectionCallbacks.getStack()
+            if stack:
+                account_id = stack.getProp("botId") or stack.getProp("jid") or "unknown"
+        
+        logger.info(
+            f"[NETWORK-DEBUG] AsyncoreDispatcher.handle_close chamado | "
+            f"account={account_id} thread_id={thread_id}"
+        )
         logger.debug("handle_close")
         self.close()        
         self.socket_map = None

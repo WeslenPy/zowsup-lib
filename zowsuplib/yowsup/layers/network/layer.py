@@ -60,6 +60,47 @@ class YowNetworkLayer(YowLayer, ConnectionCallbacks):
         self.emitEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECTED))
 
     def onDisconnected(self):
+        import threading
+        import inspect
+        import os
+        
+        thread_id = threading.current_thread().ident
+        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+        stack_id = id(self.getStack())
+        
+        # Identifica quem chamou este método
+        frame = inspect.currentframe()
+        caller_frame = frame.f_back
+        caller_info = "unknown"
+        caller_file = "unknown"
+        caller_line = 0
+        
+        if caller_frame:
+            caller_file = caller_frame.f_code.co_filename
+            caller_line = caller_frame.f_lineno
+            caller_name = caller_frame.f_code.co_name
+            
+            # Extrai apenas o nome do arquivo (sem path completo)
+            caller_file = os.path.basename(caller_file)
+            caller_info = f"{caller_file}:{caller_line} ({caller_name})"
+        
+        # Tenta identificar o tipo de dispatcher
+        dispatcher_type = "unknown"
+        if self._dispatcher:
+            dispatcher_type = type(self._dispatcher).__name__
+        
+        # Log detalhado com informações do caller
+        logger.info(
+            f"[NETWORK-DEBUG] onDisconnected chamado | "
+            f"account={account_id} "
+            f"thread_id={thread_id} "
+            f"stack_id={stack_id} "
+            f"caller={caller_info} "
+            f"dispatcher={dispatcher_type} "
+            f"previous_state={self.state} "
+            f"reason={self._disconnect_reason or 'none'}"
+        )
+        
         if self.state != self.__class__.STATE_DISCONNECTED:
             self.state = self.__class__.STATE_DISCONNECTED
             self.connected = False
@@ -69,11 +110,24 @@ class YowNetworkLayer(YowLayer, ConnectionCallbacks):
                     self.__class__.EVENT_STATE_DISCONNECTED, reason=self._disconnect_reason or "", detached=True
                 )
             )
+        else:
+            logger.debug(
+                f"[NETWORK-DEBUG] onDisconnected ignorado (já estava desconectado) | "
+                f"account={account_id} thread_id={thread_id}"
+            )
 
     def onConnecting(self):
         pass
 
     def onConnectionError(self, error):
+        import threading
+        thread_id = threading.current_thread().ident
+        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+        
+        logger.info(
+            f"[NETWORK-DEBUG] onConnectionError chamado | "
+            f"account={account_id} thread_id={thread_id} error={error}"
+        )
         self.onDisconnected()
 
     @EventCallback(EVENT_STATE_CONNECT)

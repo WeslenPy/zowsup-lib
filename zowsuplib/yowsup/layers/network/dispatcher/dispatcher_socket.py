@@ -18,6 +18,19 @@ class SocketConnectionDispatcher(YowConnectionDispatcher):
             logger.error("Already connected?")
 
     def disconnect(self):
+        import threading
+        thread_id = threading.current_thread().ident
+        account_id = "unknown"
+        if hasattr(self.connectionCallbacks, 'getStack'):
+            stack = self.connectionCallbacks.getStack()
+            if stack:
+                account_id = stack.getProp("botId") or stack.getProp("jid") or "unknown"
+        
+        logger.info(
+            f"[NETWORK-DEBUG] SocketDispatcher.disconnect chamado | "
+            f"account={account_id} thread_id={thread_id}"
+        )
+        
         if self.socket:
             try:
                 self.socket.shutdown(socket.SHUT_WR)
@@ -30,6 +43,14 @@ class SocketConnectionDispatcher(YowConnectionDispatcher):
             logger.error("Not connected?")
 
     def connectAndLoop(self, host):
+        import threading
+        thread_id = threading.current_thread().ident
+        account_id = "unknown"
+        if hasattr(self.connectionCallbacks, 'getStack'):
+            stack = self.connectionCallbacks.getStack()
+            if stack:
+                account_id = stack.getProp("botId") or stack.getProp("jid") or "unknown"
+        
         socket = self.socket
         self.connectionCallbacks.onConnecting()
         try:
@@ -40,10 +61,17 @@ class SocketConnectionDispatcher(YowConnectionDispatcher):
                 if len(data):
                     self.connectionCallbacks.onRecvData(data)
                 else:
+                    logger.info(
+                        f"[NETWORK-DEBUG] SocketDispatcher.connectAndLoop: recv() retornou 0 bytes | "
+                        f"account={account_id} thread_id={thread_id}"
+                    )
                     break
             self.connectionCallbacks.onDisconnected()
         except Exception as e:
-            logger.error(e)
+            logger.error(
+                f"[NETWORK-DEBUG] SocketDispatcher.connectAndLoop: exceção | "
+                f"account={account_id} thread_id={thread_id} error={e}"
+            )
             self.connectionCallbacks.onConnectionError(e)
         finally:
             self.socket = None

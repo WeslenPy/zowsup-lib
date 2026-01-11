@@ -293,7 +293,13 @@ class SendLayer(YowInterfaceLayer):
 
     @EventCallback(YowNetworkLayer.EVENT_STATE_DISCONNECTED)
     def onDisconnected(self, yowLayerEvent):             
-        logger.info("Disconnect")       
+        logger.info("Disconnect")
+        
+        # ✅ SEMPRE atualiza isConnected primeiro, antes de qualquer return
+        # Isso garante que o estado seja atualizado mesmo quando há return antecipado
+        was_connected = self.isConnected
+        self.isConnected = False
+        
         error = self.getStack().getProp("exception")                
         # Cancela timers de reconexão pendentes
         for t in self._timers:
@@ -332,14 +338,13 @@ class SendLayer(YowInterfaceLayer):
             )
             return
         
-        if self.isConnected:     
+        # ✅ Agora só executa callbacks se estava conectado antes
+        if was_connected:     
             self.eventCallback(wsend_pb2.BotEvent.Event.LOGOUT)
             # Atualiza status da conta no banco de dados - marca como não logada
             if self.bot.botId is not None:
                 from zowsuplib.app.db import update_account_status
-                update_account_status(self.bot.botId, is_logged_in=False)
-
-        self.isConnected = False       
+                update_account_status(self.bot.botId, is_logged_in=False)       
             
         if (not self.detect40x) and (not self.userQuit):     
             self.bot.wa_old = None               
