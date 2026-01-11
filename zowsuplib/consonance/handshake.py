@@ -289,9 +289,12 @@ class WAHandshake(object):
         logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() enviando client_hello | thread_id={thread_id}")
         stream.write_segment(handshakemessage.SerializeToString())
         logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() client_hello enviado, aguardando resposta | thread_id={thread_id}")
+        
+       
         incoming_handshakemessage = wa5_pb2.HandshakeMessage()
         try:
             segment_data = stream.read_segment()
+            
             logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() segment recebido | thread_id={thread_id} segment_len={len(segment_data) if segment_data else 0}")
             incoming_handshakemessage.ParseFromString(segment_data)
             logger.info(f"[HANDSHAKE-DEBUG] WAHandshake._start_handshake_ik() segment parseado | thread_id={thread_id} has_server_hello={incoming_handshakemessage.HasField('server_hello')}")

@@ -18,6 +18,7 @@ from loguru import logger
 
 from zowsuplib.app.api import ZowsupClient
 from zowsuplib.app.rwlock import ReadWriteLock
+from zowsuplib.app.session_manager import get_session_lifecycle_manager
 
 
 @dataclass
@@ -141,6 +142,14 @@ class AccountManager:
             self._accounts[account_id] = ManagedAccount(client=client)
             logger.info(f"[AccountManager] Conta {account_id} adicionada com sucesso. Total de contas: {len(self._accounts)}")
         
+        # Registra sessões da conta no SessionLifecycleManager
+        try:
+            session_manager = get_session_lifecycle_manager()
+            # A sessão será registrada automaticamente quando o cliente usar thread_local_session
+            logger.debug(f"[AccountManager] Sessões da conta {account_id} serão gerenciadas pelo SessionLifecycleManager")
+        except Exception as e:
+            logger.warning(f"[AccountManager] Erro ao registrar sessões para conta {account_id}: {e}")
+        
         # Conecta FORA do lock se solicitado
         if auto_connect:
             try:
@@ -236,6 +245,15 @@ class AccountManager:
             except Exception as e:
                 logger.error(f"[AccountManager] Erro ao desconectar conta {account_id}: {e}")
         
+        # Fecha todas as sessões da conta
+        try:
+            session_manager = get_session_lifecycle_manager()
+            closed_count = session_manager.close_all_for_account(account_id)
+            if closed_count > 0:
+                logger.info(f"[AccountManager] {closed_count} sessões fechadas para conta {account_id}")
+        except Exception as e:
+            logger.warning(f"[AccountManager] Erro ao fechar sessões da conta {account_id}: {e}")
+        
         # Remove do dict com lock de escrita
         with self._lock.write():
             if account_id not in self._accounts:
@@ -322,6 +340,18 @@ class AccountManager:
                 client.disconnect()
             except Exception as e:
                 logger.error(f"[AccountManager] Erro ao desconectar conta {account_id}: {e}")
+        
+        # Fecha todas as sessões de todas as contas
+        try:
+            session_manager = get_session_lifecycle_manager()
+            total_closed = 0
+            for account_id, _ in accounts_to_disconnect:
+                closed = session_manager.close_all_for_account(account_id)
+                total_closed += closed
+            if total_closed > 0:
+                logger.info(f"[AccountManager] {total_closed} sessões fechadas para todas as contas")
+        except Exception as e:
+            logger.warning(f"[AccountManager] Erro ao fechar sessões: {e}")
         
         logger.info("[AccountManager] Todas as contas desconectadas")
     

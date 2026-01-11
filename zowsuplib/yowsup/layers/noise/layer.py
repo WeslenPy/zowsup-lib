@@ -49,6 +49,7 @@ class YowNoiseLayer(YowLayer):
         self._handshake_attempt = 0
         self._last_handshake_attempt = None
         self._last_segment_preview = None
+        self._last_client_config = None  # Armazena ClientConfig para salvar após handshake
 
     def __str__(self):
         return "Noise Layer"
@@ -56,10 +57,14 @@ class YowNoiseLayer(YowLayer):
     @EventCallback(YowNetworkLayer.EVENT_STATE_DISCONNECTED)
     def on_disconnected(self, event):
         import threading
+        import json
+        import time
         from loguru import logger
         
         account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
         thread_id = threading.current_thread().ident
+        
+        # #region agent log
         
         logger.info(f"[HANDSHAKE-DEBUG] on_disconnected chamado | account={account_id} thread_id={thread_id}")
         
@@ -68,6 +73,8 @@ class YowNoiseLayer(YowLayer):
         
         # Cancelar stream para desbloquear handshake worker bloqueado
         if self._stream:
+            # #region agent log
+            # #endregion
             logger.debug(f"[HANDSHAKE-DEBUG] Cancelando stream | account={account_id}")
             self._stream.cancel()
         
@@ -239,6 +246,8 @@ class YowNoiseLayer(YowLayer):
                 
                 # Usa _build_client_config para tentar reutilizar ClientConfig salvo
                 client_config = self._build_client_config(config, yowsupenv, username, passive, device)
+                # Armazena ClientConfig para salvar após handshake bem-sucedido
+                self._last_client_config = client_config
 
                 if not self._in_handshake():
                     import threading
@@ -247,6 +256,8 @@ class YowNoiseLayer(YowLayer):
                     self._handshake_attempt += 1
                     attempt_id = self._handshake_attempt
                     self._last_handshake_attempt = attempt_id
+                    
+                    
                     logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] performing login handshake | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} username={username} passive={passive} deviceid={int(device) if device is not None else None} mcc={client_config.useragent.mcc} mnc={client_config.useragent.mnc} rs={'present' if remote_static else 'none'}")
                     logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] client_config completo: platform={client_config.useragent.platform} app_version={client_config.useragent.app_version} os_version={client_config.useragent.os_version} manufacturer={client_config.useragent.manufacturer} device={client_config.useragent.device}")
                     logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] local_static presente: {local_static is not None} remote_static presente: {remote_static is not None}")
@@ -261,6 +272,7 @@ class YowNoiseLayer(YowLayer):
                     # logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] handshake worker started | worker_thread_id={self._handshake_worker.ident}")
                     self._stream.set_events_callback(self._handle_stream_event)
                     self._handshake_worker.start()
+                    
                 else:
                     account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
                     logger.warning(f"[HANDSHAKE-DEBUG] Login handshake requested while another is in progress; skipping new attempt | account={account_id} current_state={self._wa_noiseprotocol.state} attempt_id={self._last_handshake_attempt}")
@@ -298,6 +310,14 @@ class YowNoiseLayer(YowLayer):
                 logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] An error occurred during handshake, try login again. | account={account_id}")
         else:
             logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] handshake finished successfully | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} state={self._wa_noiseprotocol.state}")
+            
+            # Salva ClientConfig após handshake bem-sucedido (pode ter sido atualizado)
+            if hasattr(self, '_last_client_config') and self._last_client_config is not None:
+                try:
+                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] Salvando ClientConfig após handshake bem-sucedido | account={account_id}")
+                    self._save_client_config(self._last_client_config)
+                except Exception as save_error:
+                    logger.warning(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] Erro ao salvar ClientConfig após handshake: {save_error}")
             
             # Fallback: Salvar server_static_public se disponível e ainda não foi salvo
             # Isso garante que a chave seja salva mesmo se _on_protocol_state_changed não for chamado
@@ -602,7 +622,7 @@ class YowNoiseLayer(YowLayer):
             
             # Salva no ProfileConfig com nome personalizado
             from zowsuplib.yowsup.common.tools import StorageTools
-            from zowsuplib.app.db import SessionLocal
+            from zowsuplib.app.db import thread_local_session
             from zowsuplib.app import models
             
             phone = StorageTools._extract_phone_from_profile_name(profile_name)
@@ -613,36 +633,29 @@ class YowNoiseLayer(YowLayer):
             config_json = json.dumps(config_dict, indent=2)
             data = config_json.encode('utf-8')
             
-            db = SessionLocal()
-            try:
-                account_id_db = db.query(models.Account.id).filter_by(phone=phone).scalar()
-                if account_id_db is None:
+            with thread_local_session() as db:
+                account = db.query(models.Account).filter_by(phone=phone).one_or_none()
+                if account is None:
                     account = models.Account(phone=phone)
                     db.add(account)
                     db.flush()
-                    account_id_db = account.id
                 
-                row = (
-                    db.query(models.ProfileConfig)
-                    .filter_by(account_id=account_id_db, name="client_config.json")
-                    .one_or_none()
-                )
+                # Usa a nova tabela ClientConfig (one-to-one com Account)
+                client_config = db.query(models.ClientConfig).filter_by(account_id=account.id).one_or_none()
                 
-                if row is None:
-                    row = models.ProfileConfig(
-                        account_id=account_id_db,
-                        name="client_config.json",
-                        data=data,
+                if client_config is None:
+                    client_config = models.ClientConfig(
+                        account_id=account.id,
+                        config_data=data,
                     )
-                    db.add(row)
+                    db.add(client_config)
+                    logger.info(f"[HANDSHAKE-DEBUG] ClientConfig criado na nova tabela | account={account_id} phone={phone}")
                 else:
-                    row.data = data
+                    client_config.config_data = data
+                    logger.info(f"[HANDSHAKE-DEBUG] ClientConfig atualizado na nova tabela | account={account_id} phone={phone}")
                 
-                db.commit()
-                logger.info(f"[HANDSHAKE-DEBUG] ClientConfig salvo para reutilização | account={account_id}")
+                # Commit automático via context manager
                 return True
-            finally:
-                db.close()
             
         except Exception as e:
             account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
@@ -665,32 +678,27 @@ class YowNoiseLayer(YowLayer):
             
             # Tenta carregar do ProfileConfig
             from zowsuplib.yowsup.common.tools import StorageTools
-            from zowsuplib.app.db import SessionLocal
+            from zowsuplib.app.db import thread_local_session
             from zowsuplib.app import models
             
             phone = StorageTools._extract_phone_from_profile_name(profile_name)
             if not phone:
                 return None
             
-            db = SessionLocal()
-            try:
-                account_id_db = db.query(models.Account.id).filter_by(phone=phone).scalar()
-                if not account_id_db:
+            with thread_local_session() as db:
+                account = db.query(models.Account).filter_by(phone=phone).one_or_none()
+                if not account:
+                    logger.debug(f"[HANDSHAKE-DEBUG] Account não encontrado | account={account_id} phone={phone}")
                     return None
                 
-                row = (
-                    db.query(models.ProfileConfig)
-                    .filter_by(account_id=account_id_db, name="client_config.json")
-                    .one_or_none()
-                )
+                # Usa a nova tabela ClientConfig (one-to-one com Account)
+                client_config_row = db.query(models.ClientConfig).filter_by(account_id=account.id).one_or_none()
                 
-                if row is None:
-                    logger.debug(f"[HANDSHAKE-DEBUG] ClientConfig não encontrado no profile | account={account_id}")
+                if client_config_row is None:
+                    logger.debug(f"[HANDSHAKE-DEBUG] ClientConfig não encontrado na nova tabela | account={account_id} phone={phone}")
                     return None
                 
-                config_data = row.data
-            finally:
-                db.close()
+                config_data = client_config_row.config_data
             
             # Deserializa JSON
             if isinstance(config_data, bytes):

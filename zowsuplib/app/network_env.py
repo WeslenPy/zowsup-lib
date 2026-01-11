@@ -20,6 +20,8 @@ class NetworkEnv(object):
         return "NetworkType=%s, Proxy=%s" % (self.type,self.proxyStr)
             
     def updateProxyStr(self,proxyStr,rawProxyStr=None):
+        from loguru import logger
+        
         if rawProxyStr:
             self.rawProxyStr=rawProxyStr
         self.proxyStr=proxyStr
@@ -30,6 +32,7 @@ class NetworkEnv(object):
             self.port = int(params[1])
             self.username = params[2]
             self.password = params[3]
+            logger.debug(f"[PROXY] NetworkEnv.updateProxyStr() | Proxy atualizado: {self.host}:{self.port} | Auth: Sim")
         else:
             raise Exception("proxy string format error")            
             

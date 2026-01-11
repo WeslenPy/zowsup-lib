@@ -376,7 +376,7 @@ class Utils:
         # Arquivo
         _logger.add(
             log_dir / name,
-            level="INFO",
+            level=level,
             encoding="utf-8",
             rotation="10 MB",
             retention="7 days",

@@ -11,6 +11,10 @@ build
 .idea
 .tox
 
+data/
+data/*
+data
+
 migrations/
 
 integrity.py

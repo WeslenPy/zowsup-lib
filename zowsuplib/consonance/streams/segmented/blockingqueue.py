@@ -24,6 +24,27 @@ class BlockingQueueSegmentedStream(SegmentedStream):
         self._events_callback = None
         self._cancelled = False
         self._lock = threading.Lock()
+    
+    def reset(self):
+        """
+        Reseta o stream, limpando queues e estado de cancelamento.
+        Útil para reutilizar o stream entre tentativas de handshake.
+        """
+        with self._lock:
+            # Limpar queues
+            while not self._readqueue.empty():
+                try:
+                    self._readqueue.get_nowait()
+                except:
+                    break
+            while not self._writequeue.empty():
+                try:
+                    self._writequeue.get_nowait()
+                except:
+                    break
+            # Resetar estado
+            self._cancelled = False
+            self._events_callback = None
 
     def set_events_callback(self, events_callback):
         self._events_callback = events_callback
@@ -36,6 +57,7 @@ class BlockingQueueSegmentedStream(SegmentedStream):
         Cancela operações pendentes no stream.
         Desbloqueia qualquer thread bloqueada em read_segment() ou get_write_segment().
         """
+        
         with self._lock:
             if self._cancelled:
                 return  # Já cancelado
@@ -98,17 +120,25 @@ class BlockingQueueSegmentedStream(SegmentedStream):
         :return: bytes
         :raises HandshakeFailedException: Se o stream foi cancelado
         """
+        
         # Verificar cancelamento antes de bloquear
         if self._cancelled:
+            # #region agent log
             raise HandshakeFailedException("Stream cancelled")
         
         if self._events_callback is not None:
             self._events_callback(self.EVENT_READ)
 
+        # #region agent log
         data = self._readqueue.get(block=True)
+        
+        # #region agent log
+       
         
         # Verificar se recebeu poison pill ou se foi cancelado durante a espera
         if data is self._POISON_PILL or self._cancelled:
+            # #region agent log
+            # #endregion
             raise HandshakeFailedException("Stream cancelled during read operation")
         
         return data

@@ -123,6 +123,13 @@ class Account(Base):
         cascade="all, delete-orphan",
         lazy="raise_on_sql",
     )
+    client_config = relationship(
+        "ClientConfig",
+        back_populates="account",
+        cascade="all, delete-orphan",
+        uselist=False,  # One-to-one relationship
+        lazy="raise_on_sql",
+    )
 
 
 class Identity(Base):
@@ -401,6 +408,40 @@ class ProfileConfig(Base):
     __table_args__ = (
         UniqueConstraint("account_id", "name", name="uq_profile_configs_account_name"),
     )
+
+
+class ClientConfig(Base):
+    """
+    Armazena o ClientConfig usado durante o handshake Noise Protocol.
+    
+    Esta tabela armazena a configuração do cliente (useragent, platform, etc.)
+    que é usada durante o handshake e pode ser reutilizada em autenticações
+    subsequentes para manter consistência.
+    """
+
+    __tablename__ = "client_configs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(
+        Integer,
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    # Campos serializados do ClientConfig
+    config_data = Column(LargeBinary, nullable=False)  # JSON serializado do ClientConfig
+    
+    created_at = Column(DateTime, nullable=False, default=dt.datetime.utcnow)
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=dt.datetime.utcnow,
+        onupdate=dt.datetime.utcnow,
+    )
+
+    account = relationship("Account", back_populates="client_config", lazy="raise_on_sql")
 
 
 class SentMessage(Base):

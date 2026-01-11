@@ -121,14 +121,24 @@ class YowStackBuilder(object):
         return layers
 
 class YowStack(object):
-    __stack = []
-    __stackInstances = []
-    __detachedQueue = Queue.Queue()
+    """
+    Stack isolado por conta.
+    
+    Cada instância tem suas próprias variáveis de instância:
+    - __stack: Lista de classes de layers
+    - __stackInstances: Instâncias construídas dos layers
+    - __detachedQueue: Queue para callbacks detached (isolada por instância)
+    
+    IMPORTANTE: Variáveis de instância garantem isolamento completo entre contas.
+    """
     def __init__(self, stackClassesArr = None, reversed = True, props = None):
         stackClassesArr = stackClassesArr or ()
         self.__stack = stackClassesArr[::-1] if reversed else stackClassesArr
         self.__stackInstances = []
         self._props = props or {}
+        # Queue isolada por instância - garante que callbacks de uma conta
+        # não sejam processados por outra conta
+        self.__detachedQueue = Queue.Queue()
 
         self.setProp(YowNetworkLayer.PROP_ENDPOINT, YowConstants.ENDPOINTS[random.randint(0,len(YowConstants.ENDPOINTS)-1)])
         self._construct()
@@ -188,7 +198,13 @@ class YowStack(object):
             self.__stackInstances[-1].broadcastEvent(yowLayerEvent)
 
     def execDetached(self, fn):
-        self.__class__.__detachedQueue.put(fn)
+        """
+        Agenda uma função para execução no loop do stack.
+        
+        Usa queue isolada por instância para garantir que callbacks
+        de uma conta não sejam processados por outra conta.
+        """
+        self.__detachedQueue.put(fn)
 
     def loop(self, *args, **kwargs):
         """
@@ -222,7 +238,8 @@ class YowStack(object):
                 pass  # Ignorar erros ao verificar flags
             
             try:
-                callback = self.__class__.__detachedQueue.get(False) #doesn't block
+                # Usa queue isolada por instância - garante isolamento entre contas
+                callback = self.__detachedQueue.get(False) #doesn't block
                 callback()
             except Queue.Empty:
                 break

@@ -31,7 +31,7 @@ from zowsuplib.app.message import MessageDefault
 from zowsuplib.app.network_env import NetworkEnv
 from zowsuplib.app.yowbot_layer import SendLayer
 from zowsuplib.app.yowbot_values import YowBotType
-from zowsuplib.app.db import SessionLocal, record_group
+from zowsuplib.app.db import SessionLocal, record_group, thread_local_session
 from zowsuplib.common.utils import Utils
 from zowsuplib.settings.conf import settings
 from zowsuplib.yowsup.layers.protocol_groups.structs.group import Group
@@ -248,16 +248,11 @@ class ZowsupClient:
         phone, pk1, sk1, pk2, sk2, sixth = parts
         
         # Verifica se a conta já existe no banco de dados
-        db_session = SessionLocal()
-        try:
+        with thread_local_session() as db_session:
             existing_id = db_session.query(models.Account.id).filter_by(phone=phone).scalar()
             if existing_id is not None:
                 logger.info(f"Conta {phone} já existe no banco de dados, pulando importação")
                 return phone
-        except Exception as e:
-            logger.warning(f"Erro ao verificar se conta {phone} existe: {e}, continuando com importação")
-        finally:
-            db_session.close()
         
         logger.info(f"Importando conta {phone}...")
 
@@ -302,8 +297,7 @@ class ZowsupClient:
         )
 
         # Garante que a conta exista e atualiza alguns metadados básicos
-        db_session = SessionLocal()
-        try:
+        with thread_local_session() as db_session:
             account = db_session.query(models.Account).filter_by(phone=phone).one_or_none()
             if account is None:
                 account = models.Account(phone=phone)
@@ -314,9 +308,7 @@ class ZowsupClient:
             account.is_logged_in = False
             account.has_restriction = False
             account.is_initialized = False
-            db_session.commit()
-        finally:
-            db_session.close()
+            # Commit automático via context manager
 
         # Persiste a configuração do perfil usando o mecanismo padrão (ProfileConfig em DB)
         profile = YowProfile(phone)
@@ -532,17 +524,11 @@ class ZowsupClient:
         logger.info(f"Resetando conta {account_id} (limpando todos os dados)...")
         
         # 1. Verifica se a conta existe no banco de dados
-        db_session = SessionLocal()
-        try:
+        with thread_local_session() as db_session:
             account = db_session.query(models.Account).filter_by(phone=account_id).one_or_none()
             if account is None:
                 logger.warning(f"Conta {account_id} não encontrada no banco de dados")
                 return False
-        except Exception as e:
-            logger.error(f"Erro ao verificar se conta {account_id} existe: {e}")
-            return False
-        finally:
-            db_session.close()
         
         # 2. Desconecta e remove do AccountManager se estiver ativo
         try:
@@ -616,8 +602,7 @@ class ZowsupClient:
             logger.error(f"Erro ao limpar dados do Axolotl store para conta {account_id}: {e}", exc_info=True)
         
         # 4. Limpa dados relacionados no banco de dados (via CASCADE ou manualmente)
-        db_session = SessionLocal()
-        try:
+        with thread_local_session() as db_session:
             account = db_session.query(models.Account).filter_by(phone=account_id).one_or_none()
             if account:
                 # Remove todos os dados relacionados via CASCADE
@@ -661,18 +646,12 @@ class ZowsupClient:
                 account.is_initialized = False
                 account.has_restriction = False
                 
-                db_session.commit()
+                # Commit automático via context manager
                 logger.info(f"Conta {account_id} resetada com sucesso no banco de dados")
                 return True
             else:
                 logger.warning(f"Conta {account_id} não encontrada no banco de dados para reset")
                 return False
-        except Exception as e:
-            db_session.rollback()
-            logger.error(f"Erro ao resetar conta {account_id} no banco de dados: {e}", exc_info=True)
-            return False
-        finally:
-            db_session.close()
 
     def delete_account(account_id: str, *, remove_files: bool = True) -> bool:
         """
@@ -704,17 +683,11 @@ class ZowsupClient:
         logger.info(f"Removendo conta {account_id} completamente...")
         
         # 1. Verifica se a conta existe no banco de dados
-        db_session = SessionLocal()
-        try:
+        with thread_local_session() as db_session:
             account = db_session.query(models.Account).filter_by(phone=account_id).one_or_none()
             if account is None:
                 logger.warning(f"Conta {account_id} não encontrada no banco de dados")
                 return False
-        except Exception as e:
-            logger.error(f"Erro ao verificar se conta {account_id} existe: {e}")
-            return False
-        finally:
-            db_session.close()
         
         # 2. Remove do AccountManager se estiver ativo e desconecta
         try:
@@ -726,23 +699,16 @@ class ZowsupClient:
             logger.warning(f"Erro ao remover conta {account_id} do AccountManager: {e}")
         
         # 4. Remove do banco de dados (CASCADE remove todos os dados relacionados)
-        db_session = SessionLocal()
-        try:
+        with thread_local_session() as db_session:
             account = db_session.query(models.Account).filter_by(phone=account_id).one_or_none()
             if account:
                 db_session.delete(account)
-                db_session.commit()
+                # Commit automático via context manager
                 logger.info(f"Conta {account_id} removida do banco de dados com sucesso")
                 return True
             else:
                 logger.warning(f"Conta {account_id} não encontrada no banco de dados para remoção")
                 return False
-        except Exception as e:
-            db_session.rollback()
-            logger.error(f"Erro ao remover conta {account_id} do banco de dados: {e}")
-            return False
-        finally:
-            db_session.close()
 
     def _build_account_config(self) -> ClientConfig:
         """
@@ -1173,7 +1139,7 @@ class ZowsupClient:
         env: Optional[str] = None,
         proxy: Optional[str] = None,
         auto_connect: bool = False,
-        log_level: Optional[str] = "CRITICAL",
+        log_level: Optional[str] = "DEBUG",
     ) -> None:
         """
         Cria um novo cliente de alto nível completamente isolado.
@@ -1200,7 +1166,7 @@ class ZowsupClient:
         self.account_env = None
         if env is None:
             try:
-                with SessionLocal() as _db:
+                with thread_local_session() as _db:
                     self.account_env = (
                         _db.query(models.Account.env)
                         .filter_by(phone=account_id)
@@ -1214,17 +1180,32 @@ class ZowsupClient:
 
         if proxy and proxy.upper() != "DIRECT":
             self.network_env = NetworkEnv(NetworkEnv.TYPE_PROXY, proxyStr=proxy)
-            logger.debug(f"{self._log_prefix} Usando proxy: {proxy}")
+            logger.info(f"{self._log_prefix} [PROXY] Proxy configurado via parâmetro: {proxy}")
+            logger.info(f"{self._log_prefix} [PROXY] Tipo: {self.network_env.type} | Host: {self.network_env.host} | Port: {self.network_env.port} | Auth: {'Sim' if self.network_env.username else 'Não'}")
         else:
             self.network_env = NetworkEnv(NetworkEnv.TYPE_DIRECT)
-            logger.debug(f"{self._log_prefix} Usando conexão direta (sem proxy)")
+            logger.info(f"{self._log_prefix} [PROXY] Conexão direta (sem proxy) - parâmetro proxy não fornecido ou 'DIRECT'")
 
-
-
+        # Carrega proxy do banco de dados (pode sobrescrever o proxy do parâmetro)
         self._load_proxy_from_db()
+        
+        # Log final do estado do proxy após carregar do DB
+        if self.network_env.type == "proxy":
+            logger.info(f"{self._log_prefix} [PROXY] ✅ Estado final: PROXY ATIVO | {self.network_env.host}:{self.network_env.port} | Auth: {'Sim' if hasattr(self.network_env, 'username') and self.network_env.username else 'Não'}")
+        else:
+            logger.info(f"{self._log_prefix} [PROXY] ✅ Estado final: CONEXÃO DIRETA (sem proxy)")
 
         # Constrói stack direto com SendLayer (sem YowBot)
         self._init_send_layer_stack(device_env, self.network_env)
+
+        # Registra account_id no SessionLifecycleManager
+        try:
+            from zowsuplib.app.session_manager import get_session_lifecycle_manager
+            session_manager = get_session_lifecycle_manager()
+            # A sessão será registrada automaticamente quando usar thread_local_session com account_id
+            logger.debug(f"{self._log_prefix} Sessões serão gerenciadas pelo SessionLifecycleManager")
+        except Exception as e:
+            logger.warning(f"{self._log_prefix} Erro ao registrar sessões: {e}")
 
         self._started = False
         self._stack_thread: Optional[threading.Thread] = None
@@ -1519,7 +1500,8 @@ class ZowsupClient:
         if proxy_string.upper() == "DIRECT":
             # Desativar proxy
             self.network_env = NetworkEnv("direct")
-            logger.info(f"{self._log_prefix} Proxy desativado - conexão direta")
+            logger.info(f"{self._log_prefix} [PROXY] Proxy desativado - conexão direta")
+            logger.info(f"{self._log_prefix} [PROXY] Estado: TYPE_DIRECT | Proxy removido da instância")
             return True
 
         # Parse do proxy string
@@ -1584,18 +1566,19 @@ class ZowsupClient:
                 proxy_str += f":{username}:{password}"
 
             self.network_env = NetworkEnv(NetworkEnv.TYPE_PROXY, proxyStr=proxy_str)
-            logger.info(f"{self._log_prefix} ✅ Proxy configurado com sucesso: {host}:{port}")
+            logger.info(f"{self._log_prefix} [PROXY] ✅ Proxy configurado com sucesso: {host}:{port}")
+            logger.info(f"{self._log_prefix} [PROXY] Detalhes: Host={host} | Port={port} | Auth={'Sim' if username else 'Não'} | Tipo={self.network_env.type}")
 
             # Salva no banco de dados
             try:
-                with SessionLocal() as session:
+                with thread_local_session() as session:
                     account = session.query(models.Account).filter_by(phone=self.account_id).first()
                     if account:
                         account.proxy_host = host
                         account.proxy_port = port
                         account.proxy_username = username
                         account.proxy_password = password
-                        session.commit()
+                        # Commit automático via context manager
                         logger.info(f"{self._log_prefix} ✅ Proxy salvo no banco de dados")
                     else:
                         logger.warning(f"{self._log_prefix} ⚠️  Conta não encontrada no banco de dados para salvar proxy")
@@ -1621,14 +1604,14 @@ class ZowsupClient:
             self.network_env = NetworkEnv("direct")
 
             # Remove do banco de dados
-            with SessionLocal() as session:
+            with thread_local_session() as session:
                 account = session.query(models.Account).filter_by(phone=self.account_id).first()
                 if account:
                     account.proxy_host = None
                     account.proxy_port = None
                     account.proxy_username = None
                     account.proxy_password = None
-                    session.commit()
+                    # Commit automático via context manager
                     logger.info(f"{self._log_prefix} ✅ Proxy removido do banco de dados")
                 else:
                     logger.warning(f"{self._log_prefix} ⚠️  Conta não encontrada no banco de dados")
@@ -1654,7 +1637,7 @@ class ZowsupClient:
                 print("Nenhum proxy configurado")
         """
         try:
-            with SessionLocal() as session:
+            with thread_local_session() as session:
                 account = session.query(models.Account).filter_by(phone=self.account_id).first()
                 if account and account.proxy_host and account.proxy_port:
                     # Reconstrói a string de proxy
@@ -2004,24 +1987,30 @@ class ZowsupClient:
             bool: True se proxy foi carregado e configurado, False se não havia proxy ou erro
         """
         try:
-            with SessionLocal() as session:
+            with thread_local_session() as session:
                 account = session.query(models.Account).filter_by(phone=self.account_id).first()
                 if account and account.proxy_host and account.proxy_port:
                     # Reconstrói a string de proxy
                     proxy_string = account.proxy_host + ":" + str(account.proxy_port)
-                    if account.proxy_username and account.proxy_password:
+                    has_auth = bool(account.proxy_username and account.proxy_password)
+                    if has_auth:
                         proxy_string += ":" + account.proxy_username + ":" + account.proxy_password
 
                     # Aplica o proxy sem validação (já foi validado quando salvo)
+                    old_type = self.network_env.type if hasattr(self, 'network_env') else None
                     self.network_env = NetworkEnv(NetworkEnv.TYPE_PROXY, proxyStr=proxy_string)
-                    logger.info(f"{self._log_prefix} ✅ Proxy carregado do banco de dados: {account.proxy_host}:{account.proxy_port}")
+                    
+                    logger.info(f"{self._log_prefix} [PROXY] Proxy carregado do banco de dados: {account.proxy_host}:{account.proxy_port}")
+                    logger.info(f"{self._log_prefix} [PROXY] Detalhes: Host={account.proxy_host} | Port={account.proxy_port} | Auth={'Sim' if has_auth else 'Não'}")
+                    if old_type and old_type != "proxy":
+                        logger.info(f"{self._log_prefix} [PROXY] Proxy do DB sobrescreveu configuração anterior ({old_type} -> proxy)")
                     return True
                 else:
-                    logger.debug(f"{self._log_prefix} Nenhum proxy configurado no banco de dados")
+                    logger.debug(f"{self._log_prefix} [PROXY] Nenhum proxy configurado no banco de dados para esta conta")
                     return False
 
         except Exception as e:
-            logger.error(f"{self._log_prefix} ❌ Erro ao carregar proxy do banco de dados: {e}")
+            logger.error(f"{self._log_prefix} [PROXY] ❌ Erro ao carregar proxy do banco de dados: {e}", exc_info=True)
             return False
 
     def connect_in_thread(self, *, wait_login: bool = True, retry_with_env_rotation: bool = True) -> threading.Thread:
@@ -2195,6 +2184,16 @@ class ZowsupClient:
         
         logger.info(f"{self._log_prefix} Desconectando...")
         try:
+            # Fecha todas as sessões da conta
+            try:
+                from zowsuplib.app.session_manager import get_session_lifecycle_manager
+                session_manager = get_session_lifecycle_manager()
+                closed_count = session_manager.close_all_for_account(self.account_id)
+                if closed_count > 0:
+                    logger.info(f"{self._log_prefix} {closed_count} sessões fechadas durante desconexão")
+            except Exception as e:
+                logger.warning(f"{self._log_prefix} Erro ao fechar sessões durante desconexão: {e}")
+            
             # Sinalizar parada do loop do stack
             if hasattr(self, '_stop_event'):
                 self._stop_event.set()
@@ -2407,63 +2406,62 @@ class ZowsupClient:
                 print(f"Erro {result['error_code']}: {result['error_message']}")
         """
         from zowsuplib.app import models
-        from zowsuplib.app.db import SessionLocal
         
         logger.debug(f"{self._log_prefix} check_message_error(message_id={message_id})")
         
-        db = SessionLocal()
         try:
-            # Obtém o account_id da conta atual
-            account_id = db.query(models.Account.id).filter_by(phone=self.account_id).scalar()
-            if account_id is None:
+            with thread_local_session() as db:
+                # Obtém o account_id da conta atual
+                account_id = db.query(models.Account.id).filter_by(phone=self.account_id).scalar()
+                if account_id is None:
+                    return {
+                        "found": False,
+                        "has_error": False,
+                        "status": None,
+                        "error_code": None,
+                        "error_message": None,
+                        "recipient": None,
+                        "message_type": None,
+                        "created_at": None,
+                    }
+                
+                # Busca a mensagem no banco
+                sent_message = (
+                    db.query(models.SentMessage)
+                    .filter_by(account_id=account_id, msg_id=message_id)
+                    .first()
+                )
+                
+                if sent_message is None:
+                    return {
+                        "found": False,
+                        "has_error": False,
+                        "status": None,
+                        "error_code": None,
+                        "error_message": None,
+                        "recipient": None,
+                        "message_type": None,
+                        "created_at": None,
+                    }
+                
+                # Verifica se há erro
+                has_error = sent_message.status == "ERROR" or sent_message.error_code is not None
+                error_message = None
+                
+                if has_error and sent_message.error_code:
+                    # Obtém mensagem descritiva do erro
+                    error_message = self._get_ack_error_message(sent_message.error_code)
+                
                 return {
-                    "found": False,
-                    "has_error": False,
-                    "status": None,
-                    "error_code": None,
-                    "error_message": None,
-                    "recipient": None,
-                    "message_type": None,
-                    "created_at": None,
+                    "found": True,
+                    "has_error": has_error,
+                    "status": sent_message.status,
+                    "error_code": sent_message.error_code,
+                    "error_message": error_message,
+                    "recipient": sent_message.recipient,
+                    "message_type": sent_message.message_type,
+                    "created_at": sent_message.created_at.isoformat() if sent_message.created_at else None,
                 }
-            
-            # Busca a mensagem no banco
-            sent_message = (
-                db.query(models.SentMessage)
-                .filter_by(account_id=account_id, msg_id=message_id)
-                .first()
-            )
-            
-            if sent_message is None:
-                return {
-                    "found": False,
-                    "has_error": False,
-                    "status": None,
-                    "error_code": None,
-                    "error_message": None,
-                    "recipient": None,
-                    "message_type": None,
-                    "created_at": None,
-                }
-            
-            # Verifica se há erro
-            has_error = sent_message.status == "ERROR" or sent_message.error_code is not None
-            error_message = None
-            
-            if has_error and sent_message.error_code:
-                # Obtém mensagem descritiva do erro
-                error_message = self._get_ack_error_message(sent_message.error_code)
-            
-            return {
-                "found": True,
-                "has_error": has_error,
-                "status": sent_message.status,
-                "error_code": sent_message.error_code,
-                "error_message": error_message,
-                "recipient": sent_message.recipient,
-                "message_type": sent_message.message_type,
-                "created_at": sent_message.created_at.isoformat() if sent_message.created_at else None,
-            }
         except Exception as e:
             logger.error(f"{self._log_prefix} Erro ao verificar mensagem {message_id}: {e}", exc_info=True)
             return {
@@ -2476,8 +2474,6 @@ class ZowsupClient:
                 "message_type": None,
                 "created_at": None,
             }
-        finally:
-            db.close()
     
     @staticmethod
     def _get_ack_error_message(error_code):
@@ -4104,9 +4100,7 @@ class ZowsupClient:
         Raises:
             ValueError se nenhuma conta master existir.
         """
-        session = SessionLocal()
-        row = None
-        try:
+        with thread_local_session() as session:
             row = (
                 session.query(models.Account.phone, models.Account.env)
                 .filter_by(master=True)
@@ -4121,8 +4115,6 @@ class ZowsupClient:
                     .order_by(models.Account.updated_at.desc())
                     .first()
                 )
-        finally:
-            session.close()
 
         if row is None:
             raise ValueError("Nenhuma conta master ou conta logada encontrada no banco de dados")

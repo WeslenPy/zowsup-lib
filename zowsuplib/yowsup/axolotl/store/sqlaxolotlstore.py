@@ -972,6 +972,8 @@ class SqlAxolotlStore(AxolotlStore):
         Obtém sessão thread-local para a thread atual.
         Thread-safe: cada thread tem sua própria sessão isolada.
         
+        Valida que a sessão não está sendo compartilhada entre contas diferentes.
+        
         Returns:
             Session: Sessão isolada para a thread atual
         """
@@ -979,12 +981,28 @@ class SqlAxolotlStore(AxolotlStore):
             raise RuntimeError("SqlAxolotlStore foi fechado. Não é possível reutilizar.")
         
         from zowsuplib.app.db import get_thread_local_session
-        return get_thread_local_session()
+        session = get_thread_local_session()
+        
+        # Validação de isolamento: garante que a sessão é thread-local
+        # Cada thread deve ter sua própria sessão isolada
+        thread_id = threading.current_thread().ident
+        if not hasattr(session, '_thread_id'):
+            session._thread_id = thread_id
+        elif session._thread_id != thread_id:
+            logger.warning(
+                f"[ISOLATION] Possível compartilhamento de sessão detectado | "
+                f"username={self._username} expected_thread={session._thread_id} "
+                f"current_thread={thread_id}"
+            )
+        
+        return session
     
     def _get_account(self, db: Session) -> models.Account:
         """
         Obtém ou cria account para a sessão atual.
         Usa cache para evitar queries repetidas.
+        
+        Valida que o account corresponde ao username correto para garantir isolamento.
         
         Args:
             db: Sessão do banco de dados
@@ -998,6 +1016,13 @@ class SqlAxolotlStore(AxolotlStore):
         if self._account_id is None:
             account = _get_or_create_account(db, self._username)
             self._account_id = account.id
+            # Validação de isolamento: garante que o account corresponde ao username
+            if account.phone != self._username:
+                logger.error(
+                    f"[ISOLATION] Account ID {account.id} não corresponde ao username {self._username} | "
+                    f"account.phone={account.phone}"
+                )
+                raise RuntimeError(f"Account mismatch: expected {self._username}, got {account.phone}")
             return account
         
         # Busca account pelo ID (mais eficiente que buscar por phone)
@@ -1010,6 +1035,17 @@ class SqlAxolotlStore(AxolotlStore):
                 f"Account {self._account_id} não encontrado para username={self._username}, "
                 f"limpando cache e recriando..."
             )
+            self._account_id = None
+            account = _get_or_create_account(db, self._username)
+            self._account_id = account.id
+        
+        # Validação de isolamento: garante que o account corresponde ao username
+        if account.phone != self._username:
+            logger.error(
+                f"[ISOLATION] Account ID {account.id} não corresponde ao username {self._username} | "
+                f"account.phone={account.phone}"
+            )
+            # Limpa cache e recria para corrigir
             self._account_id = None
             account = _get_or_create_account(db, self._username)
             self._account_id = account.id
