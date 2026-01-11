@@ -1,3 +1,4 @@
+from zowsuplib.consonance.config.appversion import AppVersionConfig
 from ...layers.noise.workers.handshake import WANoiseProtocolHandshakeWorker
 from ...layers import YowLayer, EventCallback
 from ...layers.auth.layer_authentication import YowAuthenticationProtocolLayer
@@ -669,7 +670,6 @@ class YowNoiseLayer(YowLayer):
                 "connect_reason": client_config.connect_reason,
                 "useragent": {
                     "platform": client_config.useragent.platform,
-                    "app_version": client_config.useragent.app_version.getVersion() if hasattr(client_config.useragent.app_version, 'getVersion') else str(client_config.useragent.app_version),
                     "mcc": client_config.useragent.mcc,
                     "mnc": client_config.useragent.mnc,
                     "os_version": client_config.useragent.os_version,
@@ -775,49 +775,15 @@ class YowNoiseLayer(YowLayer):
                 # Novo formato: já é um dict
                 config_dict = config_data
             
+            yowsupenv = self.getProp("env").deviceEnv
             # Reconstrói UserAgentConfig
             from zowsuplib.consonance.config.appversion import AppVersionConfig
             useragent_dict = config_dict.get("useragent", {})
-            app_version = useragent_dict.get("app_version")
-            
-            # Tratamento robusto de app_version (pode ser None, dict, string formatada, etc.)
-            if app_version is None:
-                # Se não tiver app_version, usa padrão
-                logger.warning(f"[HANDSHAKE-DEBUG] app_version não encontrado, usando padrão | account={account_id} instance={self._instance_id}")
-                app_version = AppVersionConfig("2.25.35.79")
-            elif isinstance(app_version, dict):
-                # Se for dict (formato incorreto), tenta extrair ou usa padrão
-                logger.warning(f"[HANDSHAKE-DEBUG] app_version é dict (formato incorreto), usando padrão | account={account_id} instance={self._instance_id} app_version={app_version}")
-                app_version = AppVersionConfig("2.25.35.79")
-            elif isinstance(app_version, str):
-                # Se for uma string formatada antiga (AppVersionConfig(...)), tenta extrair a versão
-                if app_version.startswith("AppVersionConfig"):
-                    # Extrai os valores da string formatada
-                    import re
-                    match = re.search(r'primary=(\d+),\s*secondary=(\d+),\s*tertiary=(\d+),\s*quaternary=(\d+)', app_version)
-                    if match:
-                        app_version = f"{match.group(1)}.{match.group(2)}.{match.group(3)}.{match.group(4)}"
-                    else:
-                        # Se não conseguir extrair, usa versão padrão
-                        logger.warning(f"[HANDSHAKE-DEBUG] Não foi possível extrair versão de: {app_version}, usando padrão | account={account_id} instance={self._instance_id}")
-                        app_version = "2.25.35.79"
-                # Cria AppVersionConfig com a string de versão
-                try:
-                    app_version = AppVersionConfig(app_version)
-                except Exception as e:
-                    logger.error(f"[HANDSHAKE-DEBUG] Erro ao criar AppVersionConfig de '{app_version}': {e}, usando padrão | account={account_id} instance={self._instance_id}")
-                    app_version = AppVersionConfig("2.25.35.79")
-            elif isinstance(app_version, AppVersionConfig):
-                # Já é um AppVersionConfig (improvável, mas possível)
-                pass
-            else:
-                # Tipo desconhecido
-                logger.error(f"[HANDSHAKE-DEBUG] app_version tem tipo inesperado: {type(app_version)}, usando padrão | account={account_id} instance={self._instance_id} app_version={app_version}")
-                app_version = AppVersionConfig("2.25.35.79")
-            
+
+
             useragent = UserAgentConfig(
                 platform=useragent_dict.get("platform"),
-                app_version=app_version,
+                app_version=yowsupenv.getVersion(),
                 mcc=useragent_dict.get("mcc", "000"),
                 mnc=useragent_dict.get("mnc", "000"),
                 os_version=useragent_dict.get("os_version"),
