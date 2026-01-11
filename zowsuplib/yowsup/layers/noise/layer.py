@@ -18,8 +18,10 @@ from zowsuplib.common.utils import Utils
 from zowsuplib.app.yowbot_values import YowBotType
 from zowsuplib.settings.conf import settings
 import threading
+from typing import Optional
 
 from loguru import logger
+import json
 try:
     import Queue
 except ImportError:
@@ -235,31 +237,8 @@ class YowNoiseLayer(YowLayer):
                 cc = Utils.getMobileCC(str(username))       
                 lg,lc = Utils.getLGLC(cc)
                 
-                mcc =  "000"
-                mnc = "000"
-                
-                client_config = ClientConfig(
-                    username=username,
-                    passive=passive,
-                    useragent=UserAgentConfig(
-                        platform=yowsupenv.getPlatform(),
-                        app_version=yowsupenv.getVersion(),
-                        mcc=mcc,
-                        mnc=mnc,
-                        os_version=yowsupenv.getOSVersion(),
-                        manufacturer=yowsupenv.getManufacturer(),
-                        device=yowsupenv.getDeviceName2(),
-                        os_build_number=yowsupenv.getBuildVersion(),
-                        phone_id=config.fdid or "",
-                        locale_lang=lg,
-                        locale_country=lc,
-                        device_exp_id = base64.b64encode(config.expid).decode() if config.expid else "",                        
-                        device_type=0,  #PHONE
-                        device_model_type=yowsupenv.getDeviceModelType()
-                    ),
-                    pushname=config.pushname or self.DEFAULT_PUSHNAME,
-                    short_connect=True                                      
-                )
+                # Usa _build_client_config para tentar reutilizar ClientConfig salvo
+                client_config = self._build_client_config(config, yowsupenv, username, passive, device)
 
                 if not self._in_handshake():
                     import threading
@@ -268,7 +247,7 @@ class YowNoiseLayer(YowLayer):
                     self._handshake_attempt += 1
                     attempt_id = self._handshake_attempt
                     self._last_handshake_attempt = attempt_id
-                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] performing login handshake | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} username={username} passive={passive} deviceid={int(device) if device is not None else None} mcc={mcc} mnc={mnc} rs={'present' if remote_static else 'none'}")
+                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] performing login handshake | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} username={username} passive={passive} deviceid={int(device) if device is not None else None} mcc={client_config.useragent.mcc} mnc={client_config.useragent.mnc} rs={'present' if remote_static else 'none'}")
                     logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] client_config completo: platform={client_config.useragent.platform} app_version={client_config.useragent.app_version} os_version={client_config.useragent.os_version} manufacturer={client_config.useragent.manufacturer} device={client_config.useragent.device}")
                     logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] local_static presente: {local_static is not None} remote_static presente: {remote_static is not None}")
                     logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] stream object: {id(self._stream)} protocol state: {self._wa_noiseprotocol.state}")
@@ -577,5 +556,282 @@ class YowNoiseLayer(YowLayer):
     def _maybe_break(self, env_var):
         if env_var in settings.debug_break_flags:
             import pdb; pdb.set_trace()
+
+    def _save_client_config(self, client_config: ClientConfig) -> bool:
+        """
+        Salva o ClientConfig no profile para reutilização no próximo auth.
+        
+        Args:
+            client_config: ClientConfig a ser salvo
+            
+        Returns:
+            bool: True se salvou com sucesso, False caso contrário
+        """
+        try:
+            if self._profile is None:
+                logger.warning("[HANDSHAKE-DEBUG] Profile não disponível para salvar ClientConfig")
+                return False
+            
+            account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+            profile_name = self._profile._profile_name
+            
+            # Serializa ClientConfig para dict
+            config_dict = {
+                "username": client_config.username,
+                "passive": client_config.passive,
+                "pushname": client_config.pushname,
+                "short_connect": client_config.short_connect,
+                "connect_reason": client_config.connect_reason,
+                "useragent": {
+                    "platform": client_config.useragent.platform,
+                    "app_version": str(client_config.useragent.app_version) if hasattr(client_config.useragent.app_version, '__str__') else client_config.useragent.app_version,
+                    "mcc": client_config.useragent.mcc,
+                    "mnc": client_config.useragent.mnc,
+                    "os_version": client_config.useragent.os_version,
+                    "manufacturer": client_config.useragent.manufacturer,
+                    "device": client_config.useragent.device,
+                    "os_build_number": client_config.useragent.os_build_number,
+                    "phone_id": client_config.useragent.phone_id,
+                    "locale_lang": client_config.useragent.locale_lang,
+                    "locale_country": client_config.useragent.locale_country,
+                    "device_exp_id": client_config.useragent.device_exp_id,
+                    "device_type": client_config.useragent.device_type,
+                    "device_model_type": client_config.useragent.device_model_type,
+                }
+            }
+            
+            # Salva no ProfileConfig com nome personalizado
+            from zowsuplib.yowsup.common.tools import StorageTools
+            from zowsuplib.app.db import SessionLocal
+            from zowsuplib.app import models
+            
+            phone = StorageTools._extract_phone_from_profile_name(profile_name)
+            if not phone:
+                logger.error(f"[HANDSHAKE-DEBUG] Não foi possível extrair phone de profile_name={profile_name}")
+                return False
+            
+            config_json = json.dumps(config_dict, indent=2)
+            data = config_json.encode('utf-8')
+            
+            db = SessionLocal()
+            try:
+                account_id_db = db.query(models.Account.id).filter_by(phone=phone).scalar()
+                if account_id_db is None:
+                    account = models.Account(phone=phone)
+                    db.add(account)
+                    db.flush()
+                    account_id_db = account.id
+                
+                row = (
+                    db.query(models.ProfileConfig)
+                    .filter_by(account_id=account_id_db, name="client_config.json")
+                    .one_or_none()
+                )
+                
+                if row is None:
+                    row = models.ProfileConfig(
+                        account_id=account_id_db,
+                        name="client_config.json",
+                        data=data,
+                    )
+                    db.add(row)
+                else:
+                    row.data = data
+                
+                db.commit()
+                logger.info(f"[HANDSHAKE-DEBUG] ClientConfig salvo para reutilização | account={account_id}")
+                return True
+            finally:
+                db.close()
+            
+        except Exception as e:
+            account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+            logger.error(f"[HANDSHAKE-DEBUG] Erro ao salvar ClientConfig | account={account_id} error={e}", exc_info=True)
+            return False
+
+    def _load_client_config(self) -> Optional[ClientConfig]:
+        """
+        Carrega o ClientConfig salvo do profile, se disponível.
+        
+        Returns:
+            ClientConfig ou None se não estiver salvo ou houver erro
+        """
+        try:
+            if self._profile is None:
+                return None
+            
+            account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+            profile_name = self._profile._profile_name
+            
+            # Tenta carregar do ProfileConfig
+            from zowsuplib.yowsup.common.tools import StorageTools
+            from zowsuplib.app.db import SessionLocal
+            from zowsuplib.app import models
+            
+            phone = StorageTools._extract_phone_from_profile_name(profile_name)
+            if not phone:
+                return None
+            
+            db = SessionLocal()
+            try:
+                account_id_db = db.query(models.Account.id).filter_by(phone=phone).scalar()
+                if not account_id_db:
+                    return None
+                
+                row = (
+                    db.query(models.ProfileConfig)
+                    .filter_by(account_id=account_id_db, name="client_config.json")
+                    .one_or_none()
+                )
+                
+                if row is None:
+                    logger.debug(f"[HANDSHAKE-DEBUG] ClientConfig não encontrado no profile | account={account_id}")
+                    return None
+                
+                config_data = row.data
+            finally:
+                db.close()
+            
+            # Deserializa JSON
+            if isinstance(config_data, bytes):
+                config_data = config_data.decode('utf-8')
+            
+            config_dict = json.loads(config_data)
+            
+            # Reconstrói UserAgentConfig
+            from zowsuplib.consonance.config.appversion import AppVersionConfig
+            useragent_dict = config_dict.get("useragent", {})
+            app_version = useragent_dict.get("app_version")
+            if isinstance(app_version, str):
+                app_version = AppVersionConfig(app_version)
+            
+            useragent = UserAgentConfig(
+                platform=useragent_dict.get("platform"),
+                app_version=app_version,
+                mcc=useragent_dict.get("mcc", "000"),
+                mnc=useragent_dict.get("mnc", "000"),
+                os_version=useragent_dict.get("os_version"),
+                manufacturer=useragent_dict.get("manufacturer"),
+                device=useragent_dict.get("device"),
+                os_build_number=useragent_dict.get("os_build_number"),
+                phone_id=useragent_dict.get("phone_id", ""),
+                locale_lang=useragent_dict.get("locale_lang", "en"),
+                locale_country=useragent_dict.get("locale_country", "US"),
+                device_exp_id=useragent_dict.get("device_exp_id", ""),
+                device_type=useragent_dict.get("device_type", 0),
+                device_model_type=useragent_dict.get("device_model_type")
+            )
+            
+            # Reconstrói ClientConfig
+            client_config = ClientConfig(
+                username=config_dict.get("username"),
+                passive=config_dict.get("passive", False),
+                useragent=useragent,
+                pushname=config_dict.get("pushname"),
+                short_connect=config_dict.get("short_connect", True),
+                connect_reason=config_dict.get("connect_reason")
+            )
+            
+            logger.info(f"[HANDSHAKE-DEBUG] ClientConfig carregado do profile | account={account_id}")
+            return client_config
+            
+        except Exception as e:
+            account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+            logger.warning(f"[HANDSHAKE-DEBUG] Erro ao carregar ClientConfig, criando novo | account={account_id} error={e}")
+            return None
+
+    def _build_client_config(self, config, yowsupenv, username, passive, device=None) -> ClientConfig:
+        """
+        Constrói ClientConfig, tentando carregar do profile primeiro.
+        Se não estiver disponível, cria novo e salva.
+        
+        Args:
+            config: Config do profile
+            yowsupenv: DeviceEnv
+            username: Número de telefone
+            passive: Se é conexão passiva
+            device: Device ID (opcional)
+            
+        Returns:
+            ClientConfig
+        """
+        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+        
+        # Tenta carregar ClientConfig salvo
+        saved_client_config = self._load_client_config()
+        
+        if saved_client_config is not None:
+            # Atualiza campos que podem ter mudado
+            # username pode mudar, então sempre usa o atual
+            # phone_id e device_exp_id podem mudar, então atualiza do config
+            cc = Utils.getMobileCC(str(username))
+            lg, lc = Utils.getLGLC(cc)
+            
+            # Cria novo UserAgentConfig com dados atualizados
+            useragent = UserAgentConfig(
+                platform=saved_client_config.useragent.platform,
+                app_version=saved_client_config.useragent.app_version,
+                mcc=saved_client_config.useragent.mcc,
+                mnc=saved_client_config.useragent.mnc,
+                os_version=saved_client_config.useragent.os_version,
+                manufacturer=saved_client_config.useragent.manufacturer,
+                device=saved_client_config.useragent.device,
+                os_build_number=saved_client_config.useragent.os_build_number,
+                phone_id=config.fdid or saved_client_config.useragent.phone_id or "",
+                locale_lang=lg or saved_client_config.useragent.locale_lang,
+                locale_country=lc or saved_client_config.useragent.locale_country,
+                device_exp_id=base64.b64encode(config.expid).decode() if config.expid else saved_client_config.useragent.device_exp_id or "",
+                device_type=saved_client_config.useragent.device_type,
+                device_model_type=saved_client_config.useragent.device_model_type
+            )
+            
+            # Cria ClientConfig atualizado
+            client_config = ClientConfig(
+                username=username,
+                passive=passive,
+                useragent=useragent,
+                pushname=config.pushname or saved_client_config.pushname or self.DEFAULT_PUSHNAME,
+                short_connect=saved_client_config.short_connect,
+                connect_reason=saved_client_config.connect_reason
+            )
+            
+            logger.info(f"[HANDSHAKE-DEBUG] ClientConfig reutilizado do profile (com atualizações) | account={account_id}")
+            return client_config
+        
+        # Se não encontrou salvo, cria novo
+        cc = Utils.getMobileCC(str(username))
+        lg, lc = Utils.getLGLC(cc)
+        
+        mcc = "000"
+        mnc = "000"
+        
+        client_config = ClientConfig(
+            username=username,
+            passive=passive,
+            useragent=UserAgentConfig(
+                platform=yowsupenv.getPlatform(),
+                app_version=yowsupenv.getVersion(),
+                mcc=mcc,
+                mnc=mnc,
+                os_version=yowsupenv.getOSVersion(),
+                manufacturer=yowsupenv.getManufacturer(),
+                device=yowsupenv.getDeviceName2(),
+                os_build_number=yowsupenv.getBuildVersion(),
+                phone_id=config.fdid or "",
+                locale_lang=lg,
+                locale_country=lc,
+                device_exp_id=base64.b64encode(config.expid).decode() if config.expid else "",
+                device_type=0,  # PHONE
+                device_model_type=yowsupenv.getDeviceModelType()
+            ),
+            pushname=config.pushname or self.DEFAULT_PUSHNAME,
+            short_connect=True
+        )
+        
+        # Salva para próxima vez
+        self._save_client_config(client_config)
+        
+        logger.info(f"[HANDSHAKE-DEBUG] Novo ClientConfig criado e salvo | account={account_id}")
+        return client_config
 
 
