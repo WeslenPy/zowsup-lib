@@ -33,6 +33,7 @@ class YowNoiseLayer(YowLayer):
     EVENT_HANDSHAKE_FAILED = "org.whatsapp.yowsup.layer.noise.event.handshake_failed"
     def __init__(self):
         super(YowNoiseLayer, self).__init__()
+        self._instance_id = id(self)  # ID único da instância para debug de isolamento
         self._wa_noiseprotocol = WANoiseProtocol(
             6, 3, 
             protocol_state_callbacks=self._on_protocol_state_changed,
@@ -63,25 +64,32 @@ class YowNoiseLayer(YowLayer):
         
         account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
         thread_id = threading.current_thread().ident
+        stack_id = id(self.getStack())
         
-        # #region agent log
+        logger.info(f"[HANDSHAKE-DEBUG] on_disconnected chamado | account={account_id} thread_id={thread_id} stack_id={stack_id} instance={self._instance_id}")
         
-        logger.info(f"[HANDSHAKE-DEBUG] on_disconnected chamado | account={account_id} thread_id={thread_id}")
+        # Verifica se o evento é para esta conta específica
+        # (evita processar eventos de outras contas em caso de múltiplas contas)
+        event_account_id = event.getArg("account_id") if hasattr(event, 'getArg') else None
+        if event_account_id and event_account_id != account_id:
+            logger.warning(f"[HANDSHAKE-DEBUG] on_disconnected ignorado: evento para outra conta | this_account={account_id} event_account={event_account_id} instance={self._instance_id}")
+            return
         
         # Resetar protocolo
         self._wa_noiseprotocol.reset()
         
         # Cancelar stream para desbloquear handshake worker bloqueado
-        if self._stream:
-            # #region agent log
-            # #endregion
-            logger.debug(f"[HANDSHAKE-DEBUG] Cancelando stream | account={account_id}")
+        # Apenas se o stream ainda não foi cancelado
+        if self._stream and not self._stream.is_cancelled():
+            logger.debug(f"[HANDSHAKE-DEBUG] Cancelando stream | account={account_id} instance={self._instance_id}")
             self._stream.cancel()
+        elif self._stream:
+            logger.debug(f"[HANDSHAKE-DEBUG] Stream já estava cancelado | account={account_id} instance={self._instance_id}")
         
         # Limpar referência do worker (a thread vai terminar naturalmente após detectar cancelamento)
         if self._handshake_worker is not None:
             worker_thread_id = self._handshake_worker.ident if hasattr(self._handshake_worker, 'ident') else 'N/A'
-            logger.debug(f"[HANDSHAKE-DEBUG] Handshake worker ativo, será finalizado | account={account_id} worker_thread_id={worker_thread_id}")
+            logger.debug(f"[HANDSHAKE-DEBUG] Handshake worker ativo, será finalizado | account={account_id} worker_thread_id={worker_thread_id} instance={self._instance_id}")
             # Não fazer join() aqui para não bloquear - a thread vai terminar após detectar cancelamento
             self._handshake_worker = None
 
@@ -90,7 +98,8 @@ class YowNoiseLayer(YowLayer):
         import threading
         thread_id = threading.current_thread().ident
         account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
-        logger.info(f"[HANDSHAKE-DEBUG] on_auth chamado | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())}")
+        stack_id = id(self.getStack())
+        logger.info(f"[HANDSHAKE-DEBUG] on_auth chamado | account={account_id} thread_id={thread_id} stack_id={stack_id} instance={self._instance_id}")
         logger.debug("Received auth event")
         self._profile = self.getProp("profile")
 
@@ -158,10 +167,24 @@ class YowNoiseLayer(YowLayer):
             self.setProp(YowNoiseSegmentsLayer.PROP_ENABLED, True)                    
             
             if not self._in_handshake():
+                account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+                
+                # Reseta o stream se estiver cancelado ou em estado inconsistente
+                if self._stream:
+                    if self._stream.is_cancelled():
+                        logger.info(f"[HANDSHAKE-DEBUG] Stream estava cancelado, resetando antes de novo handshake (reg) | account={account_id} instance={self._instance_id}")
+                        self._stream.reset()
+                    # Limpa a queue de segmentos recebidos para evitar dados antigos
+                    while not self._incoming_segments_queue.empty():
+                        try:
+                            self._incoming_segments_queue.get_nowait()
+                        except:
+                            break
+                
                 self._handshake_attempt += 1
                 attempt_id = self._handshake_attempt
                 self._last_handshake_attempt = attempt_id
-                logger.info(f"[handshake {attempt_id}] performing registration handshake | mcc={mcc} mnc={mnc} deviceid={deviceid if jid is not None else None}")
+                logger.info(f"[handshake {attempt_id}] performing registration handshake | account={account_id} instance={self._instance_id} mcc={mcc} mnc={mnc} deviceid={deviceid if jid is not None else None}")
                 self._handshake_worker = WANoiseProtocolHandshakeWorker(
                     self._wa_noiseprotocol, self._stream, client_config, keypair,rs = None,                    
                     finish_callback = self.on_handshake_finished,
@@ -253,15 +276,30 @@ class YowNoiseLayer(YowLayer):
                     import threading
                     thread_id = threading.current_thread().ident
                     account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+                    stack_id = id(self.getStack())
+                    
+                    # Reseta o stream se estiver cancelado ou em estado inconsistente
+                    # Isso garante que cada handshake comece com um stream limpo
+                    if self._stream:
+                        if self._stream.is_cancelled():
+                            logger.info(f"[HANDSHAKE-DEBUG] Stream estava cancelado, resetando antes de novo handshake | account={account_id} instance={self._instance_id}")
+                            self._stream.reset()
+                        # Limpa a queue de segmentos recebidos para evitar dados antigos
+                        while not self._incoming_segments_queue.empty():
+                            try:
+                                self._incoming_segments_queue.get_nowait()
+                            except:
+                                break
+                    
                     self._handshake_attempt += 1
                     attempt_id = self._handshake_attempt
                     self._last_handshake_attempt = attempt_id
                     
                     
-                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] performing login handshake | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} username={username} passive={passive} deviceid={int(device) if device is not None else None} mcc={client_config.useragent.mcc} mnc={client_config.useragent.mnc} rs={'present' if remote_static else 'none'}")
-                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] client_config completo: platform={client_config.useragent.platform} app_version={client_config.useragent.app_version} os_version={client_config.useragent.os_version} manufacturer={client_config.useragent.manufacturer} device={client_config.useragent.device}")
-                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] local_static presente: {local_static is not None} remote_static presente: {remote_static is not None}")
-                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] stream object: {id(self._stream)} protocol state: {self._wa_noiseprotocol.state}")
+                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] performing login handshake | account={account_id} thread_id={thread_id} stack_id={stack_id} instance={self._instance_id} username={username} passive={passive} deviceid={int(device) if device is not None else None} mcc={client_config.useragent.mcc} mnc={client_config.useragent.mnc} rs={'present' if remote_static else 'none'}")
+                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] client_config completo: platform={client_config.useragent.platform} app_version={client_config.useragent.app_version} os_version={client_config.useragent.os_version} manufacturer={client_config.useragent.manufacturer} device={client_config.useragent.device} instance={self._instance_id}")
+                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] local_static presente: {local_static is not None} remote_static presente: {remote_static is not None} instance={self._instance_id}")
+                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] stream object: {id(self._stream)} protocol state: {self._wa_noiseprotocol.state} instance={self._instance_id}")
                     self._handshake_worker = WANoiseProtocolHandshakeWorker(
                         self._wa_noiseprotocol, self._stream, client_config, local_static, remote_static,
                         self.on_handshake_finished,
@@ -440,21 +478,48 @@ class YowNoiseLayer(YowLayer):
         import threading
         thread_id = threading.current_thread().ident
         account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
-        logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event | account={account_id} thread_id={thread_id} event={event} attempt_id={self._last_handshake_attempt}")
+        stack_id = id(self.getStack())
+        
+        # Verifica se o stream foi cancelado antes de processar
+        if self._stream and self._stream.is_cancelled():
+            logger.warning(f"[HANDSHAKE-DEBUG] Stream cancelado, ignorando evento | account={account_id} thread_id={thread_id} event={event} instance={self._instance_id} attempt_id={self._last_handshake_attempt}")
+            return
+        
+        logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event | account={account_id} thread_id={thread_id} stack_id={stack_id} instance={self._instance_id} event={event} attempt_id={self._last_handshake_attempt}")
         
         if event == BlockingQueueSegmentedStream.EVENT_WRITE:
-            segment = self._stream.get_write_segment()
-            logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event WRITE | account={account_id} thread_id={thread_id} segment_len={len(segment) if segment else 0} attempt_id={self._last_handshake_attempt}")
-            logger.debug(f"[handshake {self._last_handshake_attempt}] stream event WRITE")
-            self.toLower(segment)
+            try:
+                segment = self._stream.get_write_segment()
+                # Verifica novamente se foi cancelado durante a operação
+                if self._stream and self._stream.is_cancelled():
+                    logger.warning(f"[HANDSHAKE-DEBUG] Stream cancelado durante WRITE, ignorando segment | account={account_id} instance={self._instance_id}")
+                    return
+                logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event WRITE | account={account_id} thread_id={thread_id} segment_len={len(segment) if segment else 0} attempt_id={self._last_handshake_attempt} instance={self._instance_id}")
+                logger.debug(f"[handshake {self._last_handshake_attempt}] stream event WRITE")
+                self.toLower(segment)
+            except Exception as e:
+                if "cancelled" in str(e).lower() or "Stream cancelled" in str(e):
+                    logger.warning(f"[HANDSHAKE-DEBUG] Stream cancelado durante get_write_segment | account={account_id} instance={self._instance_id} error={e}")
+                else:
+                    logger.error(f"[HANDSHAKE-DEBUG] Erro em _handle_stream_event WRITE | account={account_id} instance={self._instance_id} error={e}", exc_info=True)
         elif event == BlockingQueueSegmentedStream.EVENT_READ:
-            logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event READ | account={account_id} thread_id={thread_id} aguardando segment da queue attempt_id={self._last_handshake_attempt}")
+            logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event READ | account={account_id} thread_id={thread_id} aguardando segment da queue attempt_id={self._last_handshake_attempt} instance={self._instance_id}")
             logger.debug(f"[handshake {self._last_handshake_attempt}] stream event READ")
-            segment = self._incoming_segments_queue.get(block=True)
-            logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event READ | account={account_id} thread_id={thread_id} segment recebido, len={len(segment) if segment else 0} attempt_id={self._last_handshake_attempt}")
-            self._stream.put_read_segment(segment)
+            try:
+                segment = self._incoming_segments_queue.get(block=True)
+                logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event READ | account={account_id} thread_id={thread_id} segment recebido, len={len(segment) if segment else 0} attempt_id={self._last_handshake_attempt} instance={self._instance_id}")
+                # Verifica novamente se foi cancelado durante a espera
+                if self._stream and not self._stream.is_cancelled():
+                    self._stream.put_read_segment(segment)
+                else:
+                    logger.warning(f"[HANDSHAKE-DEBUG] Stream cancelado durante READ, ignorando segment | account={account_id} instance={self._instance_id}")
+            except Exception as e:
+                if "cancelled" in str(e).lower() or "Stream cancelled" in str(e):
+                    logger.warning(f"[HANDSHAKE-DEBUG] Stream cancelado durante READ | account={account_id} instance={self._instance_id} error={e}")
+                else:
+                    logger.error(f"[HANDSHAKE-DEBUG] Erro em _handle_stream_event READ | account={account_id} instance={self._instance_id} error={e}", exc_info=True)
         else:
-            logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event OTHER | account={account_id} thread_id={thread_id} event={event} attempt_id={self._last_handshake_attempt}")
+            logger.debug(f"[HANDSHAKE-DEBUG] _handle_stream_event OTHER | account={account_id} thread_id={thread_id} event={event} attempt_id={self._last_handshake_attempt} instance={self._instance_id}")
             logger.debug(f"[handshake {self._last_handshake_attempt}] stream event other={event}")
 
     def send(self, data):
@@ -714,7 +779,17 @@ class YowNoiseLayer(YowLayer):
             from zowsuplib.consonance.config.appversion import AppVersionConfig
             useragent_dict = config_dict.get("useragent", {})
             app_version = useragent_dict.get("app_version")
-            if isinstance(app_version, str):
+            
+            # Tratamento robusto de app_version (pode ser None, dict, string formatada, etc.)
+            if app_version is None:
+                # Se não tiver app_version, usa padrão
+                logger.warning(f"[HANDSHAKE-DEBUG] app_version não encontrado, usando padrão | account={account_id} instance={self._instance_id}")
+                app_version = AppVersionConfig("2.25.35.79")
+            elif isinstance(app_version, dict):
+                # Se for dict (formato incorreto), tenta extrair ou usa padrão
+                logger.warning(f"[HANDSHAKE-DEBUG] app_version é dict (formato incorreto), usando padrão | account={account_id} instance={self._instance_id} app_version={app_version}")
+                app_version = AppVersionConfig("2.25.35.79")
+            elif isinstance(app_version, str):
                 # Se for uma string formatada antiga (AppVersionConfig(...)), tenta extrair a versão
                 if app_version.startswith("AppVersionConfig"):
                     # Extrai os valores da string formatada
@@ -724,10 +799,21 @@ class YowNoiseLayer(YowLayer):
                         app_version = f"{match.group(1)}.{match.group(2)}.{match.group(3)}.{match.group(4)}"
                     else:
                         # Se não conseguir extrair, usa versão padrão
-                        logger.warning(f"[HANDSHAKE-DEBUG] Não foi possível extrair versão de: {app_version}, usando padrão")
+                        logger.warning(f"[HANDSHAKE-DEBUG] Não foi possível extrair versão de: {app_version}, usando padrão | account={account_id} instance={self._instance_id}")
                         app_version = "2.25.35.79"
                 # Cria AppVersionConfig com a string de versão
-                app_version = AppVersionConfig(app_version)
+                try:
+                    app_version = AppVersionConfig(app_version)
+                except Exception as e:
+                    logger.error(f"[HANDSHAKE-DEBUG] Erro ao criar AppVersionConfig de '{app_version}': {e}, usando padrão | account={account_id} instance={self._instance_id}")
+                    app_version = AppVersionConfig("2.25.35.79")
+            elif isinstance(app_version, AppVersionConfig):
+                # Já é um AppVersionConfig (improvável, mas possível)
+                pass
+            else:
+                # Tipo desconhecido
+                logger.error(f"[HANDSHAKE-DEBUG] app_version tem tipo inesperado: {type(app_version)}, usando padrão | account={account_id} instance={self._instance_id} app_version={app_version}")
+                app_version = AppVersionConfig("2.25.35.79")
             
             useragent = UserAgentConfig(
                 platform=useragent_dict.get("platform"),
