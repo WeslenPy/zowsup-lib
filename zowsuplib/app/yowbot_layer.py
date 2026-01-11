@@ -1417,6 +1417,16 @@ class SendLayer(YowInterfaceLayer):
                                   
     @ProtocolEntityCallback("receipt")
     def onReceipt(self, entity):
+        from_jid = entity.getFrom(False)
+        receipt_type = entity.getType()
+        participant = entity.getParticipant(False)
+        msg_id = entity.getId()
+        
+        # Verifica se é receipt de status
+        is_status_receipt = from_jid == "status@broadcast" or (from_jid and from_jid.endswith("@broadcast"))
+        
+        if is_status_receipt:
+            logger.info(f"[Receipt] Status receipt recebido: type={receipt_type}, msg_id={msg_id}, participant={participant}, from={from_jid}")
 
         if entity.getParticipant() is not None:
             _from = entity.getFrom(False)+"::"+entity.getParticipant(False)

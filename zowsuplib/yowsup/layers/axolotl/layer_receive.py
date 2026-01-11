@@ -32,9 +32,12 @@ class AxolotlReceivelayer(AxolotlBaseLayer):
             if protocolTreeNode.tag == "message":
                 logger.info(f"receive: message")
                 self.onMessage(protocolTreeNode)
-            elif not protocolTreeNode.tag == "receipt":
-                logger.info(f"receive: receipt")
+            elif protocolTreeNode.tag == "receipt":
+                logger.info(f"receive: receipt - from={protocolTreeNode.getAttributeValue('from')}, type={protocolTreeNode.getAttributeValue('type')}, participant={protocolTreeNode.getAttributeValue('participant')}")
                 #receipts will be handled by send layer                
+                self.toUpper(protocolTreeNode)
+            else:
+                # Outros tipos de nós passam para cima
                 self.toUpper(protocolTreeNode)            
         else:
             logger.info(f"receive: processIqRegistry")

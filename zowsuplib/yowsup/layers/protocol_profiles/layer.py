@@ -22,8 +22,18 @@ class YowProfilesProtocolLayer(YowProtocolLayer):
         elif isinstance(entity, SetStatusIqProtocolEntity):
             self._sendIq(entity)
 
-    def recvIq(self, node):        
-        pass
+    def recvIq(self, node):
+        # Processa respostas de status
+        if node["type"] == "result" and node.getChild("status") is not None:
+            from .protocolentities import ResultStatusesIqProtocolEntity
+            entity = ResultStatusesIqProtocolEntity.fromProtocolTreeNode(node)
+            self.toUpper(entity)
+        elif node["type"] == "result":
+            # Outras respostas de result são processadas pelo YowIqProtocolLayer
+            pass
+        elif node["type"] == "error":
+            # Erros são processados pelo YowIqProtocolLayer
+            pass
 
 
 

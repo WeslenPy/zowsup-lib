@@ -604,7 +604,7 @@ class YowNoiseLayer(YowLayer):
                 "connect_reason": client_config.connect_reason,
                 "useragent": {
                     "platform": client_config.useragent.platform,
-                    "app_version": str(client_config.useragent.app_version) if hasattr(client_config.useragent.app_version, '__str__') else client_config.useragent.app_version,
+                    "app_version": client_config.useragent.app_version.getVersion() if hasattr(client_config.useragent.app_version, 'getVersion') else str(client_config.useragent.app_version),
                     "mcc": client_config.useragent.mcc,
                     "mnc": client_config.useragent.mnc,
                     "os_version": client_config.useragent.os_version,
@@ -630,9 +630,7 @@ class YowNoiseLayer(YowLayer):
                 logger.error(f"[HANDSHAKE-DEBUG] Não foi possível extrair phone de profile_name={profile_name}")
                 return False
             
-            config_json = json.dumps(config_dict, indent=2)
-            data = config_json.encode('utf-8')
-            
+            # Salva o dict diretamente - SQLAlchemy JSON serializa automaticamente
             with thread_local_session() as db:
                 account = db.query(models.Account).filter_by(phone=phone).one_or_none()
                 if account is None:
@@ -646,12 +644,12 @@ class YowNoiseLayer(YowLayer):
                 if client_config is None:
                     client_config = models.ClientConfig(
                         account_id=account.id,
-                        config_data=data,
+                        config_data=config_dict,
                     )
                     db.add(client_config)
                     logger.info(f"[HANDSHAKE-DEBUG] ClientConfig criado na nova tabela | account={account_id} phone={phone}")
                 else:
-                    client_config.config_data = data
+                    client_config.config_data = config_dict
                     logger.info(f"[HANDSHAKE-DEBUG] ClientConfig atualizado na nova tabela | account={account_id} phone={phone}")
                 
                 # Commit automático via context manager
@@ -700,17 +698,35 @@ class YowNoiseLayer(YowLayer):
                 
                 config_data = client_config_row.config_data
             
-            # Deserializa JSON
+            # SQLAlchemy JSON retorna dict diretamente, mas pode haver dados antigos em bytes (compatibilidade)
             if isinstance(config_data, bytes):
+                # Compatibilidade: dados antigos salvos como bytes
                 config_data = config_data.decode('utf-8')
-            
-            config_dict = json.loads(config_data)
+                config_dict = json.loads(config_data)
+            elif isinstance(config_data, str):
+                # Compatibilidade: dados antigos salvos como string JSON
+                config_dict = json.loads(config_data)
+            else:
+                # Novo formato: já é um dict
+                config_dict = config_data
             
             # Reconstrói UserAgentConfig
             from zowsuplib.consonance.config.appversion import AppVersionConfig
             useragent_dict = config_dict.get("useragent", {})
             app_version = useragent_dict.get("app_version")
             if isinstance(app_version, str):
+                # Se for uma string formatada antiga (AppVersionConfig(...)), tenta extrair a versão
+                if app_version.startswith("AppVersionConfig"):
+                    # Extrai os valores da string formatada
+                    import re
+                    match = re.search(r'primary=(\d+),\s*secondary=(\d+),\s*tertiary=(\d+),\s*quaternary=(\d+)', app_version)
+                    if match:
+                        app_version = f"{match.group(1)}.{match.group(2)}.{match.group(3)}.{match.group(4)}"
+                    else:
+                        # Se não conseguir extrair, usa versão padrão
+                        logger.warning(f"[HANDSHAKE-DEBUG] Não foi possível extrair versão de: {app_version}, usando padrão")
+                        app_version = "2.25.35.79"
+                # Cria AppVersionConfig com a string de versão
                 app_version = AppVersionConfig(app_version)
             
             useragent = UserAgentConfig(

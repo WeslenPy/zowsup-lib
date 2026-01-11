@@ -115,6 +115,10 @@ class YowIqProtocolLayer(YowProtocolLayer):
                 # AppState Sync result
                 from zowsuplib.yowsup.layers.protocol_iq.protocolentities.iq_app_sync_state_result import AppSyncStateResultIqProtocolEntity
                 self.toUpper(AppSyncStateResultIqProtocolEntity.fromProtocolTreeNode(node))
+            elif node.getChild("status") is not None:
+                # Status responses são processados pelo YowProfilesProtocolLayer
+                # Passa o node para cima sem processar
+                self.toUpper(node)
             else:
                 #不知道是啥，打印出来                     
                 self.__logger.info(node)

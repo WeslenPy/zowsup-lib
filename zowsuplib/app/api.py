@@ -6,7 +6,7 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import urllib.request
 import urllib.error
 
@@ -58,6 +58,7 @@ class CommandResponse:
     """
 
     data: Any = None
+    error: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -1139,7 +1140,7 @@ class ZowsupClient:
         env: Optional[str] = None,
         proxy: Optional[str] = None,
         auto_connect: bool = False,
-        log_level: Optional[str] = "WARNING",
+        log_level: Optional[str] = "CRITICAL",
     ) -> None:
         """
         Cria um novo cliente de alto nível completamente isolado.
@@ -3008,6 +3009,136 @@ class ZowsupClient:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
 
         return CommandResponse(data=result)
+
+    def get_contacts_status(
+        self,
+        phone_numbers: List[str],
+        timeout: int = 10
+    ) -> CommandResponse:
+        """
+        Busca os status de uma lista de contatos.
+        
+        Args:
+            phone_numbers: Lista de números de telefone (ex: ["5511999999999", "5511888888888"])
+            timeout: Timeout em segundos para aguardar resposta (padrão: 10)
+        
+        Returns:
+            CommandResponse com os status encontrados:
+            {
+                "status": "ok",
+                "statuses": {
+                    "5511999999999@s.whatsapp.net": {
+                        "status_text": "Status do contato",
+                        "timestamp": 1330555420
+                    },
+                    ...
+                }
+            }
+        
+        Example:
+            result = client.get_contacts_status(["5511999999999", "5511888888888"])
+            if not result.error:
+                for jid, status_info in result.data.get("statuses", {}).items():
+                    print(f"{jid}: {status_info['status_text']}")
+        """
+        from zowsuplib.yowsup.layers.protocol_profiles.protocolentities import (
+            GetStatusesIqProtocolEntity,
+            ResultStatusesIqProtocolEntity
+        )
+        from zowsuplib.yowsup.layers.protocol_iq.protocolentities import ErrorIqProtocolEntity
+        
+        if not phone_numbers:
+            return CommandResponse(
+                data={"status": "error", "message": "Lista de números vazia"},
+                error={"code": -1, "msg": "Lista de números vazia"}
+            )
+        
+        # Converte números para JIDs
+        jids = []
+        for phone in phone_numbers:
+            # Remove caracteres não numéricos
+            phone_clean = ''.join(filter(str.isdigit, phone))
+            if phone_clean:
+                jid = f"{phone_clean}@s.whatsapp.net"
+                jids.append(jid)
+        
+        if not jids:
+            return CommandResponse(
+                data={"status": "error", "message": "Nenhum JID válido encontrado"},
+                error={"code": -1, "msg": "Nenhum JID válido encontrado"}
+            )
+        
+        # Cria a entidade para solicitar status
+        entity = GetStatusesIqProtocolEntity(jids)
+        iq_id = entity.getId()
+        
+        # Evento para aguardar resposta
+        result_event = threading.Event()
+        result_data = {"statuses": {}, "error": None}
+        
+        def on_success(result_entity, original_entity):
+            """Callback quando a resposta de status é recebida com sucesso."""
+            try:
+                if isinstance(result_entity, ResultStatusesIqProtocolEntity):
+                    # result_entity.statuses é um dict: {jid: (status_text, timestamp)}
+                    statuses_dict = {}
+                    for jid, (status_text, timestamp) in result_entity.statuses.items():
+                        statuses_dict[jid] = {
+                            "status_text": status_text.decode('utf-8') if isinstance(status_text, bytes) else status_text,
+                            "timestamp": int(timestamp) if timestamp else None
+                        }
+                    
+                    result_data["statuses"] = statuses_dict
+                    result_data["error"] = None
+                else:
+                    result_data["error"] = {"code": -2, "msg": f"Resposta inesperada: {type(result_entity).__name__}"}
+            except Exception as e:
+                logger.error(f"{self._log_prefix} Erro ao processar status: {e}", exc_info=True)
+                result_data["error"] = {"code": -3, "msg": f"Erro ao processar status: {str(e)}"}
+            finally:
+                result_event.set()
+        
+        def on_error(error_entity, original_entity):
+            """Callback quando há erro na requisição."""
+            try:
+                error_code = error_entity.getErrorCode() if hasattr(error_entity, 'getErrorCode') else None
+                error_text = error_entity.getErrorText() if hasattr(error_entity, 'getErrorText') else "Erro desconhecido"
+                result_data["error"] = {"code": error_code or -4, "msg": error_text}
+            except Exception as e:
+                logger.error(f"{self._log_prefix} Erro ao processar erro de status: {e}", exc_info=True)
+                result_data["error"] = {"code": -5, "msg": f"Erro ao processar erro: {str(e)}"}
+            finally:
+                result_event.set()
+        
+        # Envia a requisição
+        try:
+            self.send_layer._sendIq(entity, on_success, on_error)
+            
+            # Aguarda resposta
+            if result_event.wait(timeout):
+                if result_data["error"]:
+                    return CommandResponse(
+                        data={"status": "error", "message": result_data["error"]["msg"]},
+                        error=result_data["error"]
+                    )
+                else:
+                    return CommandResponse(
+                        data={
+                            "status": "ok",
+                            "statuses": result_data["statuses"]
+                        }
+                    )
+            else:
+                return CommandResponse(
+                    data={"status": "error", "message": "Timeout aguardando resposta"},
+                    error={"code": -999, "msg": "Timeout"}
+                )
+        except Exception as e:
+            logger.error(f"{self._log_prefix} Erro ao enviar requisição de status: {e}", exc_info=True)
+            return CommandResponse(
+                data={"status": "error", "message": str(e)},
+                error={"code": -6, "msg": str(e)}
+            )
 
     def create_group(self, subject: str, participants: list[str] = []) -> CommandResponse:
         """

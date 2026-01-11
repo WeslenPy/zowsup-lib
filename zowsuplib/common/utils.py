@@ -366,22 +366,22 @@ class Utils:
         _logger.remove()
 
         # Console
-        # _logger.add(
-        #     sys.stdout,
-        #     level=level,
-        #     # format="{time:YYYY-MM-DD HH:mm:ss,SSS} {level} {name}: {message}",
-        #     enqueue=True
-        # )
-
-        # Arquivo
         _logger.add(
-            log_dir / name,
+            sys.stdout,
             level=level,
-            encoding="utf-8",
-            rotation="10 MB",
-            retention="7 days",
+            # format="{time:YYYY-MM-DD HH:mm:ss,SSS} {level} {name}: {message}",
             enqueue=True
         )
+
+        # Arquivo
+        # _logger.add(
+        #     log_dir / name,
+        #     level=level,
+        #     encoding="utf-8",
+        #     rotation="10 MB",
+        #     retention="7 days",
+        #     enqueue=True
+        # )
         
     def genMccMncList():
         """

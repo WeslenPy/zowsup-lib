@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    JSON,
     LargeBinary,
     String,
     Text,
@@ -431,7 +432,7 @@ class ClientConfig(Base):
     )
 
     # Campos serializados do ClientConfig
-    config_data = Column(LargeBinary, nullable=False)  # JSON serializado do ClientConfig
+    config_data = Column(JSON, nullable=False)  # JSON do ClientConfig
     
     created_at = Column(DateTime, nullable=False, default=dt.datetime.utcnow)
     updated_at = Column(
