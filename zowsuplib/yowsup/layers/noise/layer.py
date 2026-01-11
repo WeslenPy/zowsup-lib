@@ -279,9 +279,9 @@ class YowNoiseLayer(YowLayer):
                         attempt_id = attempt_id
                     )
                     logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] starting handshake worker | worker_thread_id={self._handshake_worker.ident if hasattr(self._handshake_worker, 'ident') else 'N/A'}")
+                    # logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] handshake worker started | worker_thread_id={self._handshake_worker.ident}")
                     self._stream.set_events_callback(self._handle_stream_event)
                     self._handshake_worker.start()
-                    logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] handshake worker started | worker_thread_id={self._handshake_worker.ident}")
                 else:
                     account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
                     logger.warning(f"[HANDSHAKE-DEBUG] Login handshake requested while another is in progress; skipping new attempt | account={account_id} current_state={self._wa_noiseprotocol.state} attempt_id={self._last_handshake_attempt}")

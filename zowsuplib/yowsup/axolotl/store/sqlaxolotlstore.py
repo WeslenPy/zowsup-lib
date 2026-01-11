@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import List, Optional
+import threading
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
@@ -45,7 +46,20 @@ def _get_or_create_account(db: Session, phone: str) -> models.Account:
         return account
     
     # Busca o objeto Account completo pelo ID (mais eficiente que buscar por phone)
-    account = db.query(models.Account).filter_by(id=account_id).one()
+    # Usa one_or_none para tratar caso o account tenha sido deletado
+    account = db.query(models.Account).filter_by(id=account_id).one_or_none()
+    if account is None:
+        # Account foi deletado - limpa cache e recria
+        from zowsuplib.app.db import _account_id_cache
+        _account_id_cache.invalidate(phone)
+        logger.warning(f"Account {account_id} não encontrado para phone={phone}, recriando...")
+        account = models.Account(phone=phone)
+        db.add(account)
+        db.flush()
+        db.refresh(account)
+        _account_id_cache.set(phone, account.id)
+        logger.info(f"Recriado Account row para phone={phone} (id={account.id})")
+    
     return account
 
 
@@ -93,44 +107,57 @@ class SqlIdentityKeyStore:
         return row.registration_id if row else None
 
     def _storeLocalData(self, registrationId, identityKeyPair, deviceid: int = 0) -> None:
-        row = self._query_local_row()
-        if row is None:
-            row = models.Identity(
-                account_id=self.account.id,
-                recipient_id=-1,
-                recipient_type=0,
-                device_id=deviceid,
-            )
-            self.db.add(row)
+        try:
+            row = self._query_local_row()
+            if row is None:
+                row = models.Identity(
+                    account_id=self.account.id,
+                    recipient_id=-1,
+                    recipient_type=0,
+                    device_id=deviceid,
+                )
+                self.db.add(row)
 
-        row.registration_id = registrationId
-        pub_key = identityKeyPair.getPublicKey().getPublicKey().serialize()
-        priv_key = identityKeyPair.getPrivateKey().serialize()
-        row.public_key = pub_key
-        row.private_key = priv_key
-        self.db.commit()
+            row.registration_id = registrationId
+            pub_key = identityKeyPair.getPublicKey().getPublicKey().serialize()
+            priv_key = identityKeyPair.getPrivateKey().serialize()
+            row.public_key = pub_key
+            row.private_key = priv_key
+            self.db.commit()
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Erro ao armazenar dados locais de identidade: {e}", exc_info=True)
+            raise
 
     def saveIdentity(self, recipientId, deviceId, identityKey) -> None:
-        # Delete existing
-        (
-            self.db.query(models.Identity)
-            .filter(
-                models.Identity.account_id == self.account.id,
-                models.Identity.recipient_id == recipientId,
-                models.Identity.device_id == deviceId,
+        try:
+            # Delete existing
+            (
+                self.db.query(models.Identity)
+                .filter(
+                    models.Identity.account_id == self.account.id,
+                    models.Identity.recipient_id == recipientId,
+                    models.Identity.device_id == deviceId,
+                )
+                .delete(synchronize_session=False)
             )
-            .delete(synchronize_session=False)
-        )
-        pub_key = identityKey.getPublicKey().serialize()
-        row = models.Identity(
-            account_id=self.account.id,
-            recipient_id=recipientId,
-            recipient_type=0,
-            device_id=deviceId,
-            public_key=pub_key,
-        )
-        self.db.add(row)
-        self.db.commit()
+            pub_key = identityKey.getPublicKey().serialize()
+            row = models.Identity(
+                account_id=self.account.id,
+                recipient_id=recipientId,
+                recipient_type=0,
+                device_id=deviceId,
+                public_key=pub_key,
+            )
+            self.db.add(row)
+            self.db.commit()
+        except Exception as e:
+            self.db.rollback()
+            logger.error(
+                f"Erro ao salvar Identity para recipientId={recipientId} deviceId={deviceId}: {e}",
+                exc_info=True
+            )
+            raise
 
     def isTrustedIdentity(self, recipient, deviceid, identityKey) -> bool:
         public_key = (
@@ -186,18 +213,23 @@ class SqlPreKeyStore:
     def setAsSent(self, prekeyIds: List[int]) -> None:
         if not prekeyIds:
             return
-        (
-            self.db.query(models.PreKey)
-            .filter(
-                models.PreKey.account_id == self.account.id,
-                models.PreKey.prekey_id.in_(prekeyIds),
+        try:
+            (
+                self.db.query(models.PreKey)
+                .filter(
+                    models.PreKey.account_id == self.account.id,
+                    models.PreKey.prekey_id.in_(prekeyIds),
+                )
+                .update(
+                    {models.PreKey.sent_to_server: True},
+                    synchronize_session=False,
+                )
             )
-            .update(
-                {models.PreKey.sent_to_server: True},
-                synchronize_session=False,
-            )
-        )
-        self.db.commit()
+            self.db.commit()
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Erro ao marcar PreKeys como enviados: {e}", exc_info=True)
+            raise
 
     def loadPendingPreKeys(self) -> List[PreKeyRecord]:
         try:
@@ -224,13 +256,18 @@ class SqlPreKeyStore:
             return []
 
     def storePreKey(self, preKeyId: int, preKeyRecord: PreKeyRecord) -> None:
-        row = models.PreKey(
-            account_id=self.account.id,
-            prekey_id=preKeyId,
-            record=preKeyRecord.serialize(),
-        )
-        self.db.add(row)
-        self.db.commit()
+        try:
+            row = models.PreKey(
+                account_id=self.account.id,
+                prekey_id=preKeyId,
+                record=preKeyRecord.serialize(),
+            )
+            self.db.add(row)
+            self.db.commit()
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Erro ao armazenar PreKey {preKeyId}: {e}", exc_info=True)
+            raise
 
     def containsPreKey(self, preKeyId: int) -> bool:
         q = (
@@ -244,15 +281,20 @@ class SqlPreKeyStore:
         return self.db.query(q).scalar()
 
     def removePreKey(self, preKeyId: int) -> None:
-        (
-            self.db.query(models.PreKey)
-            .filter(
-                models.PreKey.account_id == self.account.id,
-                models.PreKey.prekey_id == preKeyId,
+        try:
+            (
+                self.db.query(models.PreKey)
+                .filter(
+                    models.PreKey.account_id == self.account.id,
+                    models.PreKey.prekey_id == preKeyId,
+                )
+                .delete(synchronize_session=False)
             )
-            .delete(synchronize_session=False)
-        )
-        self.db.commit()
+            self.db.commit()
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Erro ao remover PreKey {preKeyId}: {e}", exc_info=True)
+            raise
 
     def loadMaxPreKeyId(self) -> int:
         max_id = (
@@ -303,23 +345,28 @@ class SqlSignedPreKeyStore:
         return [SignedPreKeyRecord(serialized=r[0]) for r in rows]
 
     def storeSignedPreKey(self, signedPreKeyId: int, signedPreKeyRecord: SignedPreKeyRecord) -> None:
-        # Delete existing
-        (
-            self.db.query(models.SignedPreKey)
-            .filter(
-                models.SignedPreKey.account_id == self.account.id,
-                models.SignedPreKey.prekey_id == signedPreKeyId,
+        try:
+            # Delete existing
+            (
+                self.db.query(models.SignedPreKey)
+                .filter(
+                    models.SignedPreKey.account_id == self.account.id,
+                    models.SignedPreKey.prekey_id == signedPreKeyId,
+                )
+                .delete(synchronize_session=False)
             )
-            .delete(synchronize_session=False)
-        )
-        row = models.SignedPreKey(
-            account_id=self.account.id,
-            prekey_id=signedPreKeyId,
-            timestamp=signedPreKeyRecord.getTimestamp(),
-            record=signedPreKeyRecord.serialize(),
-        )
-        self.db.add(row)
-        self.db.commit()
+            row = models.SignedPreKey(
+                account_id=self.account.id,
+                prekey_id=signedPreKeyId,
+                timestamp=signedPreKeyRecord.getTimestamp(),
+                record=signedPreKeyRecord.serialize(),
+            )
+            self.db.add(row)
+            self.db.commit()
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Erro ao armazenar SignedPreKey {signedPreKeyId}: {e}", exc_info=True)
+            raise
 
     def containsSignedPreKey(self, signedPreKeyId: int) -> bool:
         q = (
@@ -333,15 +380,20 @@ class SqlSignedPreKeyStore:
         return self.db.query(q).scalar()
 
     def removeSignedPreKey(self, signedPreKeyId: int) -> None:
-        (
-            self.db.query(models.SignedPreKey)
-            .filter(
-                models.SignedPreKey.account_id == self.account.id,
-                models.SignedPreKey.prekey_id == signedPreKeyId,
+        try:
+            (
+                self.db.query(models.SignedPreKey)
+                .filter(
+                    models.SignedPreKey.account_id == self.account.id,
+                    models.SignedPreKey.prekey_id == signedPreKeyId,
+                )
+                .delete(synchronize_session=False)
             )
-            .delete(synchronize_session=False)
-        )
-        self.db.commit()
+            self.db.commit()
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Erro ao remover SignedPreKey {signedPreKeyId}: {e}", exc_info=True)
+            raise
 
 
 class SqlSessionStore:
@@ -379,25 +431,33 @@ class SqlSessionStore:
         return [r[0] for r in rows]
 
     def storeSession(self, recipient: int, deviceId: int, sessionRecord: SessionRecord) -> None:
-        # Delete existing first
-        (
-            self.db.query(models.Session)
-            .filter(
-                models.Session.account_id == self.account.id,
-                models.Session.recipient_id == recipient,
-                models.Session.device_id == deviceId,
+        try:
+            # Delete existing first
+            (
+                self.db.query(models.Session)
+                .filter(
+                    models.Session.account_id == self.account.id,
+                    models.Session.recipient_id == recipient,
+                    models.Session.device_id == deviceId,
+                )
+                .delete(synchronize_session=False)
             )
-            .delete(synchronize_session=False)
-        )
 
-        row = models.Session(
-            account_id=self.account.id,
-            recipient_id=recipient,
-            device_id=deviceId,
-            record=sessionRecord.serialize(),
-        )
-        self.db.add(row)
-        self.db.commit()
+            row = models.Session(
+                account_id=self.account.id,
+                recipient_id=recipient,
+                device_id=deviceId,
+                record=sessionRecord.serialize(),
+            )
+            self.db.add(row)
+            self.db.commit()
+        except Exception as e:
+            self.db.rollback()
+            logger.error(
+                f"Erro ao armazenar Session para recipient={recipient} deviceId={deviceId}: {e}",
+                exc_info=True
+            )
+            raise
 
     def containsSession(self, recipient: int, deviceId: int) -> bool:
         q = (
@@ -904,6 +964,8 @@ class SqlAxolotlStore(AxolotlStore):
         # NÃO armazena sessão aqui - usa thread-local
         # Sub-stores serão criados com sessão thread-local quando necessário
         self._sub_stores_initialized = False
+        # Lock para proteger inicialização de sub-stores (evita race conditions)
+        self._init_lock = threading.RLock()
 
     def _get_session(self) -> Session:
         """
@@ -929,6 +991,9 @@ class SqlAxolotlStore(AxolotlStore):
             
         Returns:
             models.Account: Account associado ao username
+            
+        Raises:
+            RuntimeError: Se não for possível obter ou criar o account
         """
         if self._account_id is None:
             account = _get_or_create_account(db, self._username)
@@ -936,40 +1001,103 @@ class SqlAxolotlStore(AxolotlStore):
             return account
         
         # Busca account pelo ID (mais eficiente que buscar por phone)
-        account = db.query(models.Account).filter_by(id=self._account_id).one()
+        # Usa one_or_none para tratar caso o account tenha sido deletado
+        account = db.query(models.Account).filter_by(id=self._account_id).one_or_none()
+        
+        # Se não encontrou, limpa cache e recria
+        if account is None:
+            logger.warning(
+                f"Account {self._account_id} não encontrado para username={self._username}, "
+                f"limpando cache e recriando..."
+            )
+            self._account_id = None
+            account = _get_or_create_account(db, self._username)
+            self._account_id = account.id
+        
         return account
     
     def _ensure_sub_stores(self, db: Session, account: models.Account):
         """
         Cria sub-stores se ainda não foram inicializados.
         Cada sub-store recebe a sessão thread-local atual.
+        Thread-safe: usa lock para evitar race conditions.
         
         Args:
             db: Sessão thread-local atual
             account: Account associado
         """
-        if self._sub_stores_initialized:
-            # Atualiza referências de db nos sub-stores existentes
-            self._update_sub_stores_db(db)
-            return
+        with self._init_lock:
+            if self._sub_stores_initialized:
+                # Atualiza referências de db e account nos sub-stores existentes
+                # Isso é necessário porque o account pode estar detached da sessão anterior
+                self._update_sub_stores_db_and_account(db, account)
+                return
+            
+            # Cria sub-stores pela primeira vez
+            self.identityKeyStore = SqlIdentityKeyStore(db, account)
+            self.preKeyStore = SqlPreKeyStore(db, account)
+            self.signedPreKeyStore = SqlSignedPreKeyStore(db, account)
+            self.sessionStore = SqlSessionStore(db, account)
+            self.senderKeyStore = SqlSenderKeyStore(db, account)
+            self.pollStore = SqlPollStore(db, account)
+            self.appStateStore = SqlAppStateStore(db, account)
+            self.contactStore = SqlContactStore(db, account)
+            self.broadcastStore = SqlBroadcastStore(db, account)
+            self.trustedContactStore = SqlTrustedContactStore(db, account)
+            
+            self._sub_stores_initialized = True
+    
+    def _update_sub_stores_db_and_account(self, db: Session, account: models.Account):
+        """
+        Atualiza referências de db e account nos sub-stores.
+        Isso é necessário para evitar DetachedInstanceError quando a sessão muda.
+        Garante que o account está vinculado à sessão atual usando merge.
         
-        # Cria sub-stores pela primeira vez
-        self.identityKeyStore = SqlIdentityKeyStore(db, account)
-        self.preKeyStore = SqlPreKeyStore(db, account)
-        self.signedPreKeyStore = SqlSignedPreKeyStore(db, account)
-        self.sessionStore = SqlSessionStore(db, account)
-        self.senderKeyStore = SqlSenderKeyStore(db, account)
-        self.pollStore = SqlPollStore(db, account)
-        self.appStateStore = SqlAppStateStore(db, account)
-        self.contactStore = SqlContactStore(db, account)
-        self.broadcastStore = SqlBroadcastStore(db, account)
-        self.trustedContactStore = SqlTrustedContactStore(db, account)
+        Args:
+            db: Nova sessão thread-local
+            account: Account vinculado à nova sessão
+        """
+        # Garante que o account está vinculado à sessão atual
+        # Isso evita DetachedInstanceError quando o account veio de outra sessão
+        try:
+            # Tenta fazer merge do account na sessão atual
+            # Se o account já estiver na sessão, merge retorna o mesmo objeto
+            account = db.merge(account)
+        except Exception as e:
+            # Se merge falhar, tenta recarregar o account da sessão atual
+            logger.warning(f"Erro ao fazer merge do account na sessão: {e}, tentando recarregar...")
+            try:
+                account = db.query(models.Account).filter_by(id=account.id).one()
+            except Exception as reload_error:
+                logger.error(f"Erro ao recarregar account: {reload_error}")
+                # Se tudo falhar, tenta buscar por username
+                account = _get_or_create_account(db, self._username)
+                self._account_id = account.id
         
-        self._sub_stores_initialized = True
+        stores = [
+            self.identityKeyStore,
+            self.preKeyStore,
+            self.signedPreKeyStore,
+            self.sessionStore,
+            self.senderKeyStore,
+            self.pollStore,
+            self.appStateStore,
+            self.contactStore,
+            self.broadcastStore,
+            self.trustedContactStore,
+        ]
+        
+        for store in stores:
+            if store is not None:
+                if hasattr(store, 'db'):
+                    store.db = db
+                if hasattr(store, 'account'):
+                    store.account = account
     
     def _update_sub_stores_db(self, db: Session):
         """
         Atualiza apenas a referência de db nos sub-stores (account não mudou).
+        DEPRECATED: Use _update_sub_stores_db_and_account em vez disso.
         
         Args:
             db: Nova sessão thread-local
@@ -1049,28 +1177,33 @@ class SqlAxolotlStore(AxolotlStore):
         account = self._get_account(db)
         self._ensure_sub_stores(db, account)
         
-        row = (
-            db.query(models.Identity)
-            .filter(
-                models.Identity.account_id == account.id,
-                models.Identity.recipient_id == -1,
+        try:
+            row = (
+                db.query(models.Identity)
+                .filter(
+                    models.Identity.account_id == account.id,
+                    models.Identity.recipient_id == -1,
+                )
+                .one_or_none()
             )
-            .one_or_none()
-        )
-        if row is None:
-            row = models.Identity(
-                account_id=account.id,
-                recipient_id=-1,
-                recipient_type=0,
-                device_id=deviceid,
-            )
-            db.add(row)
+            if row is None:
+                row = models.Identity(
+                    account_id=account.id,
+                    recipient_id=-1,
+                    recipient_type=0,
+                    device_id=deviceid,
+                )
+                db.add(row)
 
-        row.registration_id = registration_id
-        row.public_key = public_key
-        row.private_key = private_key
-        row.device_id = deviceid
-        db.commit()
+            row.registration_id = registration_id
+            row.public_key = public_key
+            row.private_key = private_key
+            row.device_id = deviceid
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Erro ao atualizar chaves de identidade locais: {e}", exc_info=True)
+            raise
 
     # PreKey store facade
     def loadPreKey(self, preKeyId):
