@@ -307,47 +307,79 @@ class SessionLifecycleManager:
         """
         Fecha todas as sessões de uma conta específica.
         
+        IMPORTANTE: Não fecha sessões que estão ativas (em uso por outras threads)
+        para evitar travamentos e erros.
+        
         Args:
             account_id: ID da conta
             
         Returns:
             Número de sessões fechadas
         """
+        current_thread_id = threading.current_thread().ident
+        sessions_to_close = []
+        
+        # Coleta sessões para fechar (dentro do lock, mas não fecha ainda)
         with self._lock:
             sessions_to_close = self._sessions_by_account.get(account_id, []).copy()
-            closed_count = 0
             
+            # Remove metadatas dos registros ANTES de fechar (evita race condition)
             for metadata in sessions_to_close:
+                thread_id = metadata.thread_id
+                
+                # Remove de registros
+                if thread_id in self._sessions_by_thread:
+                    del self._sessions_by_thread[thread_id]
+            
+            # Limpa registros
+            if account_id in self._sessions_by_account:
+                del self._sessions_by_account[account_id]
+        
+        # Fecha sessões FORA do lock para evitar deadlock
+        # E não fecha sessões que estão em uso pela thread atual
+        closed_count = 0
+        for metadata in sessions_to_close:
+            try:
+                session = metadata.session
+                thread_id = metadata.thread_id
+                
+                # Não fecha sessão se está sendo usada pela thread atual
+                if thread_id == current_thread_id:
+                    logger.warning(
+                        f"[SESSION] Pulando fechamento de sessão em uso pela thread atual | "
+                        f"account={account_id} thread_id={thread_id}"
+                    )
+                    continue
+                
+                # Verifica se sessão ainda está válida antes de fechar
                 try:
-                    session = metadata.session
-                    thread_id = metadata.thread_id
-                    
-                    # Remove de registros
-                    if thread_id in self._sessions_by_thread:
-                        del self._sessions_by_thread[thread_id]
-                    
-                    # Fecha sessão
                     if session.is_active:
                         session.rollback()
                     session.close()
                     closed_count += 1
                     logger.info(f"[SESSION] Sessão fechada para conta {account_id} | thread_id={thread_id}")
                     self._metrics.record_session_closed(account_id)
-                except Exception as e:
-                    logger.error(f"[SESSION] Erro ao fechar sessão para conta {account_id}: {e}")
-            
-            # Limpa registros
-            if account_id in self._sessions_by_account:
-                del self._sessions_by_account[account_id]
-            
-            # Usa registry também
+                except Exception as close_error:
+                    # Sessão pode já ter sido fechada ou estar em uso
+                    logger.debug(
+                        f"[SESSION] Sessão já estava fechada ou em uso | "
+                        f"account={account_id} thread_id={thread_id} error={close_error}"
+                    )
+            except Exception as e:
+                logger.error(f"[SESSION] Erro ao fechar sessão para conta {account_id}: {e}")
+        
+        # Usa registry também (fora do lock principal)
+        try:
             registry_closed = self._registry.close_all_for_account(account_id)
-            
-            total_closed = closed_count + registry_closed
-            if total_closed > 0:
-                logger.info(f"[SESSION] {total_closed} sessões fechadas para conta {account_id}")
-            
-            return total_closed
+        except Exception as e:
+            logger.warning(f"[SESSION] Erro ao fechar sessões do registry para conta {account_id}: {e}")
+            registry_closed = 0
+        
+        total_closed = closed_count + registry_closed
+        if total_closed > 0:
+            logger.info(f"[SESSION] {total_closed} sessões fechadas para conta {account_id}")
+        
+        return total_closed
     
     def close_all_for_thread(self, thread_id: int) -> int:
         """
@@ -415,21 +447,45 @@ class SessionLifecycleManager:
         """
         Fecha todas as sessões expiradas.
         
+        IMPORTANTE: Não fecha sessões que estão ativas (em uso por outras threads)
+        para evitar travamentos.
+        
         Returns:
             Número de sessões fechadas
         """
         expired = self.get_expired_sessions()
         closed_count = 0
+        current_thread_id = threading.current_thread().ident
         
         for metadata in expired:
             account_id = metadata.account_id
             session = metadata.session
+            thread_id = metadata.thread_id
+            
+            # Não fecha sessão se está sendo usada pela thread atual
+            if thread_id == current_thread_id:
+                logger.debug(
+                    f"[SESSION] Pulando cleanup de sessão em uso pela thread atual | "
+                    f"account={account_id or 'N/A'} thread_id={thread_id}"
+                )
+                continue
+            
+            # Verifica se a sessão ainda está expirada antes de fechar
+            # (pode ter sido atualizada desde que foi marcada como expirada)
+            now = time.time()
+            if (now - metadata.last_activity) <= self._timeout:
+                # Sessão foi atualizada, não está mais expirada
+                logger.debug(
+                    f"[SESSION] Sessão não está mais expirada, pulando cleanup | "
+                    f"account={account_id or 'N/A'} thread_id={thread_id}"
+                )
+                continue
             
             if self.close_session(session, account_id):
                 closed_count += 1
                 logger.warning(
                     f"[SESSION] Sessão expirada fechada | account={account_id or 'N/A'} "
-                    f"thread_id={metadata.thread_id} idle_time={time.time() - metadata.last_activity:.1f}s"
+                    f"thread_id={thread_id} idle_time={now - metadata.last_activity:.1f}s"
                 )
         
         return closed_count

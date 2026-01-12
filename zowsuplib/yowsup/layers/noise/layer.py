@@ -323,7 +323,24 @@ class YowNoiseLayer(YowLayer):
         thread_id = threading.current_thread().ident
         account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
         
+        # CANCELAR STREAM IMEDIATAMENTE quando há erro para desbloquear thread bloqueada
+        if e is not None:
+            # Cancela o stream para desbloquear qualquer thread bloqueada em read_segment()
+            if self._stream and not self._stream.is_cancelled():
+                logger.info(
+                    f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] "
+                    f"Cancelando stream devido a erro no handshake | account={account_id} thread_id={thread_id} instance={self._instance_id}"
+                )
+                self._stream.cancel()
+        
         # Limpar referência do worker quando terminar
+        worker_thread_id = None
+        if self._handshake_worker is not None:
+            worker_thread_id = self._handshake_worker.ident if hasattr(self._handshake_worker, 'ident') else None
+            logger.debug(
+                f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] "
+                f"Limpando referência do worker | account={account_id} worker_thread_id={worker_thread_id} instance={self._instance_id}"
+            )
         self._handshake_worker = None
         
         if e is not None:
