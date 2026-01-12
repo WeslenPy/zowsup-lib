@@ -113,8 +113,19 @@ class _CommandDispatcher:
             # Isso garante que handlers bloqueantes não travem a thread principal
             handler_timeout = options.get("handler_timeout", 30)  # Timeout padrão de 30s
             
+            start_time = time.time()
             future = self._executor.submit(handler, params, options)
             cmd_id = future.result(timeout=handler_timeout)
+            execution_time = time.time() - start_time
+            
+            # Log de handlers que demoram muito (mais de 5 segundos)
+            if execution_time > 5:
+                logger.warning(
+                    f"{self._log_prefix} Handler {name} demorou {execution_time:.2f}s "
+                    f"(timeout={handler_timeout}s)"
+                )
+            else:
+                logger.debug(f"{self._log_prefix} Handler {name} executado em {execution_time:.2f}s")
             
         except concurrent.futures.TimeoutError:
             logger.error(f"{self._log_prefix} Handler {name} travou após {handler_timeout}s")
@@ -175,6 +186,30 @@ class _CommandDispatcher:
         if "error" in obj:
             return None, obj["error"]
         return obj.get("result"), None
+    
+    def get_executor_stats(self) -> Dict[str, Any]:
+        """
+        Retorna estatísticas do ThreadPoolExecutor para monitoramento.
+        
+        Returns:
+            Dict com estatísticas do executor
+        """
+        stats = {
+            "max_workers": self._executor._max_workers,
+            "active_threads": len([t for t in threading.enumerate() if t.name.startswith("cmd-handler")]),
+            "pending_events": len([e for e in self._events.values() if not e.get("event").is_set()]),
+            "total_events": len(self._events),
+        }
+        
+        # Tenta obter informações do executor (pode não estar disponível em todas as versões)
+        try:
+            # _threads é uma lista interna do ThreadPoolExecutor
+            if hasattr(self._executor, '_threads'):
+                stats["executor_threads"] = len([t for t in self._executor._threads if t is not None])
+        except:
+            pass
+        
+        return stats
     
     def shutdown(self, wait: bool = False):
         """
