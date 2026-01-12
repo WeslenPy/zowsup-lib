@@ -1,4 +1,5 @@
 import base64
+import concurrent.futures
 import random
 import shutil
 import threading
@@ -81,6 +82,13 @@ class _CommandDispatcher:
         self._events: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._log_prefix = log_prefix
+        
+        # ThreadPoolExecutor para executar handlers sem bloquear a thread principal
+        # Evita que handlers bloqueantes travem toda a stack
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=10,  # Máximo de handlers simultâneos
+            thread_name_prefix="cmd-handler"
+        )
 
     def register(self, name: str, handler: Callable[[list, Dict[str, Any]], Any]) -> None:
         self._handlers[name] = handler
@@ -93,8 +101,24 @@ class _CommandDispatcher:
         if handler is None:
             return None, {"code": -2, "msg": "Command Not Found"}
 
+        # Verifica se há muitos eventos pendentes (possível travamento)
+        with self._lock:
+            pending_events = len([e for e in self._events.values() if not e.get("event").is_set()])
+            if pending_events > 50:  # Limite de eventos pendentes
+                logger.warning(f"{self._log_prefix} Muitos eventos pendentes ({pending_events}), possível travamento")
+                return None, {"code": -997, "msg": "Muitos comandos pendentes, possível travamento"}
+
         try:
-            cmd_id = handler(params, options)
+            # Executa handler no executor com timeout para evitar travamento
+            # Isso garante que handlers bloqueantes não travem a thread principal
+            handler_timeout = options.get("handler_timeout", 30)  # Timeout padrão de 30s
+            
+            future = self._executor.submit(handler, params, options)
+            cmd_id = future.result(timeout=handler_timeout)
+            
+        except concurrent.futures.TimeoutError:
+            logger.error(f"{self._log_prefix} Handler {name} travou após {handler_timeout}s")
+            return None, {"code": -998, "msg": f"Handler timeout após {handler_timeout}s"}
         except Exception as exc:
             logger.error(f"{self._log_prefix} Erro ao executar comando {name}: {exc}", exc_info=True)
             return None, {"code": -1, "msg": str(exc)}
@@ -151,6 +175,17 @@ class _CommandDispatcher:
         if "error" in obj:
             return None, obj["error"]
         return obj.get("result"), None
+    
+    def shutdown(self, wait: bool = False):
+        """
+        Limpa recursos do executor.
+        
+        Args:
+            wait: Se True, aguarda conclusão de tarefas pendentes
+        """
+        if hasattr(self, '_executor') and self._executor is not None:
+            self._executor.shutdown(wait=wait)
+            logger.debug(f"{self._log_prefix} CommandDispatcher executor shutdown (wait={wait})")
 
 
 @dataclass
@@ -2348,6 +2383,14 @@ class ZowsupClient:
             
             # Limpar cache do axolotl_manager
             self.clear_axolotl_cache()
+            
+            # Shutdown do dispatcher para limpar recursos do executor
+            try:
+                if hasattr(self, '_dispatcher') and self._dispatcher is not None:
+                    self._dispatcher.shutdown(wait=False)  # Não aguarda para não bloquear
+                    logger.debug(f"{self._log_prefix} CommandDispatcher shutdown durante desconexão")
+            except Exception as e:
+                logger.debug(f"{self._log_prefix} Erro ao fazer shutdown do dispatcher (não crítico): {e}")
             
             self.send_layer.userQuit = True
             self.send_layer.setProp("FORCEQUIT", 1)
