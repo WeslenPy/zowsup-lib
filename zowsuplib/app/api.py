@@ -83,23 +83,13 @@ class _CommandDispatcher:
         self._lock = threading.Lock()
         self._log_prefix = log_prefix
         
-        # Extrai account_id do log_prefix para usar no nome da thread
-        # log_prefix tem formato: "[ZowsupClient:account_id]"
-        account_id = "unknown"
-        if ":" in log_prefix:
-            try:
-                # Extrai o account_id do formato "[ZowsupClient:account_id]"
-                account_id = log_prefix.split(":")[1].rstrip("]")
-            except Exception:
-                pass
+        # Usa executor compartilhado ao invés de criar um por conta
+        # Reduz uso de recursos e melhora aproveitamento do pool de threads
+        from zowsuplib.app.thread_pool_manager import ThreadPoolManager
+        self._pool_manager = ThreadPoolManager.get_instance()
+        self._executor = self._pool_manager.get_executor()
         
-        # ThreadPoolExecutor para executar handlers sem bloquear a thread principal
-        # Evita que handlers bloqueantes travem toda a stack
-        # Usa account_id no prefixo para evitar duplicação de nomes entre contas
-        self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=10,  # Máximo de handlers simultâneos
-            thread_name_prefix=f"cmd-handler-{account_id}"
-        )
+        logger.debug(f"{self._log_prefix} Usando executor compartilhado")
 
     def register(self, name: str, handler: Callable[[list, Dict[str, Any]], Any]) -> None:
         self._handlers[name] = handler
@@ -200,14 +190,20 @@ class _CommandDispatcher:
     
     def get_executor_stats(self) -> Dict[str, Any]:
         """
-        Retorna estatísticas do ThreadPoolExecutor para monitoramento.
+        Retorna estatísticas do ThreadPoolExecutor compartilhado para monitoramento.
         
         Returns:
             Dict com estatísticas do executor
         """
+        # Obtém estatísticas do pool manager compartilhado
+        pool_stats = {}
+        if hasattr(self, '_pool_manager'):
+            pool_stats = self._pool_manager.get_stats()
+        
         stats = {
-            "max_workers": self._executor._max_workers,
-            "active_threads": len([t for t in threading.enumerate() if t.name.startswith("cmd-handler")]),
+            "max_workers": pool_stats.get("max_workers", 0),
+            "ref_count": pool_stats.get("ref_count", 0),  # Quantas contas estão usando
+            "active_threads": len([t for t in threading.enumerate() if t.name.startswith("cmd-handler-shared")]),
             "pending_events": len([e for e in self._events.values() if not e.get("event").is_set()]),
             "total_events": len(self._events),
         }
@@ -220,18 +216,24 @@ class _CommandDispatcher:
         except:
             pass
         
+        # Adiciona estatísticas do pool manager
+        stats.update(pool_stats)
+        
         return stats
     
     def shutdown(self, wait: bool = False):
         """
-        Limpa recursos do executor.
+        Limpa recursos do dispatcher.
+        
+        Não encerra o executor compartilhado, apenas libera referência.
+        O executor só é encerrado quando não há mais referências.
         
         Args:
-            wait: Se True, aguarda conclusão de tarefas pendentes
+            wait: Ignorado (mantido para compatibilidade, mas não usado)
         """
-        if hasattr(self, '_executor') and self._executor is not None:
-            self._executor.shutdown(wait=wait)
-            logger.debug(f"{self._log_prefix} CommandDispatcher executor shutdown (wait={wait})")
+        if hasattr(self, '_pool_manager'):
+            self._pool_manager.release_executor()
+            logger.debug(f"{self._log_prefix} CommandDispatcher liberou referência ao executor compartilhado")
 
 
 @dataclass
