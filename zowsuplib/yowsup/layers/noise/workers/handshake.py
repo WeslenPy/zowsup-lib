@@ -13,7 +13,9 @@ from loguru import logger
 
 
 class WANoiseProtocolHandshakeWorker(threading.Thread):
-    def __init__(self, wanoiseprotocol, stream, client_config, s, rs=None, finish_callback=None,mode=None,identity=None, regid=None, signedprekey=None,deviceid=None, attempt_id=None):
+    def __init__(self, wanoiseprotocol, stream, client_config, s, rs=None, 
+                    finish_callback=None,mode=None,identity=None, regid=None, 
+                    signedprekey=None,deviceid=None, attempt_id=None, timeout_seconds=30):
         """
         :param wanoiseprotocol:
         :type wanoiseprotocol: WANoiseProtocol
@@ -25,6 +27,8 @@ class WANoiseProtocolHandshakeWorker(threading.Thread):
         :type s: KeyPair
         :param rs:
         :type rs: PublicKey | None
+        :param timeout_seconds:
+        :type timeout_seconds: int | float
         """
         super(WANoiseProtocolHandshakeWorker, self).__init__()
         self.daemon = True
@@ -36,36 +40,51 @@ class WANoiseProtocolHandshakeWorker(threading.Thread):
         self._rs = rs # type: PublicKey
         self._finish_callback = finish_callback
         self._attempt_id = attempt_id
+        self._timeout_seconds = timeout_seconds
+        self._timeout_timer = None
 
         self._mode = mode
         self._identity = identity
         self._regid = regid
-        self._signedprekey = signedprekey    
-        self._deviceid = deviceid    
+        self._signedprekey = signedprekey
+        self._deviceid = deviceid
         self.name = f"handshake_{attempt_id}"
+
+    def _timeout_callback(self):
+        """Callback chamado quando o timeout do handshake expira"""
+        logger.warning(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] Handshake timeout expirado após {self._timeout_seconds}s, cancelando handshake")
+        if self._stream and not self._stream.is_cancelled():
+            self._stream.cancel()
+        # Não precisamos chamar finish_callback aqui pois isso será feito no finally do run()
 
     def run(self):
         import threading
         import traceback
         thread_id = threading.current_thread().ident
-        logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] worker.run() iniciado | thread_id={thread_id} worker_thread={self.ident}")
+        logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] worker.run() iniciado | thread_id={thread_id} worker_thread={self.ident} timeout={self._timeout_seconds}s")
+
+        # Inicia o timer de timeout
+        self._timeout_timer = threading.Timer(self._timeout_seconds, self._timeout_callback)
+        self._timeout_timer.daemon = True
+        self._timeout_timer.start()
+
         self._protocol.reset()
         error = None
         logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] worker starting | thread_id={thread_id} mode={self._mode} deviceid={self._deviceid} rs={'present' if self._rs else 'none'} protocol={id(self._protocol)} stream={id(self._stream)}")
         logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] local_static keypair: {id(self._s) if self._s else None} remote_static publickey: {id(self._rs) if self._rs else None}")
-        try:          
+        try:
             logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] client_config username={self._client_config.username} mcc={self._client_config.useragent.mcc} mnc={self._client_config.useragent.mnc} passive={self._client_config.passive} short_connect={self._client_config.short_connect}")
             logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] chamando protocol.start() | thread_id={thread_id}")
             logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] protocol.start params: mode={self._mode} identity={self._identity is not None} regid={self._regid is not None} signedprekey={self._signedprekey is not None} deviceid={self._deviceid}")
-            
+
             # Cancela o stream ANTES de chamar protocol.start() se já estiver cancelado
             if self._stream and self._stream.is_cancelled():
                 logger.warning(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] Stream já estava cancelado antes de iniciar handshake | thread_id={thread_id}")
                 raise HandshakeFailedException("Stream cancelled before handshake start")
-            
-            self._protocol.start(self._stream, self._client_config, self._s, self._rs,mode=self._mode,identity= self._identity,regid = self._regid,signedprekey = self._signedprekey,deviceid=self._deviceid)       
+
+            self._protocol.start(self._stream, self._client_config, self._s, self._rs,mode=self._mode,identity= self._identity,regid = self._regid,signedprekey = self._signedprekey,deviceid=self._deviceid)
             logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] protocol.start returned without exception | thread_id={thread_id}")
-            
+
         except HandshakeFailedException as e:
             error = e
             error_msg = str(e)
@@ -95,6 +114,11 @@ class WANoiseProtocolHandshakeWorker(threading.Thread):
             logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] Exception traceback:\n{traceback.format_exc()}")
             logger.exception(f"[handshake {self._attempt_id}] unexpected error during handshake")
         finally:
+            # Cancela o timer de timeout se ainda estiver ativo
+            if self._timeout_timer and self._timeout_timer.is_alive():
+                logger.debug(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] Cancelando timer de timeout | thread_id={thread_id}")
+                self._timeout_timer.cancel()
+
             # ✅ Garantir que o callback seja sempre chamado, mesmo em caso de erro
             logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] worker.run() finalizando | thread_id={thread_id} error={error} finish_callback={'present' if self._finish_callback else 'none'}")
             if self._finish_callback is not None:
@@ -104,7 +128,7 @@ class WANoiseProtocolHandshakeWorker(threading.Thread):
                     logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] finish_callback retornou | thread_id={thread_id}")
                 except Exception as callback_error:
                     logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] Erro ao chamar finish_callback | thread_id={thread_id} error={callback_error}")
-            
+
             logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._attempt_id}] worker.run() FINALIZADO | thread_id={thread_id}")
 
 

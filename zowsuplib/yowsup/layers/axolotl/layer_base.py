@@ -46,6 +46,7 @@ class AxolotlBaseLayer(YowProtocolLayer):
         logger.debug(f"getKeysFor(jids={jids}, resultClbk=[omitted], errorClbk=[omitted], reason={reason})")
         def onSuccess(resultNode, getKeysEntity):                        
             entity = ResultGetKeysIqProtocolEntity.fromProtocolTreeNode(resultNode)
+            logger.debug(f"getKeysFor result: {entity}")
                         
             resultJids = entity.getJids()          
             successJids = []
@@ -62,9 +63,9 @@ class AxolotlBaseLayer(YowProtocolLayer):
                                                 autotrust=self.getProp(PROP_IDENTITY_AUTOTRUST, False))
                     successJids.append(jid)
                 except exceptions.UntrustedIdentityException as e:
-                        errorJids[jid] = e
-                        logger.error(e)
-                        logger.warning("Ignoring message with untrusted identity")
+                    errorJids[jid] = e
+                    logger.error(e)
+                    logger.warning("Ignoring message with untrusted identity")
 
             resultClbk(successJids, errorJids)
 

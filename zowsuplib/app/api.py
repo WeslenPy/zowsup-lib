@@ -2232,7 +2232,7 @@ class ZowsupClient:
             try:
                 if self._stack is not None:
                     from zowsuplib.yowsup.layers.noise.layer import YowNoiseLayer
-                    noise_layer = self._stack.getLayer(YowNoiseLayer)
+                    noise_layer = self._stack.getLayerInterface(YowNoiseLayer)
                     if noise_layer and hasattr(noise_layer, '_handshake_worker'):
                         worker = noise_layer._handshake_worker
                         if worker is not None:
@@ -2834,6 +2834,103 @@ class ZowsupClient:
             raise ZowsupError(err.get("code"), err.get("msg", "Command error"))
 
         return CommandResponse(data=result)
+
+    def send_text_as_pkmsg(
+        self,
+        to: str,
+        text: str,
+        *,
+        wait_for_id: bool = False,
+        wait_msg_id_timeout: Optional[int] = None,
+        **options: Any,
+    ) -> CommandResponse:
+        """
+        Envia uma mensagem de texto forçando o uso de TYPE_PKMSG (PreKey Message).
+        
+        Este método força o envio como PKMSG mesmo se já existir uma sessão estabelecida
+        com o destinatário. Útil para casos onde é necessário garantir que uma PreKey
+        seja usada.
+        
+        Args:
+            to: número de destino ou JID (ex: "5511888888888" ou "5511888888888@s.whatsapp.net")
+            text: conteúdo da mensagem
+            wait_for_id: se True, retorna o ID da mensagem atribuído pelo WhatsApp
+            wait_msg_id_timeout: timeout (segundos) para obter o ID (quando wait_for_id=True)
+            options: opções adicionais repassadas para a camada de envio
+        
+        Returns:
+            CommandResponse com o resultado. Se wait_for_id=True, contém 'message_id'.
+        
+        Example:
+            # Enviar mensagem forçando PKMSG
+            client.send_text_as_pkmsg("5511888888888", "Mensagem com PreKey")
+            
+            # Enviar e obter o ID da mensagem
+            response = client.send_text_as_pkmsg("5511888888888", "Teste", wait_for_id=True)
+            print(f"Mensagem enviada com ID: {response.data['message_id']}")
+        """
+        self._bind_sysvar_context()
+        
+        if not self.is_connected():
+            raise ZowsupError(-1, "Cliente não está conectado")
+        
+        if self.send_layer is None:
+            raise ZowsupError(-1, "SendLayer não disponível")
+        
+        # Obtém o AxolotlSendLayer através do stack
+        try:
+            from zowsuplib.yowsup.layers.axolotl.layer_send import AxolotlSendLayer
+            from zowsuplib.yowsup.structs import ProtocolTreeNode
+            from zowsuplib.yowsup.layers.protocol_messages.protocolentities.message_extendedtext import ExtendedTextMessageProtocolEntity
+            from zowsuplib.yowsup.layers.protocol_messages.protocolentities.message import MessageMetaAttributes
+            from zowsuplib.yowsup.layers.protocol_messages.protocolentities.attributes.attributes_extendedtext import ExtendedTextAttributes
+            from zowsuplib.yowsup.common.tools import Jid
+            import time
+            
+            # Normaliza o JID
+            normalized_to = Jid.normalize(to)
+            if not normalized_to:
+                raise ValueError(f"Falha ao normalizar JID: {to}")
+            
+            # Obtém o AxolotlSendLayer do stack
+            if self._stack is None:
+                raise ZowsupError(-1, "Stack não disponível")
+            
+            axolotl_send_layer = self._stack.getLayerInterface(AxolotlSendLayer)
+            if axolotl_send_layer is None:
+                raise ZowsupError(-1, "AxolotlSendLayer não encontrado no stack")
+            
+            # Cria a mensagem como ExtendedTextMessageProtocolEntity
+            attr = ExtendedTextAttributes(text=text)
+            message_entity = ExtendedTextMessageProtocolEntity(
+                attr,
+                MessageMetaAttributes(
+                    id=self.send_layer.bot.idType,
+                    recipient=normalized_to,
+                    timestamp=int(time.time())
+                )
+            )
+            
+            # Obtém o nó completo da mensagem (já inclui o nó proto)
+            message_node = message_entity.toProtocolTreeNode()
+            message_node.setAttribute("to", normalized_to)
+            message_node.setAttribute("type", "text")
+            
+            # Chama o método sendToContactAsPkmsg
+            if wait_for_id:
+                # Para wait_for_id, precisamos usar o método padrão e aguardar
+                # Por enquanto, vamos apenas enviar e retornar
+                axolotl_send_layer.sendToContactAsPkmsg(message_node)
+                # TODO: Implementar wait_for_id para PKMSG
+                logger.warning("wait_for_id não está totalmente implementado para send_text_as_pkmsg")
+                return CommandResponse()
+            else:
+                axolotl_send_layer.sendToContactAsPkmsg(message_node)
+                return CommandResponse()
+                
+        except Exception as e:
+            logger.error(f"{self._log_prefix} Erro ao enviar mensagem como PKMSG: {e}", exc_info=True)
+            raise ZowsupError(-1, f"Erro ao enviar mensagem como PKMSG: {str(e)}")
 
     def send_text_to_self(
         self,

@@ -6,6 +6,7 @@ from ...layers.axolotl.protocolentities import *
 from ...layers.auth.layer_authentication import YowAuthenticationProtocolLayer
 from ...layers.protocol_groups.protocolentities import InfoGroupsIqProtocolEntity, InfoGroupsResultIqProtocolEntity
 from zowsuplib.axolotl.protocol.whispermessage import WhisperMessage
+from zowsuplib.axolotl.protocol.prekeywhispermessage import PreKeyWhisperMessage
 from ...layers.protocol_messages.protocolentities.message import MessageMetaAttributes
 from ...layers.axolotl.protocolentities.iq_keys_get_result import MissingParametersException
 from ...layers.protocol_contacts.protocolentities  import *
@@ -30,14 +31,7 @@ class AxolotlSendLayer(AxolotlBaseLayer):
 
         self.sessionCiphers = {}
         self.groupCiphers = {}
-        '''
-            Sent messages will be put in Queue until we receive a receipt for them.
-            This is for handling retry receipts which requires re-encrypting and resend of the original message
-            As the receipt for a sent message might arrive at a different yowsup instance,
-            ideally the original message should be fetched from a persistent storage.
-            Therefore, if the original message is not in sentQueue for any reason, we will
-            notify the upper layers and let them handle it.
-        '''
+
         self.sentQueue = []
 
     def __str__(self):
@@ -166,9 +160,7 @@ class AxolotlSendLayer(AxolotlBaseLayer):
             message_attrs
         )
                 
-        # if participant is set, this message is directed to that specific participant as a result of a retry, therefore
-        # we already have the original group message and there is no need to store it again.
-        
+
         if participant is None:        
             self.enqueueSent(node)
             
@@ -219,6 +211,89 @@ class AxolotlSendLayer(AxolotlBaseLayer):
 
         mediaType = protoNode["mediatype"]
         return self.sendEncEntities(node, [EncProtocolEntity(EncProtocolEntity.TYPE_MSG if ciphertext.__class__ == WhisperMessage else EncProtocolEntity.TYPE_PKMSG, 2, ciphertext.serialize(), mediaType)])
+
+    def sendToContactAsPkmsg(self, node):
+
+        recipient_id = node["to"].split('@')[0]
+        protoNode = node.getChild("proto")
+        messageData = protoNode.getData()
+        mediaType = protoNode["mediatype"]
+        
+        to_jid = node["to"]
+        if "@" not in to_jid:
+            to_jid = f"{to_jid}@{YowConstants.WHATSAPP_SERVER}"
+        
+        recipientId, a, deviceid = WATools.jidDecode(to_jid)
+        
+        session_backup = None
+        had_session = False
+        if self.manager.session_exists(to_jid):
+            try:
+                session_record = self.manager._store.loadSession(recipientId, deviceid)
+                session_backup = session_record
+                had_session = True
+                logger.debug(f"Sessão existente encontrada para {to_jid}, será deletada temporariamente")
+            except Exception as e:
+                logger.warning(f"Erro ao carregar sessão para backup: {e}")
+        
+        if had_session:
+            try:
+                self.manager._store.deleteSession(recipientId, deviceid)
+                logger.debug(f"Sessão deletada temporariamente para {to_jid}")
+            except Exception as e:
+                logger.warning(f"Erro ao deletar sessão: {e}")
+        
+        def on_get_keys_success(node, success_jids, errors):
+            try:
+                if len(errors):
+                    self.on_get_keys_process_errors(errors)
+                    if had_session and session_backup:
+                        try:
+                            self.manager._store.storeSession(recipientId, deviceid, session_backup)
+                            logger.debug(f"Sessão restaurada para {to_jid}")
+                        except Exception as e:
+                            logger.warning(f"Erro ao restaurar sessão: {e}")
+                    return
+                
+                if len(success_jids) == 0:
+                    logger.error(f"Nenhuma PreKey obtida para {to_jid}, não é possível enviar como PKMSG")
+                    if had_session and session_backup:
+                        try:
+                            self.manager._store.storeSession(recipientId, deviceid, session_backup)
+                            logger.debug(f"Sessão restaurada para {to_jid}")
+                        except Exception as e:
+                            logger.warning(f"Erro ao restaurar sessão: {e}")
+                    return
+                
+                jid = success_jids[0]
+                recipient_id = jid.split('@')[0]
+                
+                ciphertext = self.manager.encrypt(recipient_id, messageData)
+                
+                if ciphertext.__class__ != PreKeyWhisperMessage:
+                    logger.warning(f"Esperado PreKeyWhisperMessage, mas obteve {ciphertext.__class__.__name__}")
+                
+                enc_entity = EncProtocolEntity(
+                    EncProtocolEntity.TYPE_PKMSG,
+                    2,
+                    ciphertext.serialize(),
+                    mediaType
+                )
+                
+                self.sendEncEntities(node, [enc_entity])
+            except Exception as e:
+                logger.error(f"Erro ao enviar mensagem como PKMSG: {e}")
+                if had_session and session_backup:
+                    try:
+                        self.manager._store.storeSession(recipientId, deviceid, session_backup)
+                        logger.debug(f"Sessão restaurada após erro para {to_jid}")
+                    except Exception as restore_error:
+                        logger.warning(f"Erro ao restaurar sessão após erro: {restore_error}")
+        
+        self.getKeysFor(
+            [to_jid],
+            lambda success_jids, errors: on_get_keys_success(node, success_jids, errors)
+        )
 
     def ensureSessionsAndSendToContacts(self, node, jids):
 
@@ -301,12 +376,7 @@ class AxolotlSendLayer(AxolotlBaseLayer):
         self.sendEncEntities(node, encEntities, participant,tctoken)
 
     def sendToGroupWithSessions(self, node, jidsNeedSenderKey = None, retryCount=0):
-        """
-        For each jid in jidsNeedSenderKey will create a pkmsg enc node with the associated jid.
-        If retryCount > 0 and we have only one jidsNeedSenderKey, this is a retry requested by a specific participant
-        and this message is to be directed at specific at that participant indicated by jidsNeedSenderKey[0]. In this
-        case the participant's jid would go in the parent's EncryptedMessage and not into the enc node.
-        """
+
         logger.debug(
             "sendToGroupWithSessions(node=[omitted], jidsNeedSenderKey=%s, retryCount=%d)" % (jidsNeedSenderKey, retryCount)
         )
@@ -375,20 +445,6 @@ class AxolotlSendLayer(AxolotlBaseLayer):
             self.sendToGroupWithSessions(node, standardJids)
 
     def sendToGroup(self, node, retryReceiptEntity = None):
-        """
-        Group send sequence:
-        check if senderkeyrecord exists
-            no: - create,
-                - get group jids from info request
-                - for each jid without a session, get keys to create the session
-                - send message with dist key for all participants
-            yes:
-                - send skmsg without any dist key
-
-        received retry for a participant
-            - request participants keys
-            - send message with dist key only + conversation, only for this participat
-        """
 
 
         logger.debug(f"sendToGroup(node={node}, retryReceiptEntity={retryReceiptEntity})")

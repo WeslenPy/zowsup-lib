@@ -52,6 +52,14 @@ class YowNoiseLayer(YowLayer):
         self._last_handshake_attempt = None
         self._last_segment_preview = None
         self._last_client_config = None  # Armazena ClientConfig para salvar após handshake
+        self._handshake_timeout_seconds = 30  # Timeout padrão de 30 segundos
+
+    def get_handshake_timeout(self):
+        """
+        Retorna o timeout configurado para o handshake worker.
+        Pode ser configurado através da propriedade 'handshake_timeout_seconds' no stack.
+        """
+        return self.getStack().getProp("handshake_timeout_seconds", self._handshake_timeout_seconds)
 
     def __str__(self):
         return "Noise Layer"
@@ -187,12 +195,13 @@ class YowNoiseLayer(YowLayer):
                 self._last_handshake_attempt = attempt_id
                 logger.info(f"[handshake {attempt_id}] performing registration handshake | account={account_id} instance={self._instance_id} mcc={mcc} mnc={mnc} deviceid={deviceid if jid is not None else None}")
                 self._handshake_worker = WANoiseProtocolHandshakeWorker(
-                    self._wa_noiseprotocol, self._stream, client_config, keypair,rs = None,                    
+                    self._wa_noiseprotocol, self._stream, client_config, keypair,rs = None,
                     finish_callback = self.on_handshake_finished,
                     mode = "reg",
                     identity = identity,regid = regid,signedprekey = signedprekey,
                     deviceid = deviceid if jid is not None else None,
-                    attempt_id = attempt_id
+                    attempt_id = attempt_id,
+                    timeout_seconds = self.get_handshake_timeout()
                 )
                 logger.debug(f"[handshake {attempt_id}] starting handshake worker")
                 self._stream.set_events_callback(self._handle_stream_event)
@@ -305,7 +314,8 @@ class YowNoiseLayer(YowLayer):
                         self._wa_noiseprotocol, self._stream, client_config, local_static, remote_static,
                         self.on_handshake_finished,
                         deviceid = int(device) if device is not None else None,
-                        attempt_id = attempt_id
+                        attempt_id = attempt_id,
+                        timeout_seconds = self.get_handshake_timeout()
                     )
                     logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] starting handshake worker | worker_thread_id={self._handshake_worker.ident if hasattr(self._handshake_worker, 'ident') else 'N/A'}")
                     # logger.info(f"[HANDSHAKE-DEBUG] [handshake {attempt_id}] handshake worker started | worker_thread_id={self._handshake_worker.ident}")

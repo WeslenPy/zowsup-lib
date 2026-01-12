@@ -56,7 +56,9 @@ class YowLayer(object):
                 self.event_callbacks[fn.event_callback] = getattr(self, fname)
 
     def getLayerInterface(self, YowLayerClass = None):
-        return self.interface if YowLayerClass is None else self.__stack.getLayerInterface(YowLayerClass)
+        if YowLayerClass is not None:
+            return self.__stack.getLayerInterface(YowLayerClass)
+        return self.interface if self.interface is not None else self
 
     def setStack(self, stack):
         self.__stack = stack

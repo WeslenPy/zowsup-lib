@@ -1,4 +1,6 @@
+from zowsuplib.yowsup.common.tools import Jid
 from .layer_base import AxolotlBaseLayer
+from .layer_send import AxolotlSendLayer
 
 from ...layers.protocol_receipts.protocolentities import OutgoingReceiptProtocolEntity
 from zowsuplib.proto.e2e_pb2 import Message
@@ -11,6 +13,9 @@ from zowsuplib.axolotl.untrustedidentityexception import UntrustedIdentityExcept
 
 import logging
 from loguru import logger
+import time
+from ...layers.protocol_messages.protocolentities.message import MessageMetaAttributes
+from ...layers.protocol_messages.protocolentities.message_text import TextMessageProtocolEntity
 
 
 class AxolotlReceivelayer(AxolotlBaseLayer):
@@ -83,12 +88,10 @@ class AxolotlReceivelayer(AxolotlBaseLayer):
 
         try:
             handled = False
-            # Tenta descriptografar mensagem de grupo (SenderKey)
             if encMessageProtocolEntity.getEnc(EncProtocolEntity.TYPE_SKMSG):
                 logger.debug(f"[AxolotlReceive] handleEncMessage: mensagem TYPE_SKMSG (grupo)")
                 handled = self.handleSenderKeyMessage(node)               
                            
-            # Se não foi mensagem de grupo, tenta mensagem individual
             if not handled:                                                                 
                 if encMessageProtocolEntity.getEnc(EncProtocolEntity.TYPE_PKMSG):
                     logger.debug(f"[AxolotlReceive] handleEncMessage: mensagem TYPE_PKMSG (PreKey)")
@@ -97,11 +100,9 @@ class AxolotlReceivelayer(AxolotlBaseLayer):
                     logger.debug(f"[AxolotlReceive] handleEncMessage: mensagem TYPE_MSG (Whisper)")
                     self.handleWhisperMessage(node)             
                 else:
-                    # Tipo de mensagem não reconhecido, envia receipt
                     logger.warning(f"[AxolotlReceive] handleEncMessage: tipo de mensagem não reconhecido, enviando receipt")
                     self.toLower(OutgoingReceiptProtocolEntity(node["id"], node["from"], participant=node["participant"]).toProtocolTreeNode())              
 
-            # Se chegou aqui, a mensagem foi processada com sucesso
             self.reset_retries(node["id"])
 
         except exceptions.InvalidKeyIdException:
@@ -110,14 +111,6 @@ class AxolotlReceivelayer(AxolotlBaseLayer):
                    
             
         except exceptions.InvalidMessageException as e:
-            # InvalidMessageException pode ocorrer por várias razões:
-            # - Bad MAC (Message Authentication Code incorreto) - sessão desincronizada
-            # - Sessão desincronizada entre remetente e destinatário
-            # - Mensagem corrompida durante transmissão
-            # - Chaves de sessão incorretas ou desatualizadas
-            # 
-            # Isso é um caso esperado em algumas situações (ex: sessão desincronizada),
-            # então tratamos como WARNING, não ERROR
             try:
                 author = encMessageProtocolEntity.getAuthor(False) if hasattr(encMessageProtocolEntity, 'getAuthor') else "unknown"
             except:
@@ -129,16 +122,16 @@ class AxolotlReceivelayer(AxolotlBaseLayer):
             retry_count = self._retries.get(node["id"], 0)
             if retry_count >= 2:
                 # Tentou 3 vezes, provavelmente é um problema do remetente ou sessão muito desincronizada
-                logger.warning(f"[AxolotlReceive] InvalidMessage após 2 tentativas para mensagem {node['id']}, enviando receipt e desistindo")
-                self.toLower(OutgoingReceiptProtocolEntity(node["id"], node["from"], participant=node["participant"]).toProtocolTreeNode())   
-            else:            
+                logger.warning(f"[AxolotlReceive] InvalidMessage após 2 tentativas para mensagem {node['id']}, enviando mensagem PKMSG para sincronização")
+                self.send_pkmsg_for_invalid_message(node["from"], node["id"], node["participant"])
+            else:
                 # Envia retry para tentar sincronizar a sessão novamente
                 logger.debug(f"[AxolotlReceive] Enviando retry para mensagem {node['id']} (tentativa {retry_count + 1}/2)")
                 self.send_retry(node, self.manager.registration_id)                
 
         except exceptions.NoSessionException:            
             logger.warning(f"No session for {encMessageProtocolEntity.getAuthor(False)}, getting their keys now")
-            #self.toLower(OutgoingReceiptProtocolEntity(node["id"], node["from"], participant=node["participant"]).toProtocolTreeNode())  
+            self.toLower(OutgoingReceiptProtocolEntity(node["id"], node["from"], participant=node["participant"]).toProtocolTreeNode())  
 
             conversationIdentifier = (node["from"], node["participant"])
 
@@ -184,32 +177,19 @@ class AxolotlReceivelayer(AxolotlBaseLayer):
 
 
     def handlePreKeyWhisperMessage(self, node):
-        """
-        Fluxo de descriptografia:
-        1. manager.decrypt_pkmsg() → descriptografa usando AES (retorna plaintext em bytes)
-        2. parseAndHandleMessageProto() → apenas faz parse do protobuf (NÃO descriptografa)
-        3. Adiciona plaintext ao nó como <proto> e envia para layer superior
-        """
+
         pkMessageProtocolEntity = EncryptedMessageProtocolEntity.fromProtocolTreeNode(node)
         enc = pkMessageProtocolEntity.getEnc(EncProtocolEntity.TYPE_PKMSG)
-        
-        # PASSO 1: DESCRIPTOGRAFIA REAL acontece aqui
-        # decrypt_pkmsg() → sessionCipher.decryptPkmsg() → decryptWithSessionRecord() 
-        # → decryptWithSessionState() → getPlaintext() → AES.decrypt()
-        # Retorna: plaintext (bytes) contendo o protobuf Message serializado JÁ DESCRIPTOGRAFADO
+
         plaintext = self.manager.decrypt_pkmsg(pkMessageProtocolEntity.getAuthor(True), enc.getData(),
                                                enc.getVersion() == 2)
 
         logger.info(f"[AxolotlReceive] handlePreKeyWhisperMessage: plaintext descriptografado (bytes): {len(plaintext) if plaintext else 0} bytes")
 
-        # PASSO 2: Parse do protobuf (NÃO descriptografa, apenas faz parse)
-        # Isso é necessário para processar sender_key_distribution_message se existir
         if enc.getVersion() == 2:
             logger.debug(f"[AxolotlReceive] handlePreKeyWhisperMessage: fazendo parse do protobuf")
             self.parseAndHandleMessageProto(pkMessageProtocolEntity, plaintext)
 
-        # PASSO 3: Adiciona o plaintext (bytes já descriptografados) ao nó como <proto>
-        # A layer superior (YowMessagesProtocolLayer) vai extrair esses bytes e fazer parse novamente
         node = pkMessageProtocolEntity.toProtocolTreeNode()
         node.addChild((ProtoProtocolEntity(plaintext, enc.getMediaType())).toProtocolTreeNode())
 
@@ -217,45 +197,27 @@ class AxolotlReceivelayer(AxolotlBaseLayer):
         self.toUpper(node)
 
     def handleWhisperMessage(self, node):
-        """
-        Fluxo de descriptografia:
-        1. manager.decrypt_msg() → descriptografa usando AES (retorna plaintext em bytes)
-        2. parseAndHandleMessageProto() → apenas faz parse do protobuf (NÃO descriptografa)
-        3. Adiciona plaintext ao nó como <proto> e envia para layer superior
-        
-        Nota: InvalidMessageException, NoSessionException, etc. podem ser lançadas aqui
-        e serão tratadas em handleEncMessage. Não capturamos aqui para manter o código limpo.
-        """
+
         encMessageProtocolEntity = EncryptedMessageProtocolEntity.fromProtocolTreeNode(node)
 
         enc = encMessageProtocolEntity.getEnc(EncProtocolEntity.TYPE_MSG)
         logger.debug(f"[AxolotlReceive] handleWhisperMessage: tentando descriptografar mensagem TYPE_MSG")
         
-        # PASSO 1: DESCRIPTOGRAFIA REAL acontece aqui
-        # decrypt_msg() → sessionCipher.decryptMsg() → decryptWithSessionRecord() 
-        # → decryptWithSessionState() → getPlaintext() → AES.decrypt()
-        # Retorna: plaintext (bytes) contendo o protobuf Message serializado JÁ DESCRIPTOGRAFADO
-        # Pode lançar InvalidMessageException, NoSessionException, etc. que serão tratadas em handleEncMessage
         try:
             plaintext = self.manager.decrypt_msg(encMessageProtocolEntity.getAuthor(False), enc.getData(),
                                                  enc.getVersion() == 2)
         except exceptions.InvalidMessageException:
-            # Re-lança para ser tratada em handleEncMessage
-            # Não logamos aqui para evitar duplicação de logs
             raise
         except Exception as e:
-            # Qualquer outra exceção inesperada
             logger.error(f"[AxolotlReceive] handleWhisperMessage: erro inesperado ao descriptografar: {e}", exc_info=True)
             raise
         
         logger.debug(f"[AxolotlReceive] handleWhisperMessage: plaintext descriptografado (bytes): {len(plaintext) if plaintext else 0} bytes")
 
-        # PASSO 2: Parse do protobuf (NÃO descriptografa, apenas faz parse)
         if enc.getVersion() == 2:
             logger.debug(f"[AxolotlReceive] handleWhisperMessage: fazendo parse do protobuf")
             self.parseAndHandleMessageProto(encMessageProtocolEntity, plaintext)
 
-        # PASSO 3: Adiciona o plaintext (bytes já descriptografados) ao nó como <proto>
         node = encMessageProtocolEntity.toProtocolTreeNode()
         node.addChild((ProtoProtocolEntity(plaintext, enc.getMediaType())).toProtocolTreeNode())
 
@@ -288,21 +250,9 @@ class AxolotlReceivelayer(AxolotlBaseLayer):
             return True
 
     def parseAndHandleMessageProto(self, encMessageProtocolEntity, serializedData):
-        """
-        IMPORTANTE: Este método NÃO descriptografa nada!
-        
-        O serializedData JÁ está descriptografado (é o plaintext retornado por decrypt_pkmsg/decrypt_msg).
-        Este método apenas:
-        1. Faz parse do protobuf Message (serializedData → objeto Message)
-        2. Processa sender_key_distribution_message se existir (para criar sessões de grupo)
-        
-        A descriptografia REAL acontece ANTES, em:
-        - manager.decrypt_pkmsg() → sessionCipher.decryptPkmsg() → AES.decrypt()
-        - manager.decrypt_msg() → sessionCipher.decryptMsg() → AES.decrypt()
-        """
+       
         m = Message()
         try:
-            # Parse do protobuf (serializedData já está descriptografado)
             m.ParseFromString(serializedData)
             logger.debug(f"[AxolotlReceive] parseAndHandleMessageProto: protobuf parseado com sucesso")
         except Exception as e:
@@ -314,7 +264,6 @@ class AxolotlReceivelayer(AxolotlBaseLayer):
         if not m or not serializedData:
             raise exceptions.InvalidMessageException()
 
-        # Processa sender_key_distribution_message se existir (para criar sessões de grupo)
         if m.HasField("sender_key_distribution_message"):
             logger.info(f"[AxolotlReceive] parseAndHandleMessageProto: HasField sender_key_distribution_message - criando sessão de grupo")
             self.handleSenderKeyDistributionMessage(
@@ -343,6 +292,42 @@ class AxolotlReceivelayer(AxolotlBaseLayer):
         retry = RetryOutgoingReceiptProtocolEntity.fromMessageNode(message_node, registration_id)
         retry.count = count
         self.toLower(retry.toProtocolTreeNode())
+
+    def send_pkmsg_for_invalid_message(self, sender_jid, message_id, participant=None):
+       
+        try:
+            logger.info(f"[AxolotlReceive] Enviando mensagem PKMSG vazia para {sender_jid} devido a InvalidMessageException")
+
+            send_layer = self.getLayerInterface(AxolotlSendLayer)
+            if send_layer is None:
+                logger.error("[AxolotlReceive] AxolotlSendLayer não encontrado no stack")
+                return
+            
+            normalized_sender_jid = Jid.normalize(sender_jid)
+            if normalized_sender_jid is None:
+                logger.error(f"[AxolotlReceive] JID inválido: {sender_jid}")
+                return
+
+            message_attrs = MessageMetaAttributes(
+                id=f"sync_{message_id}_{int(time.time())}",
+                recipient=normalized_sender_jid,
+                timestamp=int(time.time())
+            )
+
+            message_entity = TextMessageProtocolEntity("", message_attrs)
+
+            message_node = message_entity.toProtocolTreeNode()
+            message_node.setAttribute("to", normalized_sender_jid)
+            message_node.setAttribute("type", "text")
+
+            if participant:
+                message_node.setAttribute("participant", participant)
+
+            send_layer.sendToContactAsPkmsg(message_node)
+            logger.debug(f"[AxolotlReceive] Mensagem PKMSG enviada com sucesso para {normalized_sender_jid}")
+
+        except Exception as e:
+            logger.error(f"[AxolotlReceive] Erro ao enviar mensagem PKMSG para {normalized_sender_jid if 'normalized_sender_jid' in locals() else sender_jid}: {e}")
 
     def reset_retries(self, message_id):
         if message_id in self._retries:

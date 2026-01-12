@@ -22,7 +22,7 @@ class YowProfilesProtocolLayer(YowProtocolLayer):
         elif isinstance(entity, SetStatusIqProtocolEntity):
             self._sendIq(entity)
 
-    def recvIq(self, node):
+    def recvIq(self, node):        
         # Processa respostas de status
         if node["type"] == "result" and node.getChild("status") is not None:
             from .protocolentities import ResultStatusesIqProtocolEntity
