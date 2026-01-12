@@ -3104,9 +3104,7 @@ class ZowsupClient:
         # Garante que o valor está no range uint32 (0 a 4294967295)
         argb_value = (alpha << 24) | (red << 16) | (green << 8) | blue
         
-        # Garante que está dentro do range uint32
-        # Máximo: 0xFFFFFFFF = 4294967295
-        return argb_value & 0xFFFFFFFF
+        return argb_value & 0xFFFFFFFF # Garante que está dentro do range uint32
 
 
     def send_status(

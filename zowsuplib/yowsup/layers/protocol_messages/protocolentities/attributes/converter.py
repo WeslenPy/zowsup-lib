@@ -339,29 +339,14 @@ class AttributesConverter(object):
             m.jpeg_thumbnail = extendedtext_attributes.jpeg_thumbnail
 
         if extendedtext_attributes.text_argb is not None:
-            # Valida e gera valor aleatório se estiver fora do range uint32
-            text_argb_value = extendedtext_attributes.text_argb
-            if text_argb_value < 0 or text_argb_value > 4294967295:
-                import random
-                logger.warning(
-                    f"text_argb fora do range uint32: {text_argb_value}. "
-                    f"Gerando valor aleatório válido"
-                )
-                # Gera valor aleatório dentro do range válido (0 a 4294967295)
-                text_argb_value = random.randint(0, 4294967295)
+            text_argb_value = extendedtext_attributes.text_argb & 0xFFFFFFFF
             m.text_argb = text_argb_value
+
         if extendedtext_attributes.background_argb is not None:
-            # Valida e gera valor aleatório se estiver fora do range uint32
-            background_argb_value = extendedtext_attributes.background_argb
-            if background_argb_value < 0 or background_argb_value > 4294967295:
-                import random
-                logger.warning(
-                    f"background_argb fora do range uint32: {background_argb_value}. "
-                    f"Gerando valor aleatório válido"
-                )
-                # Gera valor aleatório dentro do range válido (0 a 4294967295)
-                background_argb_value = random.randint(0, 4294967295)
+            background_argb_value = extendedtext_attributes.background_argb & 0xFFFFFFFF
             m.background_argb = background_argb_value
+
+            
         if extendedtext_attributes.font is not None:
             m.font = extendedtext_attributes.font
         if extendedtext_attributes.preview_type is not None:
