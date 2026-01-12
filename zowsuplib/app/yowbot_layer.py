@@ -58,8 +58,6 @@ from zowsuplib.yowsup.common.tools import WATools
 from zowsuplib.yowsup.layers.protocol_media.mediacipher import MediaCipher
 from zowsuplib.yowsup.common.tools import Jid
 import requests,logging,io,os,time,mimetypes,base64,random,threading,qrcode
-import queue
-import concurrent.futures
 from zowsuplib.yowsup.common.optionalmodules import PILOptionalModule
 from threading import Thread
 from zowsuplib.proto import wsend_pb2,wa_struct_pb2
@@ -157,21 +155,6 @@ class SendLayer(YowInterfaceLayer):
         self._important_notification_types = self._get_default_important_notifications()
         self._ignored_notification_types = self._get_default_ignored_notifications()
         self._login_timeout = 20  # Timeout padrão para login (segundos)
-        
-        # Fila assíncrona para operações de DB não críticas (evita bloquear thread do stack)
-        self._db_queue = queue.Queue(maxsize=1000)
-        self._db_worker_thread = threading.Thread(
-            target=self._db_worker,
-            name=f"db-worker-{bot.botId if bot.botId else 'unknown'}",
-            daemon=True
-        )
-        self._db_worker_thread.start()
-        
-        # Executor para operações de DB em callbacks (update_account_status, etc.)
-        self._callback_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=5,
-            thread_name_prefix=f"callback-db-{bot.botId if bot.botId else 'unknown'}"
-        )
         
         # Cache para verificações frequentes de DB (reduz queries)
         self._restriction_cache = {}  # {phone: (has_restriction, timestamp)}
@@ -367,16 +350,7 @@ class SendLayer(YowInterfaceLayer):
             # Atualiza status da conta no banco de dados - marca como não logada
             if self.bot.botId is not None:
                 from zowsuplib.app.db import update_account_status
-                # Executa assincronamente para não bloquear thread do stack
-                if hasattr(self, '_callback_executor'):
-                    self._callback_executor.submit(
-                        update_account_status,
-                        self.bot.botId,
-                        is_logged_in=False
-                    )
-                else:
-                    # Fallback se executor não estiver disponível
-                    update_account_status(self.bot.botId, is_logged_in=False)       
+                update_account_status(self.bot.botId, is_logged_in=False)       
             
         if (not self.detect40x) and (not self.userQuit):     
             self.bot.wa_old = None               
@@ -882,17 +856,7 @@ class SendLayer(YowInterfaceLayer):
             # Atualiza status da conta no banco de dados - marca como não logada e com restrição
             if self.bot.botId is not None:
                 from zowsuplib.app.db import update_account_status
-                # Executa assincronamente para não bloquear thread do stack
-                if hasattr(self, '_callback_executor'):
-                    self._callback_executor.submit(
-                        update_account_status,
-                        self.bot.botId,
-                        is_logged_in=False,
-                        has_restriction=True
-                    )
-                else:
-                    # Fallback se executor não estiver disponível
-                    update_account_status(self.bot.botId, is_logged_in=False, has_restriction=True)
+                update_account_status(self.bot.botId, is_logged_in=False, has_restriction=True)
 
             if reason!="405" and self.bot.bot_type!=YowBotType.TYPE_RUN_TEMP:
                 pass                
@@ -1155,17 +1119,10 @@ class SendLayer(YowInterfaceLayer):
         
         self.lastOnlineTimeStamp = int(time.time()) 
 
-        # Atualiza status da conta no banco de dados de forma assíncrona
-        # Evita bloquear a thread do stack com operação de DB
+        # Atualiza status da conta no banco de dados
         if self.bot.botId is not None:
             from zowsuplib.app.db import update_account_status
-            # Executa assincronamente no executor (não bloqueia thread do stack)
-            self._callback_executor.submit(
-                update_account_status,
-                self.bot.botId,
-                is_logged_in=True,
-                has_restriction=False
-            )
+            update_account_status(self.bot.botId, is_logged_in=True, has_restriction=False)
 
         self.setProp(PROP_IDENTITY_AUTOTRUST, True)
         
@@ -1218,19 +1175,16 @@ class SendLayer(YowInterfaceLayer):
                 num = entity._from[0:entity._from.rfind('@', 0)]                  
 
             if entity.getError() is None:
-                    # Atualiza o status da mensagem para SENT no banco de dados (assíncrono)
-                    if self.bot.botId is not None:
-                        from zowsuplib.app.db import register_sent_message
-                        recipient_jid = Jid.normalize(entity._from) if entity._from else num
-                        # Usa fila assíncrona para não bloquear thread do stack
-                        # try:
-                        #     self._db_queue.put((
-                        #         register_sent_message,
-                        #         (self.bot.botId, entity.getId(), recipient_jid, None, "SENT", None),
-                        #         {}
-                        #     ), block=False)
-                        # except queue.Full:
-                        #     logger.warning(f"Fila de DB cheia, ignorando atualização de status para mensagem {entity.getId()}")
+                    # Atualiza o status da mensagem para SENT no banco de dados
+                    # if self.bot.botId is not None:
+                    #     from zowsuplib.app.db import register_sent_message
+                    #     recipient_jid = Jid.normalize(entity._from) if entity._from else num
+                        # register_sent_message(
+                        #     phone=self.bot.botId,
+                        #     msg_id=entity.getId(),
+                        #     recipient=recipient_jid,
+                        #     status="SENT",
+                        # )
                     
                     self.eventCallback(wsend_pb2.BotEvent.Event.MSG_LOG,msgLog={
                             'msgId':entity.getId(),                                                 
@@ -1239,20 +1193,18 @@ class SendLayer(YowInterfaceLayer):
                             'status': wsend_pb2.MsgLogItem.Status.Value("SENT")
                     })
             else:
-                    # Atualiza o status da mensagem para ERROR no banco de dados (assíncrono)
-                    if self.bot.botId is not None:
-                        from zowsuplib.app.db import register_sent_message
-                        recipient_jid = Jid.normalize(entity._from) if entity._from else num
-                        # Usa fila assíncrona para não bloquear thread do stack
-                        # try:
-                        #     error_code = str(entity.getError()) if entity.getError() else None
-                        #     self._db_queue.put((
-                        #         register_sent_message,
-                        #         (self.bot.botId, entity.getId(), recipient_jid, None, "ERROR", error_code),
-                        #         {}
-                        #     ), block=False)
-                        # except queue.Full:
-                        #     logger.warning(f"Fila de DB cheia, ignorando atualização de status de erro para mensagem {entity.getId()}")
+                    # Atualiza o status da mensagem para ERROR no banco de dados
+                    # if self.bot.botId is not None:
+                    #     from zowsuplib.app.db import register_sent_message
+                    #     recipient_jid = Jid.normalize(entity._from) if entity._from else num
+                    #     error_code = str(entity.getError()) if entity.getError() else None
+                    #     register_sent_message(
+                    #         phone=self.bot.botId,
+                    #         msg_id=entity.getId(),
+                    #         recipient=recipient_jid,
+                    #         status="ERROR",
+                    #         error_code=error_code
+                    #     )
                     
                     self.eventCallback(wsend_pb2.BotEvent.Event.MSG_LOG,msgLog={
                             'msgId':entity.getId(),                            
@@ -1926,21 +1878,21 @@ class SendLayer(YowInterfaceLayer):
             logger.error(error_msg, exc_info=True)
             
             # Tenta registrar erro no banco de dados (assíncrono)
-            try:
-                normalized_to = Jid.normalize(to) if to else None
-                if normalized_to and self.bot.botId:
-                    from zowsuplib.app.db import register_sent_message
-                    # Usa fila assíncrona para não bloquear
-                    # try:
-                    #     self._db_queue.put((
-                    #         register_sent_message,
-                    #         (self.bot.botId, None, normalized_to, "TEXT", "ERROR", str(e)),
-                    #         {}
-                    #     ), block=False)
-                    # except queue.Full:
-                    #     logger.warning(f"Fila de DB cheia, ignorando registro de erro para {normalized_to}")
-            except Exception as db_error:
-                logger.debug(f"Erro ao adicionar registro de erro à fila: {db_error}")
+            # try:
+            #     normalized_to = Jid.normalize(to) if to else None
+            #     if normalized_to and self.bot.botId:
+            #         # from zowsuplib.app.db import register_sent_message
+            #         # Usa fila assíncrona para não bloquear
+            #         # try:
+            #         #     self._db_queue.put((
+            #         #         register_sent_message,
+            #         #         (self.bot.botId, None, normalized_to, "TEXT", "ERROR", str(e)),
+            #         #         {}
+            #         #     ), block=False)
+            #         # except queue.Full:
+            #         #     logger.warning(f"Fila de DB cheia, ignorando registro de erro para {normalized_to}")
+            # except Exception as db_error:
+            #     logger.debug(f"Erro ao adicionar registro de erro à fila: {db_error}")
             
             raise RuntimeError(error_msg) from e
     
@@ -2094,46 +2046,23 @@ class SendLayer(YowInterfaceLayer):
         # Envia a mensagem
         self.toLower(messageEntity)
             
-    def _db_worker(self):
-        """Worker thread para processar operações de DB assíncronas."""
-        while True:
-            try:
-                operation = self._db_queue.get(timeout=1)
-                if operation is None:  # Sentinel para parar
-                    break
-                
-                func, args, kwargs = operation
-                try:
-                    func(*args, **kwargs)
-                except Exception as e:
-                    logger.error(f"Erro em operação de DB assíncrona: {e}", exc_info=True)
-                finally:
-                    self._db_queue.task_done()
-            except queue.Empty:
-                continue
-            except Exception as e:
-                logger.error(f"Erro no worker de DB: {e}", exc_info=True)
-    
     def _register_sent_message(self, msg_id, recipient_jid, message_type, status, error_code=None):
-        """
-        Registra mensagem enviada no banco de dados de forma assíncrona.
-        Evita bloquear a thread do stack com operações de DB.
-        """
+        """Registra mensagem enviada no banco de dados."""
         if self.bot.botId is None:
             return
         
-        # try:
-        #     from zowsuplib.app.db import register_sent_message
-        #     # Adiciona à fila assíncrona (não bloqueia)
-        #     self._db_queue.put((
-        #         register_sent_message,
-        #         (self.bot.botId, msg_id, recipient_jid, message_type, status, error_code),
-        #         {}
-        #     ), block=False)
-        # except queue.Full:
-        #     logger.warning(f"Fila de DB cheia, ignorando registro de mensagem {msg_id}")
-        # except Exception as e:
-        #     logger.warning(f"Erro ao adicionar registro de mensagem à fila: {e}")
+        try:
+            from zowsuplib.app.db import register_sent_message
+            register_sent_message(
+                phone=self.bot.botId,
+                msg_id=msg_id,
+                recipient=recipient_jid,
+                message_type=message_type,
+                status=status,
+                error_code=error_code
+            )
+        except Exception as e:
+            logger.warning(f"Erro ao registrar mensagem no banco de dados: {e}")
     
     def _notify_message_sent(self, msg_id, normalized_to, original_to):
         """Notifica evento de mensagem enviada."""
