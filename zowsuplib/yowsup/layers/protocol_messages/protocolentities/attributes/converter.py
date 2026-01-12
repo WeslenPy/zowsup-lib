@@ -2,6 +2,7 @@ from zowsuplib.proto  import e2e_pb2
 from zowsuplib.proto import protocol_pb2
 from zowsuplib.proto.e2e_pb2 import ContextInfo
 import os,time
+from loguru import logger
 from .....layers.protocol_messages.protocolentities.attributes  import *
 from .....layers.protocol_messages.protocolentities.attributes.attributes_sender_key_distribution_message import \
     SenderKeyDistributionMessageAttributes
@@ -338,9 +339,29 @@ class AttributesConverter(object):
             m.jpeg_thumbnail = extendedtext_attributes.jpeg_thumbnail
 
         if extendedtext_attributes.text_argb is not None:
-            m.text_argb = extendedtext_attributes.text_argb
+            # Valida e gera valor aleatório se estiver fora do range uint32
+            text_argb_value = extendedtext_attributes.text_argb
+            if text_argb_value < 0 or text_argb_value > 4294967295:
+                import random
+                logger.warning(
+                    f"text_argb fora do range uint32: {text_argb_value}. "
+                    f"Gerando valor aleatório válido"
+                )
+                # Gera valor aleatório dentro do range válido (0 a 4294967295)
+                text_argb_value = random.randint(0, 4294967295)
+            m.text_argb = text_argb_value
         if extendedtext_attributes.background_argb is not None:
-            m.background_argb = extendedtext_attributes.background_argb
+            # Valida e gera valor aleatório se estiver fora do range uint32
+            background_argb_value = extendedtext_attributes.background_argb
+            if background_argb_value < 0 or background_argb_value > 4294967295:
+                import random
+                logger.warning(
+                    f"background_argb fora do range uint32: {background_argb_value}. "
+                    f"Gerando valor aleatório válido"
+                )
+                # Gera valor aleatório dentro do range válido (0 a 4294967295)
+                background_argb_value = random.randint(0, 4294967295)
+            m.background_argb = background_argb_value
         if extendedtext_attributes.font is not None:
             m.font = extendedtext_attributes.font
         if extendedtext_attributes.preview_type is not None:

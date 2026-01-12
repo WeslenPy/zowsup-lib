@@ -2175,6 +2175,141 @@ class ZowsupClient:
         logger.error(f"{self._log_prefix} ✗ Falha ao conectar com todos os tipos de ambiente testados")
         return False
 
+    def destroy_all_threads(self) -> Dict[str, Any]:
+        """
+        Destrói todas as threads relacionadas a esta conta.
+        
+        Este método garante que todas as threads sejam finalizadas corretamente:
+        - Thread do stack
+        - Thread de handshake
+        - Timers de reconexão
+        - Thread de QR code
+        - Outras threads auxiliares
+        
+        Returns:
+            Dict com informações sobre threads destruídas:
+            {
+                "stack_thread": {"stopped": bool, "thread_id": int},
+                "handshake_worker": {"stopped": bool, "thread_id": int},
+                "timers_cancelled": int,
+                "qr_thread_stopped": bool
+            }
+        """
+        result = {
+            "stack_thread": {"stopped": False, "thread_id": None},
+            "handshake_worker": {"stopped": False, "thread_id": None},
+            "timers_cancelled": 0,
+            "qr_thread_stopped": False
+        }
+        
+        logger.info(f"{self._log_prefix} Destruindo todas as threads relacionadas à conta...")
+        
+        try:
+            # 1. Para thread do stack
+            if hasattr(self, '_stack_thread') and self._stack_thread is not None:
+                thread_id = self._stack_thread.ident if hasattr(self._stack_thread, 'ident') else None
+                result["stack_thread"]["thread_id"] = thread_id
+                
+                if self._stack_thread.is_alive():
+                    logger.info(f"{self._log_prefix} Parando thread do stack | thread_id={thread_id}")
+                    # Sinaliza parada
+                    if hasattr(self, '_stop_event'):
+                        self._stop_event.set()
+                    
+                    # Aguarda término com timeout
+                    self._stack_thread.join(timeout=2.0)
+                    
+                    if self._stack_thread.is_alive():
+                        logger.warning(f"{self._log_prefix} Thread do stack não terminou em 2s, pode estar bloqueada")
+                    else:
+                        result["stack_thread"]["stopped"] = True
+                        logger.info(f"{self._log_prefix} Thread do stack finalizada")
+                else:
+                    result["stack_thread"]["stopped"] = True
+                    logger.debug(f"{self._log_prefix} Thread do stack já estava finalizada")
+            
+            # 2. Para thread de handshake (via YowNoiseLayer)
+            try:
+                if self._stack is not None:
+                    from zowsuplib.yowsup.layers.noise.layer import YowNoiseLayer
+                    noise_layer = self._stack.getLayer(YowNoiseLayer)
+                    if noise_layer and hasattr(noise_layer, '_handshake_worker'):
+                        worker = noise_layer._handshake_worker
+                        if worker is not None:
+                            thread_id = worker.ident if hasattr(worker, 'ident') else None
+                            result["handshake_worker"]["thread_id"] = thread_id
+                            
+                            if worker.is_alive():
+                                logger.info(f"{self._log_prefix} Parando thread de handshake | thread_id={thread_id}")
+                                
+                                # Cancela stream para desbloquear thread
+                                if hasattr(noise_layer, '_stream') and noise_layer._stream:
+                                    if not noise_layer._stream.is_cancelled():
+                                        noise_layer._stream.cancel()
+                                
+                                # Aguarda término com timeout
+                                worker.join(timeout=1.0)
+                                
+                                if worker.is_alive():
+                                    logger.warning(f"{self._log_prefix} Thread de handshake não terminou em 1s")
+                                else:
+                                    result["handshake_worker"]["stopped"] = True
+                                    logger.info(f"{self._log_prefix} Thread de handshake finalizada")
+                            else:
+                                result["handshake_worker"]["stopped"] = True
+                                logger.debug(f"{self._log_prefix} Thread de handshake já estava finalizada")
+            except Exception as e:
+                logger.warning(f"{self._log_prefix} Erro ao parar thread de handshake: {e}")
+            
+            # 3. Cancela todos os timers no SendLayer
+            try:
+                if self.send_layer and hasattr(self.send_layer, '_timers'):
+                    timers = self.send_layer._timers
+                    for timer in timers:
+                        try:
+                            timer.cancel()
+                            result["timers_cancelled"] += 1
+                        except Exception as e:
+                            logger.debug(f"{self._log_prefix} Erro ao cancelar timer: {e}")
+                    
+                    self.send_layer._timers.clear()
+                    logger.info(f"{self._log_prefix} {result['timers_cancelled']} timers cancelados")
+                
+                # Cancela timer de reconexão
+                if self.send_layer and hasattr(self.send_layer, '_reconnect_timer'):
+                    if self.send_layer._reconnect_timer is not None:
+                        try:
+                            self.send_layer._reconnect_timer.cancel()
+                            self.send_layer._reconnect_timer = None
+                            logger.info(f"{self._log_prefix} Timer de reconexão cancelado")
+                        except Exception as e:
+                            logger.debug(f"{self._log_prefix} Erro ao cancelar timer de reconexão: {e}")
+            except Exception as e:
+                logger.warning(f"{self._log_prefix} Erro ao cancelar timers: {e}")
+            
+            # 4. Para thread de QR code
+            try:
+                if self.send_layer and hasattr(self.send_layer, '_qrThread'):
+                    if self.send_layer._qrThread is not None:
+                        if self.send_layer._qrThread.is_alive():
+                            logger.info(f"{self._log_prefix} Parando thread de QR code")
+                            self.send_layer._qrThread.stop()
+                            self.send_layer._qrThread.join(timeout=0.5)
+                            if not self.send_layer._qrThread.is_alive():
+                                result["qr_thread_stopped"] = True
+                                logger.info(f"{self._log_prefix} Thread de QR code finalizada")
+                        else:
+                            result["qr_thread_stopped"] = True
+            except Exception as e:
+                logger.warning(f"{self._log_prefix} Erro ao parar thread de QR code: {e}")
+            
+            logger.info(f"{self._log_prefix} Threads destruídas: {result}")
+            
+        except Exception as e:
+            logger.error(f"{self._log_prefix} Erro ao destruir threads: {e}", exc_info=True)
+        
+        return result
+
     def disconnect(self) -> None:
         """
         Encerra a conexão do bot de forma controlada.
@@ -2185,6 +2320,9 @@ class ZowsupClient:
         
         logger.info(f"{self._log_prefix} Desconectando...")
         try:
+            # Destrói todas as threads relacionadas à conta
+            # self.destroy_all_threads()
+            
             # Fecha todas as sessões da conta
             try:
                 from zowsuplib.app.session_manager import get_session_lifecycle_manager
@@ -2914,10 +3052,20 @@ class ZowsupClient:
         
         # Função auxiliar para converter string hexadecimal para int
         def _parse_color(color_value):
-            """Converte string hexadecimal (ex: '0xFFFFFFFF') para int."""
+            """Converte string hexadecimal (ex: '0xFFFFFFFF') para int e valida range uint32."""
+            import random
+            
             if color_value is None:
                 return None
             if isinstance(color_value, int):
+                # Valida range uint32 (0 a 4294967295)
+                if color_value < 0 or color_value > 4294967295:
+                    logger.warning(
+                        f"Cor fora do range uint32: {color_value}. "
+                        f"Gerando valor aleatório válido"
+                    )
+                    # Gera valor aleatório dentro do range válido
+                    return random.randint(0, 4294967295)
                 return color_value
             if isinstance(color_value, str):
                 # Remove espaços e converte para minúsculas
@@ -2927,7 +3075,16 @@ class ZowsupClient:
                     color_str = color_str[2:]
                 # Converte hex string para int
                 try:
-                    return int(color_str, 16)
+                    parsed_value = int(color_str, 16)
+                    # Valida range uint32
+                    if parsed_value < 0 or parsed_value > 4294967295:
+                        logger.warning(
+                            f"Cor fora do range uint32: {parsed_value} (de '{color_value}'). "
+                            f"Gerando valor aleatório válido"
+                        )
+                        # Gera valor aleatório dentro do range válido
+                        return random.randint(0, 4294967295)
+                    return parsed_value
                 except ValueError:
                     raise ValueError(f"Cor inválida: '{color_value}'. Esperado formato hexadecimal (ex: '0xFFFFFFFF' ou 'FFFFFFFF')")
             raise TypeError(f"Tipo de cor inválido: {type(color_value)}. Esperado int ou str")
