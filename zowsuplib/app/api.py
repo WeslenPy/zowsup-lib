@@ -83,11 +83,22 @@ class _CommandDispatcher:
         self._lock = threading.Lock()
         self._log_prefix = log_prefix
         
+        # Extrai account_id do log_prefix para usar no nome da thread
+        # log_prefix tem formato: "[ZowsupClient:account_id]"
+        account_id = "unknown"
+        if ":" in log_prefix:
+            try:
+                # Extrai o account_id do formato "[ZowsupClient:account_id]"
+                account_id = log_prefix.split(":")[1].rstrip("]")
+            except Exception:
+                pass
+        
         # ThreadPoolExecutor para executar handlers sem bloquear a thread principal
         # Evita que handlers bloqueantes travem toda a stack
+        # Usa account_id no prefixo para evitar duplicação de nomes entre contas
         self._executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=10,  # Máximo de handlers simultâneos
-            thread_name_prefix="cmd-handler"
+            thread_name_prefix=f"cmd-handler-{account_id}"
         )
 
     def register(self, name: str, handler: Callable[[list, Dict[str, Any]], Any]) -> None:
