@@ -3063,6 +3063,52 @@ class ZowsupClient:
         
         return CommandResponse(data=result)
 
+
+    def _generate_random_text_color(self) -> int:
+        """
+        Gera uma cor aleatória para texto no formato ARGB (uint32).
+
+        Returns:
+            int: Cor ARGB no formato uint32 (0 a 4294967295)
+                 Alpha=255 (opaco), R/G/B aleatórios
+        """
+        # Alpha sempre 255 (opaco), R/G/B aleatórios
+        alpha = 255
+        red = random.randint(0, 255)
+        green = random.randint(0, 255)
+        blue = random.randint(0, 255)
+
+        # Formato ARGB: (A << 24) | (R << 16) | (G << 8) | B
+        # Garante que o valor está no range uint32 (0 a 4294967295)
+        argb_value = (alpha << 24) | (red << 16) | (green << 8) | blue
+        
+        # Garante que está dentro do range uint32
+        # Máximo: 0xFFFFFFFF = 4294967295
+        return argb_value & 0xFFFFFFFF
+
+    def _generate_random_background_color(self) -> int:
+        """
+        Gera uma cor aleatória para fundo no formato ARGB (uint32).
+
+        Returns:
+            int: Cor ARGB no formato uint32 (0 a 4294967295)
+                 com alpha variável para transparência
+        """
+        # Alpha variável (semi-transparente a opaco)
+        alpha = random.randint(200, 255)  # 200-255 para boa visibilidade
+        red = random.randint(0, 255)
+        green = random.randint(0, 255)
+        blue = random.randint(0, 255)
+
+        # Formato ARGB: (A << 24) | (R << 16) | (G << 8) | B
+        # Garante que o valor está no range uint32 (0 a 4294967295)
+        argb_value = (alpha << 24) | (red << 16) | (green << 8) | blue
+        
+        # Garante que está dentro do range uint32
+        # Máximo: 0xFFFFFFFF = 4294967295
+        return argb_value & 0xFFFFFFFF
+
+
     def send_status(
         self,
         text: Optional[str] = None,
@@ -3162,7 +3208,7 @@ class ZowsupClient:
                         f"Gerando valor aleatório válido"
                     )
                     # Gera valor aleatório dentro do range válido
-                    return random.randint(0, 4294967295)
+                    return self._generate_random_text_color()
                 return color_value
             if isinstance(color_value, str):
                 # Remove espaços e converte para minúsculas
@@ -3180,7 +3226,8 @@ class ZowsupClient:
                             f"Gerando valor aleatório válido"
                         )
                         # Gera valor aleatório dentro do range válido
-                        return random.randint(0, 4294967295)
+                        return self._generate_random_text_color()
+
                     return parsed_value
                 except ValueError:
                     raise ValueError(f"Cor inválida: '{color_value}'. Esperado formato hexadecimal (ex: '0xFFFFFFFF' ou 'FFFFFFFF')")
@@ -3189,9 +3236,9 @@ class ZowsupClient:
         # Se for status de texto, adiciona opções de cor e fonte
         if text:
             if text_color is not None:
-                opts["text_color"] = _parse_color(text_color)
+                opts["text_color"] = self._generate_random_text_color()
             if background_color is not None:
-                opts["background_color"] = _parse_color(background_color)
+                opts["background_color"] = self._generate_random_background_color()
             if font is not None:
                 opts["font"] = font
             opts["preview_type"] = opts.get("preview_type", 0)
