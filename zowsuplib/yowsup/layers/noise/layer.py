@@ -410,8 +410,20 @@ class YowNoiseLayer(YowLayer):
     def _on_protocol_state_changed(self, state):
         import threading
         thread_id = threading.current_thread().ident
-        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
-        logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] protocol state changed | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} old_state={getattr(self._wa_noiseprotocol, 'state', 'N/A')} new_state={state}")
+        
+        # Verifica se a stack existe antes de tentar usá-la
+        try:
+            stack = self.getStack()
+            if stack is None:
+                logger.warning(f"[HANDSHAKE-DEBUG] _on_protocol_state_changed ignorado: stack não existe | thread_id={thread_id} state={state}")
+                return
+            account_id = stack.getProp("botId") or stack.getProp("jid") or "unknown"
+            stack_id = id(stack)
+        except Exception as e:
+            logger.warning(f"[HANDSHAKE-DEBUG] _on_protocol_state_changed ignorado: erro ao acessar stack | thread_id={thread_id} state={state} error={e}")
+            return
+        
+        logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] protocol state changed | account={account_id} thread_id={thread_id} stack_id={stack_id} old_state={getattr(self._wa_noiseprotocol, 'state', 'N/A')} new_state={state}")
         
         if state == WANoiseProtocol.STATE_TRANSPORT:
             logger.info(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] entering TRANSPORT state | account={account_id}")
@@ -428,7 +440,12 @@ class YowNoiseLayer(YowLayer):
             self._flush_incoming_buffer()
             
         if state == WANoiseProtocol.STATE_ERROR and self._last_segment_preview:
-            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] protocol entered ERROR | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} last incoming segment {self._last_segment_preview}")
+            try:
+                stack = self.getStack()
+                stack_id = id(stack) if stack else None
+            except:
+                stack_id = None
+            logger.error(f"[HANDSHAKE-DEBUG] [handshake {self._last_handshake_attempt}] protocol entered ERROR | account={account_id} thread_id={thread_id} stack_id={stack_id} last incoming segment {self._last_segment_preview}")
             self._maybe_break("NOISE_BREAK_ON_STATE_ERROR")
         logger.debug(f"[handshake {self._last_handshake_attempt}] protocol state changed to {state}")
 
@@ -450,7 +467,17 @@ class YowNoiseLayer(YowLayer):
         """
         try: 
             thread_id = threading.current_thread().ident
-            account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+            
+            # Verifica se a stack existe antes de tentar usá-la
+            try:
+                stack = self.getStack()
+                if stack is None:
+                    logger.warning(f"[HANDSHAKE-DEBUG] _update_server_static_public ignorado: stack não existe | thread_id={thread_id}")
+                    return False
+                account_id = stack.getProp("botId") or stack.getProp("jid") or "unknown"
+            except Exception as e:
+                logger.warning(f"[HANDSHAKE-DEBUG] _update_server_static_public ignorado: erro ao acessar stack | thread_id={thread_id} error={e}")
+                return False
             
             if new_rs is None:
                 logger.warning(f"[HANDSHAKE-DEBUG] Tentativa de atualizar server_static_public com None | account={account_id}")
@@ -505,8 +532,18 @@ class YowNoiseLayer(YowLayer):
     def _handle_stream_event(self, event):
         import threading
         thread_id = threading.current_thread().ident
-        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
-        stack_id = id(self.getStack())
+        
+        # Verifica se a stack existe antes de tentar usá-la
+        try:
+            stack = self.getStack()
+            if stack is None:
+                logger.warning(f"[HANDSHAKE-DEBUG] _handle_stream_event ignorado: stack não existe | thread_id={thread_id} event={event}")
+                return
+            account_id = stack.getProp("botId") or stack.getProp("jid") or "unknown"
+            stack_id = id(stack)
+        except Exception as e:
+            logger.warning(f"[HANDSHAKE-DEBUG] _handle_stream_event ignorado: erro ao acessar stack | thread_id={thread_id} event={event} error={e}")
+            return
         
         # Verifica se o stream foi cancelado antes de processar
         if self._stream and self._stream.is_cancelled():
@@ -601,14 +638,24 @@ class YowNoiseLayer(YowLayer):
 
     def _maybe_retry_handshake(self, reason=None):
         """
-        Tenta recuperar de um estado congelado reiniciando o handshake.
+        Se houver erro de handshake, não faz retry, apenas fecha a comunicação.
         
         Args:
-            reason: Razão pela qual a recuperação foi acionada
+            reason: Razão pela qual o handshake falhou
         """
         import threading
         thread_id = threading.current_thread().ident
-        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+        
+        # Verifica se a stack existe antes de tentar usá-la
+        try:
+            stack = self.getStack()
+            if stack is None:
+                logger.warning(f"[HANDSHAKE-DEBUG] _maybe_retry_handshake ignorado: stack não existe | thread_id={thread_id} reason={reason}")
+                return
+            account_id = stack.getProp("botId") or stack.getProp("jid") or "unknown"
+        except Exception as e:
+            logger.warning(f"[HANDSHAKE-DEBUG] _maybe_retry_handshake ignorado: erro ao acessar stack | thread_id={thread_id} error={e} reason={reason}")
+            return
         
         # Não tenta recuperar se já há um handshake em progresso
         if self._in_handshake() or self._handshake_worker is not None:
@@ -621,47 +668,40 @@ class YowNoiseLayer(YowLayer):
         
         current_state = self._wa_noiseprotocol.state
         
-        # Só tenta recuperar se estiver em ERROR ou HANDSHAKE preso
+        # Só processa se estiver em ERROR ou HANDSHAKE preso
         if current_state not in (WANoiseProtocol.STATE_ERROR, WANoiseProtocol.STATE_HANDSHAKE):
             logger.debug(
                 f"[HANDSHAKE-DEBUG] _maybe_retry_handshake ignorado: "
-                f"estado não requer recuperação | account={account_id} state={current_state}"
+                f"estado não requer ação | account={account_id} state={current_state}"
             )
             return
         
         logger.warning(
-            f"[HANDSHAKE-DEBUG] Tentando recuperar de estado congelado | "
+            f"[HANDSHAKE-DEBUG] Erro de handshake detectado, fechando comunicação | "
             f"account={account_id} thread_id={thread_id} state={current_state} reason={reason}"
         )
         
-        # Reseta o protocolo
-        self._wa_noiseprotocol.reset()
-        
-        # Tenta reiniciar o handshake se houver profile disponível
-        if self._profile is None:
-            logger.warning(
-                f"[HANDSHAKE-DEBUG] Não é possível recuperar: profile não disponível | "
-                f"account={account_id}"
-            )
-            return
-        
-        # Emite evento de autenticação para tentar novo handshake
-        # Isso será tratado pelo on_auth() que iniciará um novo handshake
+        # Não faz retry - apenas fecha a comunicação
         try:
-            logger.info(
-                f"[HANDSHAKE-DEBUG] Emitindo evento AUTH para reiniciar handshake | "
-                f"account={account_id}"
-            )
-            # Emite evento de autenticação para forçar novo handshake
-            self.broadcastEvent(
-                YowLayerEvent(
-                    YowAuthenticationProtocolLayer.EVENT_AUTH,
-                    passive=False
+            # Cancela o stream se existir
+            if self._stream and not self._stream.is_cancelled():
+                logger.info(f"[HANDSHAKE-DEBUG] Cancelando stream após erro de handshake | account={account_id}")
+                self._stream.cancel()
+            
+            # Fecha a conexão emitindo evento de disconnect
+            try:
+                stack.broadcastEvent(
+                    YowLayerEvent(
+                        YowNetworkLayer.EVENT_STATE_DISCONNECT,
+                        reason=f"Handshake failed: {reason}"
+                    )
                 )
-            )
+                logger.info(f"[HANDSHAKE-DEBUG] Evento de disconnect emitido após erro de handshake | account={account_id}")
+            except Exception as e:
+                logger.error(f"[HANDSHAKE-DEBUG] Erro ao emitir evento de disconnect | account={account_id} error={e}")
         except Exception as e:
             logger.error(
-                f"[HANDSHAKE-DEBUG] Erro ao tentar recuperar handshake | "
+                f"[HANDSHAKE-DEBUG] Erro ao fechar comunicação após handshake failed | "
                 f"account={account_id} error={e}",
                 exc_info=True
             )
