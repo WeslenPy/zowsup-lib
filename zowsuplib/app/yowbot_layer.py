@@ -297,9 +297,27 @@ class SendLayer(YowInterfaceLayer):
         logger.info("Typing")
         logger.info(f"Typing: {event}")
 
+    def _stop_ping_thread(self):
+        """
+        Para a thread YowPing de forma segura.
+        Garante que o ping seja parado mesmo se a stack estiver morrendo.
+        """
+        try:
+            from zowsuplib.yowsup.layers.protocol_iq.layer import YowIqProtocolLayer
+            iq_layer = self.getLayerInterface(YowIqProtocolLayer)
+            if iq_layer is not None:
+                logger.debug(f"[{self.bot.botId}] Parando YowPing thread")
+                iq_layer.stop_thread()
+        except Exception as e:
+            logger.debug(f"[{self.bot.botId}] Erro ao parar YowPing thread: {e}")
+
     @EventCallback(YowNetworkLayer.EVENT_STATE_DISCONNECTED)
     def onDisconnected(self, yowLayerEvent):             
         logger.info("Disconnect")
+        
+        # Para o YowPing thread ao desconectar
+        # Isso garante que a thread seja parada mesmo se a stack estiver morrendo
+        self._stop_ping_thread()
         
         # ✅ SEMPRE atualiza isConnected primeiro, antes de qualquer return
         # Isso garante que o estado seja atualizado mesmo quando há return antecipado
@@ -1134,7 +1152,12 @@ class SendLayer(YowInterfaceLayer):
 
         if entity.code is not None :
             if entity.code=="503":
-                self.detect503 = True      
+                self.detect503 = True
+                
+                # Para o YowPing diretamente antes de desconectar
+                # Isso garante que a thread seja parada mesmo se a stack morrer
+                self._stop_ping_thread()
+                
                 self.bot._stack.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_DISCONNECT))                
         # Detecta conflito (sessão substituída)
         try:
