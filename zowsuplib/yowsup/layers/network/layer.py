@@ -52,12 +52,14 @@ class YowNetworkLayer(YowLayer, ConnectionCallbacks):
         thread_id = threading.current_thread().ident
         account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
         endpoint = self.getProp(self.__class__.PROP_ENDPOINT)
-        logger.info(f"[HANDSHAKE-DEBUG] onConnected | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} endpoint={endpoint}")
+        logger.info(f"[LOGIN-DEBUG] YowNetworkLayer.onConnected() chamado - conexão TCP estabelecida | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} endpoint={endpoint[0]}:{endpoint[1]}")
         logger.debug("Connected")
+        logger.info(f"[LOGIN-DEBUG] Mudando estado para CONNECTED | account={account_id} thread_id={thread_id}")
         self.state = self.__class__.STATE_CONNECTED
         self.connected = True
-        logger.info(f"[HANDSHAKE-DEBUG] onConnected emitindo EVENT_STATE_CONNECTED | account={account_id} thread_id={thread_id}")
+        logger.info(f"[LOGIN-DEBUG] Emitindo EVENT_STATE_CONNECTED para iniciar processo de autenticação | account={account_id} thread_id={thread_id}")
         self.emitEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECTED))
+        logger.info(f"[LOGIN-DEBUG] EVENT_STATE_CONNECTED emitido com sucesso | account={account_id} thread_id={thread_id}")
 
     def onDisconnected(self):
         import threading
@@ -132,10 +134,16 @@ class YowNetworkLayer(YowLayer, ConnectionCallbacks):
 
     @EventCallback(EVENT_STATE_CONNECT)
     def onConnectLayerEvent(self, ev):
+        import threading
+        thread_id = threading.current_thread().ident
+        account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+        
+        logger.info(f"[LOGIN-DEBUG] YowNetworkLayer.onConnectLayerEvent() chamado - recebido EVENT_STATE_CONNECT | account={account_id} thread_id={thread_id} connected={self.connected}")
         if not self.connected:
+            logger.info(f"[LOGIN-DEBUG] Iniciando criação de conexão TCP | account={account_id} thread_id={thread_id}")
             self.createConnection()
         else:
-            logger.warning("Received connect event while already connected")
+            logger.warning(f"[LOGIN-DEBUG] Recebido evento de conexão enquanto já está conectado | account={account_id} thread_id={thread_id}")
         return True
 
     @EventCallback(EVENT_STATE_DISCONNECT)
@@ -147,17 +155,20 @@ class YowNetworkLayer(YowLayer, ConnectionCallbacks):
         import threading
         thread_id = threading.current_thread().ident
         account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
-        logger.info(f"[HANDSHAKE-DEBUG] createConnection iniciado | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} current_state={self.state}")
+        logger.info(f"[LOGIN-DEBUG] YowNetworkLayer.createConnection() iniciado | account={account_id} thread_id={thread_id} stack_id={id(self.getStack())} current_state={self.state}")
         self._disconnect_reason = None
-        self._dispatcher = self.__create_dispatcher(self.getProp(self.PROP_DISPATCHER, self.DISPATCHER_DEFAULT))
-        logger.info(f"[HANDSHAKE-DEBUG] createConnection dispatcher criado | account={account_id} thread_id={thread_id} dispatcher={id(self._dispatcher)}")
+        dispatcher_type = self.getProp(self.PROP_DISPATCHER, self.DISPATCHER_DEFAULT)
+        logger.info(f"[LOGIN-DEBUG] Criando dispatcher de conexão | account={account_id} thread_id={thread_id} dispatcher_type={dispatcher_type}")
+        self._dispatcher = self.__create_dispatcher(dispatcher_type)
+        logger.info(f"[LOGIN-DEBUG] Dispatcher criado com sucesso | account={account_id} thread_id={thread_id} dispatcher={id(self._dispatcher)}")
         self.state = self.__class__.STATE_CONNECTING
         endpoint = self.getProp(self.__class__.PROP_ENDPOINT)
-        logger.info(f"[HANDSHAKE-DEBUG] createConnection conectando | account={account_id} thread_id={thread_id} endpoint={endpoint[0]}:{endpoint[1]}")
+        logger.info(f"[LOGIN-DEBUG] Mudando estado para CONNECTING, iniciando conexão TCP | account={account_id} thread_id={thread_id} endpoint={endpoint[0]}:{endpoint[1]}")
         logger.info(f"Connecting to {endpoint[0]}:{endpoint[1]}")    
 
+        logger.info(f"[LOGIN-DEBUG] Chamando dispatcher.connect() para estabelecer conexão TCP | account={account_id} thread_id={thread_id}")
         self._dispatcher.connect(endpoint)
-        logger.info(f"[HANDSHAKE-DEBUG] createConnection connect() chamado | account={account_id} thread_id={thread_id}")
+        logger.info(f"[LOGIN-DEBUG] dispatcher.connect() chamado, aguardando conexão TCP estabelecer | account={account_id} thread_id={thread_id}")
 
     def destroyConnection(self, reason=None):
         self._disconnect_reason = reason

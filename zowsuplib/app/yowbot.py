@@ -131,18 +131,24 @@ class YowBot:
         return self.cmdList
 
     def run(self):     
+        import threading
+        thread_id = threading.current_thread().ident
+        account_id = self.botId or "unknown"
         
         if self.bot_type==YowBotType.TYPE_REG_COMPANION_SCANQR or self.bot_type==YowBotType.TYPE_REG_COMPANION_LINKCODE:
-            logger.info("Pairing-Device Registration Start")
+            logger.info(f"[LOGIN-DEBUG] Pairing-Device Registration Start | account={account_id} thread_id={thread_id} bot_type={self.bot_type}")
         else:
-            logger.info("Login start")           
-            logger.info(f"AccountFile={self.profile}")
+            logger.info(f"[LOGIN-DEBUG] Login start | account={account_id} thread_id={thread_id} bot_type={self.bot_type}")
+            logger.info(f"[LOGIN-DEBUG] AccountFile={self.profile} | account={account_id}")
+            logger.info(f"[LOGIN-DEBUG] Profile username={self.profile.username if hasattr(self.profile, 'username') else 'N/A'} | account={account_id}")
                            
         try :                            
-            self.inloop = True            
-            self._stack.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT))                                         
+            self.inloop = True
+            logger.info(f"[LOGIN-DEBUG] Emitindo EVENT_STATE_CONNECT para iniciar conexão TCP | account={account_id} thread_id={thread_id}")
+            self._stack.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT))
+            logger.info(f"[LOGIN-DEBUG] EVENT_STATE_CONNECT emitido, iniciando loop da stack | account={account_id} thread_id={thread_id}")
             self._stack.loop()           
-            logger.info("LOOP ENDED")
+            logger.info(f"[LOGIN-DEBUG] LOOP ENDED | account={account_id} thread_id={thread_id}")
 
         except KeyboardInterrupt as erro:      
             logger.info("KeyboardInterrupt: CLOSE RUNNER ")

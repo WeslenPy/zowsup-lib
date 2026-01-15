@@ -88,6 +88,9 @@ class WAHandshake(object):
         dh = X25519DH()
         if e is not None:
             dh = NoGenDH(dh, PrivateKey(e.private.data))
+
+
+        logger.debug(f"dh: {dh}")
         
         self._handshakestate = SwitchableHandshakeState(
             GuardedHandshakeState(
@@ -106,7 +109,14 @@ class WAHandshake(object):
             PublicKey(s.public.data),
             PrivateKey(s.private.data)
         )
+
+        logger.debug(f"dissononce_s: {dissononce_s}")
+
         dissononce_rs = PublicKey(rs.data) if rs else None
+
+        logger.debug(f"dissononce_rs: {dissononce_rs}")
+
+
         client_payload = self._create_full_payload(client_config,s)
 
         #logger.debug("Create client_payload=%s" % client_payload)
@@ -209,10 +219,13 @@ class WAHandshake(object):
         )
         ephemeral_public = bytearray()
         self._handshakestate.write_message(b'', ephemeral_public)
+
         handshakemessage = wa5_pb2.HandshakeMessage()
         client_hello = wa5_pb2.HandshakeMessage.ClientHello()
         client_hello.ephemeral = bytes(ephemeral_public)
         handshakemessage.client_hello.MergeFrom(client_hello)
+
+        logger.debug(f"handshakemessage: {handshakemessage}")
         stream.write_segment(handshakemessage.SerializeToString())
         import threading
         thread_id = threading.current_thread().ident
@@ -235,12 +248,15 @@ class WAHandshake(object):
         self._handshakestate.read_message(
             server_hello.ephemeral + server_hello.static + server_hello.payload, payload_buffer
         )
+
+        logger.debug(f"payload_buffer: {payload_buffer}")
         certman = CertMan()
         if certman.is_valid(self._handshakestate.rs, bytes(payload_buffer)):
             logger.debug("cert is valid")
         else:
             logger.error("cert is not valid")
 
+        logger.debug(f"client_payload: {client_payload}")
         message_buffer = bytearray()
         cipherpair = self._handshakestate.write_message(client_payload.SerializeToString(), message_buffer)
 
@@ -252,8 +268,9 @@ class WAHandshake(object):
         outgoing_handshakemessage = wa5_pb2.HandshakeMessage()        
         outgoing_handshakemessage.client_finish.MergeFrom(client_finish)
 
+        logger.debug(f"outgoing_handshakemessage: {outgoing_handshakemessage}")
         stream.write_segment(outgoing_handshakemessage.SerializeToString())
-        
+        logger.debug(f"cipherpair: {cipherpair}")
         return cipherpair
 
     def _start_handshake_ik(self, stream, client_payload, s, rs):

@@ -1,3 +1,4 @@
+from loguru import logger
 from .segmented import SegmentedStream
 import threading
 
@@ -140,6 +141,9 @@ class BlockingQueueSegmentedStream(SegmentedStream):
             # #region agent log
             # #endregion
             raise HandshakeFailedException("Stream cancelled during read operation")
+
+
+        logger.info(f"[HANDSHAKE-DEBUG-STREAM] Lendo segmento | data={data}")
         
         return data
 
@@ -148,6 +152,8 @@ class BlockingQueueSegmentedStream(SegmentedStream):
             return  # Ignorar escrita se cancelado
         
         self._writequeue.put(data)
+
+        logger.info(f"[HANDSHAKE-DEBUG-STREAM] Escrevendo segmento | data={data}")
 
         if self._events_callback is not None:
             self._events_callback(self.EVENT_WRITE)

@@ -595,6 +595,25 @@ class YowNoiseLayer(YowLayer):
         :rtype:
         """
         data = bytes(data) if type(data) is not bytes else data
+        
+        # Log dos dados que chegam na camada de noise (já codificados)
+        try:
+            account_id = self.getStack().getProp("botId") or self.getStack().getProp("jid") or "unknown"
+            data_length = len(data) if data else 0
+            data_preview = data[:64].hex() if data and len(data) > 0 else "empty"
+            
+            logger.info(
+                f"[NODE-ENCODING] Dados codificados recebidos na camada noise | "
+                f"account={account_id} data_length={data_length} "
+                f"preview_hex={data_preview}..."
+            )
+            
+            logger.debug(
+                f"[NODE-ENCODING] Dados completos (hex): {data.hex() if data else 'empty'}"
+            )
+        except Exception as e:
+            logger.warning(f"[NODE-ENCODING] Erro ao logar dados na camada noise: {e}")
+        
         # Passa recovery_callback para o protocol.send()
         self._wa_noiseprotocol.send(data, recovery_callback=self._maybe_retry_handshake)
 
@@ -606,7 +625,9 @@ class YowNoiseLayer(YowLayer):
                 return
 
             while self._incoming_segments_queue.qsize():
-                self.toUpper(self._wa_noiseprotocol.receive())
+                data = self._incoming_segments_queue.qsize()
+                logger.info(f"[HANDSHAKE-DEBUG] Drenando buffer de entrada |  queue_size={data}")
+                self.toUpper(data)
         finally:
             self._flush_lock.release()
 
@@ -622,6 +643,7 @@ class YowNoiseLayer(YowLayer):
         # Só drena para cima quando já estamos em estado TRANSPORT; evita
         # chamar receive() do protocolo ainda em INIT/HANDSHAKE.
         if self._wa_noiseprotocol.state == WANoiseProtocol.STATE_TRANSPORT:
+            logger.info(f"[HANDSHAKE-DEBUG] Recebendo segmento | data={data}")
             self._flush_incoming_buffer()
 
     def _debug_segment_preview(self, data):

@@ -1112,37 +1112,58 @@ class SendLayer(YowInterfaceLayer):
                 logger.error(f"Erro ao chamar callback do bot: {e}", exc_info=True)
 
     @ProtocolEntityCallback("success")
-    def onSuccess(self, successProtocolEntity):                  
-        logger.info("Login OK")     
+    def onSuccess(self, successProtocolEntity):
+        import threading
+        thread_id = threading.current_thread().ident
+        account_id = self.bot.botId or "unknown"
+        
+        logger.info(f"[LOGIN-DEBUG] SendLayer.onSuccess() chamado - recebido 'success' após autenticação | account={account_id} thread_id={thread_id}")
+        logger.info(f"[LOGIN-DEBUG] Login OK - processo de login concluído com sucesso | account={account_id} thread_id={thread_id}")
                             
+        logger.info(f"[LOGIN-DEBUG] Definindo isConnected=True | account={account_id} thread_id={thread_id}")
         self.isConnected = True
         self._login_failed = False
         
         # Limpa flag de login em progresso antes de setar evento
         # (permite que notificações pendentes sejam processadas normalmente após login)
         notifications_during_login = self._pending_notifications_count
+        logger.info(f"[LOGIN-DEBUG] Limpando flag _login_in_progress | account={account_id} thread_id={thread_id} notifications_during_login={notifications_during_login}")
         self._login_in_progress = False
         
         # Seta evento de login (isso acorda waitLogin)
+        logger.info(f"[LOGIN-DEBUG] Acordando evento de login (loginEvent.set()) | account={account_id} thread_id={thread_id}")
         self.loginEvent.set()
+        logger.info(f"[LOGIN-DEBUG] Evento de login acordado - waitLogin() será desbloqueado | account={account_id} thread_id={thread_id}")
         
         if notifications_during_login > 0:
-            logger.info(f"[{self.bot.botId}] Login concluído com {notifications_during_login} notificações processadas durante login")
+            logger.info(f"[LOGIN-DEBUG] [{account_id}] Login concluído com {notifications_during_login} notificações processadas durante login | thread_id={thread_id}")
+        
+        logger.info(f"[LOGIN-DEBUG] Resetando contadores de reconexão | account={account_id} thread_id={thread_id}")
         self._reconnect_attempts = 0
         self._cancel_reconnect_timer()
+        
+        logger.info(f"[LOGIN-DEBUG] Enviando AvailablePresenceProtocolEntity para indicar disponibilidade | account={account_id} thread_id={thread_id}")
         entity = AvailablePresenceProtocolEntity()
-        self.toLower(entity)                
+        self.toLower(entity)
+        logger.info(f"[LOGIN-DEBUG] AvailablePresenceProtocolEntity enviado | account={account_id} thread_id={thread_id}")
    
+        logger.info(f"[LOGIN-DEBUG] Chamando eventCallback com LOGIN_SUCCESS | account={account_id} thread_id={thread_id}")
         self.eventCallback(wsend_pb2.BotEvent.Event.LOGIN_SUCCESS)
         
-        self.lastOnlineTimeStamp = int(time.time()) 
+        self.lastOnlineTimeStamp = int(time.time())
+        logger.info(f"[LOGIN-DEBUG] lastOnlineTimeStamp atualizado | account={account_id} thread_id={thread_id} timestamp={self.lastOnlineTimeStamp}")
 
         # Atualiza status da conta no banco de dados
         if self.bot.botId is not None:
+            logger.info(f"[LOGIN-DEBUG] Atualizando status da conta no banco de dados | account={account_id} thread_id={thread_id}")
             from zowsuplib.app.db import update_account_status
             update_account_status(self.bot.botId, is_logged_in=True, has_restriction=False)
+            logger.info(f"[LOGIN-DEBUG] Status da conta atualizado no banco de dados | account={account_id} thread_id={thread_id}")
 
+        logger.info(f"[LOGIN-DEBUG] Configurando PROP_IDENTITY_AUTOTRUST=True | account={account_id} thread_id={thread_id}")
         self.setProp(PROP_IDENTITY_AUTOTRUST, True)
+        
+        logger.info(f"[LOGIN-DEBUG] SendLayer.onSuccess() concluído - LOGIN COMPLETO E CONECTADO | account={account_id} thread_id={thread_id} isConnected={self.isConnected}")
         
 
     @ProtocolEntityCallback("stream:error")

@@ -30,13 +30,25 @@ class YowAuthenticationProtocolLayer(YowProtocolLayer):
         return "Authentication Layer"
 
     @EventCallback(YowNetworkLayer.EVENT_STATE_CONNECTED)
-    def on_connected(self, event):            
+    def on_connected(self, event):
+        import threading
+        thread_id = threading.current_thread().ident
+        try:
+            stack = self.getStack()
+            account_id = stack.getProp("botId") or stack.getProp("jid") or "unknown" if stack else "unknown"
+        except:
+            account_id = "unknown"
+        
+        passive = self.getProp(self.PROP_PASSIVE, False)
+        logger.info(f"[LOGIN-DEBUG] YowAuthenticationProtocolLayer.on_connected() chamado | account={account_id} thread_id={thread_id} passive={passive}")
+        logger.info(f"[LOGIN-DEBUG] Emitindo EVENT_AUTH para iniciar handshake | account={account_id} thread_id={thread_id}")
         self.broadcastEvent(
             YowLayerEvent(
                 self.EVENT_AUTH,
-                passive=self.getProp(self.PROP_PASSIVE, False)
+                passive=passive
             )
         )
+        logger.info(f"[LOGIN-DEBUG] EVENT_AUTH emitido com sucesso | account={account_id} thread_id={thread_id}")
         
 
     def setCredentials(self, credentials):
@@ -47,20 +59,55 @@ class YowAuthenticationProtocolLayer(YowProtocolLayer):
         return username if not full else ("%s@%s" % (username, YowConstants.WHATSAPP_SERVER))
 
     def handleStreamFeatures(self, node):
+        import threading
+        thread_id = threading.current_thread().ident
+        try:
+            stack = self.getStack()
+            account_id = stack.getProp("botId") or stack.getProp("jid") or "unknown" if stack else "unknown"
+        except:
+            account_id = "unknown"
+        
+        logger.info(f"[LOGIN-DEBUG] handleStreamFeatures() chamado - recebido stream:features após handshake | account={account_id} thread_id={thread_id}")
         nodeEntity = StreamFeaturesProtocolEntity.fromProtocolTreeNode(node)
+        logger.info(f"[LOGIN-DEBUG] StreamFeatures parseado, enviando para camadas superiores | account={account_id} thread_id={thread_id}")
         self.toUpper(nodeEntity)
 
     def handleSuccess(self, node):
-        successEvent = YowLayerEvent(self.__class__.EVENT_AUTHED, passive = self.getProp(self.__class__.PROP_PASSIVE))
+        import threading
+        thread_id = threading.current_thread().ident
+        try:
+            stack = self.getStack()
+            account_id = stack.getProp("botId") or stack.getProp("jid") or "unknown" if stack else "unknown"
+        except:
+            account_id = "unknown"
+        
+        passive = self.getProp(self.__class__.PROP_PASSIVE)
+        logger.info(f"[LOGIN-DEBUG] handleSuccess() chamado - recebido mensagem 'success' do servidor | account={account_id} thread_id={thread_id} passive={passive}")
+        logger.info(f"[LOGIN-DEBUG] Emitindo EVENT_AUTHED para indicar autenticação bem-sucedida | account={account_id} thread_id={thread_id}")
+        successEvent = YowLayerEvent(self.__class__.EVENT_AUTHED, passive=passive)
         self.broadcastEvent(successEvent)
+        logger.info(f"[LOGIN-DEBUG] EVENT_AUTHED emitido, parseando SuccessProtocolEntity | account={account_id} thread_id={thread_id}")
         nodeEntity = SuccessProtocolEntity.fromProtocolTreeNode(node)
+        logger.info(f"[LOGIN-DEBUG] SuccessProtocolEntity parseado, enviando para camadas superiores | account={account_id} thread_id={thread_id}")
         self.toUpper(nodeEntity)
+        logger.info(f"[LOGIN-DEBUG] handleSuccess() concluído - login autenticado com sucesso | account={account_id} thread_id={thread_id}")
 
-    def handleFailure(self, node):                
-         
+    def handleFailure(self, node):
+        import threading
+        thread_id = threading.current_thread().ident
+        try:
+            stack = self.getStack()
+            account_id = stack.getProp("botId") or stack.getProp("jid") or "unknown" if stack else "unknown"
+        except:
+            account_id = "unknown"
+        
+        logger.error(f"[LOGIN-DEBUG] handleFailure() chamado - recebido mensagem 'failure' do servidor | account={account_id} thread_id={thread_id}")
         nodeEntity = FailureProtocolEntity.fromProtocolTreeNode(node)
+        logger.error(f"[LOGIN-DEBUG] FailureProtocolEntity parseado, enviando para camadas superiores | account={account_id} thread_id={thread_id}")
         self.toUpper(nodeEntity)
-        self.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_DISCONNECT, reason = "Authentication Failure"))
+        logger.error(f"[LOGIN-DEBUG] Emitindo EVENT_STATE_DISCONNECT devido a falha de autenticação | account={account_id} thread_id={thread_id}")
+        self.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_DISCONNECT, reason="Authentication Failure"))
+        logger.error(f"[LOGIN-DEBUG] handleFailure() concluído - login falhou | account={account_id} thread_id={thread_id}")
 
     def handleStreamError(self, node):
         nodeEntity = StreamErrorProtocolEntity.fromProtocolTreeNode(node)

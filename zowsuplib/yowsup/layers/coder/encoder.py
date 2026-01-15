@@ -2,17 +2,98 @@ from zowsuplib.conf.constants import GlobalVar
 import zlib
 import random
 from .decoder import ReadDecoder
+from loguru import logger
+import json
+
 class WriteEncoder:
 
     def __init__(self, tokenDictionary):
         self.tokenDictionary = tokenDictionary
 
     def protocolTreeNodeToBytes(self, node):
+        """
+        Converte um ProtocolTreeNode para bytes.
+        Este é o ponto onde o node está completamente montado e pronto para envio.
+        """
+        try:
+            # Log detalhado do node antes de começar a codificação
+            self._log_node_structure(node)
+        except Exception as e:
+            logger.warning(f"[NODE-ENCODING] Erro ao logar estrutura do node: {e}")
+        
         outBytes = [0] # flags
-        self.writeInternal(node, outBytes)                                
+        self.writeInternal(node, outBytes)
+        
+        try:
+            # Log após codificação completa
+            self._log_encoding_result(node, outBytes)
+        except Exception as e:
+            logger.warning(f"[NODE-ENCODING] Erro ao logar resultado da codificação: {e}")
+                                
         return outBytes
+    
+    def _log_node_structure(self, node):
+        """Loga a estrutura completa do node antes da codificação"""
+        try:
+            node_structure = {
+                "tag": node.tag,
+                "attributes_count": len(node.attributes) if node.attributes else 0,
+                "attributes": node.attributes or {},
+                "has_data": node.data is not None,
+                "data_size": len(node.data) if node.data else 0,
+                "children_count": len(node.children) if node.children else 0,
+                "children": []
+            }
+            
+            # Adiciona informações de cada filho
+            if node.children:
+                for idx, child in enumerate(node.children):
+                    child_info = {
+                        "index": idx,
+                        "tag": child.tag,
+                        "attributes": child.attributes or {},
+                        "has_data": child.data is not None,
+                        "data_size": len(child.data) if child.data else 0,
+                        "children_count": len(child.children) if child.children else 0
+                    }
+                    node_structure["children"].append(child_info)
+            
+            logger.debug(
+                f"[NODE-ENCODING] Estrutura do node antes de codificar: "
+                f"{json.dumps(node_structure, indent=2, default=str)}"
+            )
+            
+        except Exception as e:
+            logger.warning(f"[NODE-ENCODING] Erro ao extrair estrutura do node: {e}")
+    
+    def _log_encoding_result(self, node, encoded_bytes):
+        """Loga o resultado da codificação"""
+        try:
+            total_bytes = len(encoded_bytes) if encoded_bytes else 0
+            logger.debug(
+                f"[NODE-ENCODING] Codificação concluída | "
+                f"tag={node.tag} total_bytes={total_bytes}"
+            )
+        except Exception as e:
+            logger.warning(f"[NODE-ENCODING] Erro ao logar resultado: {e}")
 
     def writeInternal(self, node, data):
+        """
+        Escreve o node internamente de forma recursiva.
+        Este método monta cada parte do node (tag, atributos, dados, filhos).
+        """
+        try:
+            # Log do início da codificação deste node
+            logger.debug(
+                f"[NODE-ENCODING] Codificando node interno | "
+                f"tag={node.tag} "
+                f"attrs_count={len(node.attributes) if node.attributes else 0} "
+                f"has_data={node.data is not None} "
+                f"has_children={node.hasChildren()}"
+            )
+        except:
+            pass  # Não falha se houver erro no log
+        
         x = 1 + \
         (0 if node.attributes is None else len(node.attributes) * 2) + \
         (0 if not node.hasChildren() else 1) + \
@@ -23,11 +104,24 @@ class WriteEncoder:
         self.writeString(node.tag, data)
         self.writeAttributes(node.attributes, data)
 
-        if node.data is not None:            
+        if node.data is not None:
+            try:
+                logger.debug(
+                    f"[NODE-ENCODING] Escrevendo dados do node | "
+                    f"tag={node.tag} data_size={len(node.data)}"
+                )
+            except:
+                pass
             self.writeBytes(node.data, data)
 
         if node.hasChildren():
-
+            try:
+                logger.debug(
+                    f"[NODE-ENCODING] Escrevendo filhos do node | "
+                    f"tag={node.tag} children_count={len(node.children)}"
+                )
+            except:
+                pass
             self.writeListStart(len(node.children), data);    
             for c in node.children:
                 self.writeInternal(c, data)         

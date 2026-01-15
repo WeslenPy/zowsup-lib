@@ -69,12 +69,28 @@ class WANoiseProtocol(object):
         self._handshake_timeout = 60.0  # 60 segundos timeout
 
     def _trigger_state_callback(self):
-        if self._protocol_state_callbacks is not None and self._last_triggered_state != self._machine.state:
-            self._last_triggered_state = self._machine.state
+        import threading
+        thread_id = threading.current_thread().ident
+        new_state = self._machine.state
+        old_state = self._last_triggered_state
+        
+        if self._protocol_state_callbacks is not None and old_state != new_state:
+            logger.info(f"[LOGIN-DEBUG] WANoiseProtocol._trigger_state_callback() - mudança de estado | thread_id={thread_id} old_state={old_state} new_state={new_state}")
+            self._last_triggered_state = new_state
             # Limpa timer quando entra em TRANSPORT
-            if self._machine.state == self.STATE_TRANSPORT:
+            if new_state == self.STATE_TRANSPORT:
+                elapsed = time.time() - self._handshake_start_time if self._handshake_start_time else None
+                logger.info(f"[LOGIN-DEBUG] Entrando em estado TRANSPORT - handshake concluído | thread_id={thread_id} elapsed_time={elapsed:.2f}s" if elapsed else f"[LOGIN-DEBUG] Entrando em estado TRANSPORT - handshake concluído | thread_id={thread_id}")
                 self._handshake_start_time = None
-            self._protocol_state_callbacks(self._machine.state)
+            elif new_state == self.STATE_HANDSHAKE:
+                logger.info(f"[LOGIN-DEBUG] Entrando em estado HANDSHAKE | thread_id={thread_id}")
+            elif new_state == self.STATE_ERROR:
+                logger.error(f"[LOGIN-DEBUG] Entrando em estado ERROR | thread_id={thread_id}")
+            elif new_state == self.STATE_INIT:
+                logger.info(f"[LOGIN-DEBUG] Entrando em estado INIT | thread_id={thread_id}")
+            
+            logger.info(f"[LOGIN-DEBUG] Chamando protocol_state_callbacks com novo estado | thread_id={thread_id} state={new_state}")
+            self._protocol_state_callbacks(new_state)
 
     @property
     def state(self):
@@ -96,33 +112,53 @@ class WANoiseProtocol(object):
         :type s: consonance.structs.keypair.KeyPair
         :param rs:
         :type rs: consonance.structs.publickey.PublicKey
-        """        
+        """
+        import threading
+        thread_id = threading.current_thread().ident
+        
+        logger.info(f"[LOGIN-DEBUG] WANoiseProtocol.start() chamado | thread_id={thread_id} mode={mode} deviceid={deviceid} rs={'present' if rs else 'none'}")
+        logger.info(f"[LOGIN-DEBUG] client_config: username={client_config.username if client_config.username else 'None'} passive={client_config.passive} short_connect={client_config.short_connect} | thread_id={thread_id}")
+        logger.info(f"[LOGIN-DEBUG] Mudando estado de INIT para HANDSHAKE | thread_id={thread_id}")
         self._machine.start()
         # Registrar tempo de início do handshake
         self._handshake_start_time = time.time()
+        logger.info(f"[LOGIN-DEBUG] Estado mudou para HANDSHAKE, criando WAHandshake | thread_id={thread_id} version={self._version_major}.{self._version_minor}")
         handshake = WAHandshake(self._version_major, self._version_minor)
-        if mode is not None:            
+        if mode is not None:
+            logger.info(f"[LOGIN-DEBUG] Configurando handshake mode={mode} | thread_id={thread_id}")
             handshake.setmode(mode)            
         if identity is not None:
+            logger.info(f"[LOGIN-DEBUG] Configurando identity key | thread_id={thread_id}")
             handshake.setIdentity(identity)
         if regid is not None:
+            logger.info(f"[LOGIN-DEBUG] Configurando registration ID | thread_id={thread_id}")
             handshake.setRegistrationId(regid)
         if signedprekey is not None:
+            logger.info(f"[LOGIN-DEBUG] Configurando signed prekey | thread_id={thread_id}")
             handshake.setSignedPreKey(signedprekey)            
         if deviceid is not None:
+            logger.info(f"[LOGIN-DEBUG] Configurando device ID={deviceid} | thread_id={thread_id}")
             handshake.setDeviceId(deviceid)
         
+        logger.info(f"[LOGIN-DEBUG] Iniciando handshake.perform() | thread_id={thread_id} handshake_type={'IK' if rs else 'XX'}")
         try:                                       
             result = handshake.perform(client_config, stream, s, rs)
             if result is not None:
+                logger.info(f"[LOGIN-DEBUG] handshake.perform() retornou com sucesso, obtendo cipherstates | thread_id={thread_id}")
                 self._rs = handshake.rs
+                logger.info(f"[LOGIN-DEBUG] Criando WANoiseTransport com cipherstates | thread_id={thread_id}")
                 self._transport = WANoiseTransport(stream, result[0], result[1])
+                logger.info(f"[LOGIN-DEBUG] Mudando estado de HANDSHAKE para TRANSPORT | thread_id={thread_id}")
                 self._machine.finish()
                 # Limpa timer quando handshake completa com sucesso
                 self._handshake_start_time = None
+                logger.info(f"[LOGIN-DEBUG] Handshake concluído com sucesso, protocolo em estado TRANSPORT | thread_id={thread_id}")
             else:
+                logger.error(f"[LOGIN-DEBUG] handshake.perform() retornou None - sem cipherstates | thread_id={thread_id}")
                 raise HandshakeFailedException("No cipherstates")
         except HandshakeFailedException as e:
+            logger.error(f"[LOGIN-DEBUG] HandshakeFailedException durante handshake.perform() | thread_id={thread_id} error={e}")
+            logger.info(f"[LOGIN-DEBUG] Mudando estado para ERROR devido a falha no handshake | thread_id={thread_id}")
             self._machine.fail()
             # Mantém o timer para detecção de erro persistente
             raise

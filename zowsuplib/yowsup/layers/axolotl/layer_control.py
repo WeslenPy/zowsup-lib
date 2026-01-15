@@ -71,6 +71,17 @@ class AxolotlControlLayer(AxolotlBaseLayer):
     
     @EventCallback(YowAuthenticationProtocolLayer.EVENT_AUTHED)
     def onAuthed(self, yowLayerEvent):
+        import threading
+        thread_id = threading.current_thread().ident
+        try:
+            stack = self.getStack()
+            account_id = stack.getProp("botId") or stack.getProp("jid") or "unknown" if stack else "unknown"
+        except:
+            account_id = "unknown"
+        
+        passive = yowLayerEvent.getArg("passive")
+        logger.info(f"[LOGIN-DEBUG] AxolotlControlLayer.onAuthed() chamado - recebido EVENT_AUTHED | account={account_id} thread_id={thread_id} passive={passive}")
+        logger.info(f"[LOGIN-DEBUG] Autenticação confirmada, preparando envio de chaves se necessário | account={account_id} thread_id={thread_id} unsent_prekeys={len(self._unsent_prekeys)}")
        
         if yowLayerEvent.getArg("passive") and len(self._unsent_prekeys):
 
