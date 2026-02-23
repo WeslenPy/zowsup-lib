@@ -64,18 +64,21 @@ class ResultSyncIqProtocolEntity(SyncIqProtocolEntity):
         users = []
 
         for number,jid in self.inNumbers.items():
+            jid = jid.replace("+", "")
             contact =ProtocolTreeNode("contact",{type:"in"},None,number)
             user = ProtocolTreeNode("user",{jid:jid},None,None)
             user.addChild(contact)
             users.append(user)            
 
         for number,jid in self.outNumbers.items():
+            jid = jid.replace("+", "")
             contact =ProtocolTreeNode("contact",{type:"out"},None,number)
             user = ProtocolTreeNode("user",{jid:jid},None,None)
             user.addChild(contact)
             users.append(user)   
 
         for number in self.invalidUsers:
+            number = number.replace("+", "")
             contact =ProtocolTreeNode("contact",{type:"invalid"},None,number)
             user = ProtocolTreeNode("user",{},None,None)
             user.addChild(contact)
@@ -117,11 +120,15 @@ class ResultSyncIqProtocolEntity(SyncIqProtocolEntity):
                 continue
             type = contact.getAttributeValue("type")
             contact_data = contact.data.decode() if contact.data else ""
-            
+            jid = user.getAttributeValue("jid")
+            jid = jid.replace("+", "")
+
+
+            contact_data = contact_data.replace("+", "")
             if type=="in":                                
-                inUsersDict[contact_data] = user.getAttributeValue("jid")                
+                inUsersDict[contact_data] = jid                
             elif type=="out":
-                outUsersDict[contact_data] = user.getAttributeValue("jid")
+                outUsersDict[contact_data] = jid
             elif type=="invalid":
                 # Número inválido (não existe no WhatsApp)
                 invalidUsersList.append(contact_data)

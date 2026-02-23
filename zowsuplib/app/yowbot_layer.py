@@ -1527,15 +1527,17 @@ class SendLayer(YowInterfaceLayer):
         if phone in invalid_users:
             logger.warning(f"Número {phone} está na lista de inválidos do WhatsApp")
             return False, None, phone
-        
+
+            
+        logger.debug(f"validate_contact_sync_result: sync_result.inNumbers: {sync_result.inNumbers}")
         # Verifica se está em inNumbers (números válidos que têm você nos contatos)
-        if phone in sync_result.getInNumbers():
+        if phone in sync_result.inNumbers:
             jid_found = sync_result.inNumbers[phone]
             logger.info(f"Número {phone} válido (inNumbers), JID: {jid_found}")
             return True, jid_found, phone
         
         # Verifica se está em outNumbers (números válidos que você tem nos contatos)
-        if phone in sync_result.getOutNumbers():
+        if phone in sync_result.outNumbers:
             jid_found = sync_result.outNumbers[phone]
             logger.info(f"Número {phone} válido (outNumbers), JID: {jid_found}")
             return True, jid_found, phone
@@ -2774,6 +2776,8 @@ class SendLayer(YowInterfaceLayer):
         def on_success(entity, original_iq_entity):  
             logger.info("syncContacts success with %d contacts" % len(entity.inNumbers))
             
+            logger.debug(f"syncContacts: entity: {entity.toProtocolTreeNode()}")
+
             # Salva todos os contatos válidos no banco de dados
             saved_count = 0
             try:
@@ -3532,7 +3536,7 @@ class SendLayer(YowInterfaceLayer):
         return entity.getId()
 
     def generateAppStateSyncKeys(self,n):
-        profile = self.getStack().getProp("profile")        
+        profile:YowProfile = self.getStack().getProp("profile")        
         keys = []
         for i in range(0,n):
             key = AppStateSyncKeyAttribute(
